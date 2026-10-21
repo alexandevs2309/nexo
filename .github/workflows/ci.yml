@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar Rust (estable)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Compilar
+        run: cargo build --verbose
+        working-directory: prototipo
+      - name: Ejecutar pruebas
+        run: cargo test --verbose
+        working-directory: prototipo

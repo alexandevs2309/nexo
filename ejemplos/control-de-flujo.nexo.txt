@@ -1,0 +1,34 @@
+# EJEMPLO — control de flujo y operadores lógicos (ADR-0007)
+# Reproducir con:  cd prototipo && cargo run
+
+# Condicional con rama alternativa
+sea edad = 20
+sea categoria = 0
+si edad >= 18 {
+  categoria = 1
+} sino {
+  categoria = 2
+}
+
+# Condiciones combinadas (precedencia: comparación > `y` > `o`)
+sea mayor_y_valido = edad >= 18 y edad <= 64
+sea fuera_de_rango = edad < 0 o edad > 64
+
+# Ciclo con acumulador
+sea total = 0
+sea contador = 1
+mientras contador <= 10 {
+  si contador % 2 == 0 {
+    total = total + contador
+  }
+  contador = contador + 1
+}
+
+# Bloque con ámbito propio: `temporal` solo existe dentro
+{
+  sea temporal = 100
+  total = total + temporal
+}
+
+# Resultado
+total

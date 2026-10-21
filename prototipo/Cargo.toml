@@ -1,0 +1,7 @@
+[package]
+name = "nexo"
+version = "0.1.0"
+edition = "2024"
+description = "Prototipo vertical de Nexo (lexer + parser + evaluación de expresiones)"
+
+[dependencies]

@@ -1,0 +1,4 @@
+# EJEMPLO CONCEPTUAL — no ejecutable todavía
+10 + 5
+
+Preguntas por resolver: tipo del resultado, conversión entre tipos, rango numérico y error ante literal inválido.

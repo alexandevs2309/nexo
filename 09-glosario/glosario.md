@@ -1,0 +1,17 @@
+# Glosario
+- AST: árbol sintáctico abstracto.
+- ABI: interfaz binaria de llamadas y enlace.
+- Lexer: convierte caracteres en tokens.
+- Parser: valida estructura y crea una representación.
+- Análisis semántico: verifica nombres, ámbitos, tipos y reglas.
+- Bytecode: instrucciones para una máquina virtual.
+- Compilador: transforma un programa a otra representación o código.
+- Intérprete: evalúa o ejecuta instrucciones mediante interpretación.
+- IR: representación intermedia.
+- Runtime: componentes necesarios durante la ejecución.
+- Semántica: significado y comportamiento definido.
+- Sintaxis: forma válida de escribir.
+- FFI: interfaz con código de otro lenguaje/ABI.
+- Conformidad: cumplimiento de la especificación.
+- ADR: registro de decisión de arquitectura.
+- Fuzzing: pruebas con entradas generadas para descubrir fallos.
