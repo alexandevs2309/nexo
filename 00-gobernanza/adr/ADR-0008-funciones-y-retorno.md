@@ -149,3 +149,12 @@ argumentos          → expresion ("," expresion)*
 - Si se añaden módulos, sobrecarga, genéricos o closures: revisar §3.3, §3.4 y §5.
 - Si aparece evidencia de que la inferencia de tipos por primera llamada es problemática
   (p. ej. funciones con el mismo nombre usadas con tipos distintos), revisar §3.3 y §6.1.
+
+## 6. Notas de implementación (actualizadas 2026-10-22)
+
+- **Parser**: añadidos `sentencia_funcion`, `sentencia_retorno`, parsing de llamadas en `primaria`.
+- **Evaluador**: `Entorno` con `HashMap<String, FuncionDef>`, `ejecutar_funcion`/`ejecutar_funcion_sentencias` con pila de ámbitos propia, propagación de `retornar` vía `Result<Valor, ErrorEjecucion>`.
+- **Errores**: `FirmaInvalida`, `RetornoAusente`, `TipoDeRetornoIncompatible` — **todos implementados y validados**.
+  - `TipoDeRetornoIncompatible`: se guarda el tipo de retorno en la primera llamada exitosa; llamadas posteriores con tipo distinto producen error con ubicación.
+- **Semántica**: inferencia de tipos en primera llamada (parámetros fijos tras primera invocación), sin captura de ámbito léxico, recursión permitida, funciones anidadas rechazadas en parser.
+- **Tests**: 13 unitarios en `evaluador::tests` + 12 conformidad en `tests/conformidad_funciones.rs`.

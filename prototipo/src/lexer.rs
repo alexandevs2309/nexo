@@ -131,6 +131,10 @@ impl Lexer {
                     self.avanzar();
                     TipoToken::Coma
                 }
+                ':' => {
+                    self.avanzar();
+                    TipoToken::DosPuntos
+                }
                 '=' => {
                     self.avanzar();
                     if self.actual() == Some('=') {
@@ -256,6 +260,9 @@ impl Lexer {
         // Las palabras clave son exactas y en minúscula.
         match texto.as_str() {
             "sea" => TipoToken::Sea,
+            "var" => TipoToken::Var,
+            "dato" => TipoToken::Dato,
+            "const" => TipoToken::Const,
             "funcion" => TipoToken::Funcion,
             "retornar" => TipoToken::Retornar,
             "mostrar" => TipoToken::Mostrar,
@@ -385,9 +392,12 @@ mod tests {
     #[test]
     fn palabras_clave_minusculas() {
         assert_eq!(
-            tipos("sea funcion retornar mostrar"),
+            tipos("sea var dato const funcion retornar mostrar"),
             vec![
                 TipoToken::Sea,
+                TipoToken::Var,
+                TipoToken::Dato,
+                TipoToken::Const,
                 TipoToken::Funcion,
                 TipoToken::Retornar,
                 TipoToken::Mostrar,
@@ -523,5 +533,15 @@ mod tests {
         let ts = Lexer::nuevo("  10 + 5").tokenizar().unwrap();
         assert_eq!((ts[0].linea, ts[0].columna), (1, 3));
         assert_eq!((ts[1].linea, ts[1].columna), (1, 6));
+    }
+
+    #[test]
+    fn palabras_clave_var_dato_const() {
+        let ts = Lexer::nuevo("var dato const").tokenizar().unwrap();
+        let tipos: Vec<_> = ts.iter().map(|t| &t.tipo).collect();
+        assert!(matches!(tipos[0], TipoToken::Var));
+        assert!(matches!(tipos[1], TipoToken::Dato));
+        assert!(matches!(tipos[2], TipoToken::Const));
+        assert!(matches!(tipos[3], TipoToken::Fin));
     }
 }

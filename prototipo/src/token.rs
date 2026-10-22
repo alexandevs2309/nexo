@@ -12,6 +12,12 @@ pub enum TipoToken {
     Identificador(String),
     /// Palabra clave `sea` (declaración, ADR-0006).
     Sea,
+    /// Palabra clave `var` (declaración mutable tipada).
+    Var,
+    /// Palabra clave `dato` (declaración inmutable tipada).
+    Dato,
+    /// Palabra clave `const` (constante de compilación).
+    Const,
     Funcion,
     Retornar,
     Mostrar,
@@ -40,6 +46,8 @@ pub enum TipoToken {
     LlaveIzq,
     LlaveDer,
     Coma,
+    /// Dos puntos `:` para anotaciones de tipo.
+    DosPuntos,
     /// Fin de línea (LF o CRLF). El parser decide contextualmente si termina sentencia.
     FinDeLinea,
     Fin,

@@ -22,8 +22,8 @@ pub const FACTOR_ESCALA: i128 = 1_000_000_000;
 /// 10^19, para validación de rango del decimal.
 const DIEZ_POT_19: i128 = 10_000_000_000_000_000_000;
 
-/// Un valor de Nexo con su tipo (tres numéricos + `lógico`).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Un valor de Nexo con su tipo (tres numéricos + `lógico` + `texto`).
+#[derive(Debug, Clone, PartialEq)]
 pub enum Valor {
     Entero(i64),
     /// Decimal escalonado: `entero / 10^9`. El entero tiene hasta 19 dígitos.
@@ -31,6 +31,8 @@ pub enum Valor {
     Real(f64),
     /// Valor lógico (ADR-0007). No es numérico: no se convierte ni se compara con números.
     Logico(bool),
+    /// Valor de texto (string UTF-8).
+    Texto(String),
 }
 
 /// Motivos de error aritmético, alineados con `ErrorEjecucion`.
@@ -130,6 +132,7 @@ impl Valor {
             Valor::Decimal(_) => "decimal",
             Valor::Real(_) => "real",
             Valor::Logico(_) => "lógico",
+            Valor::Texto(_) => "texto",
         }
     }
 }
@@ -259,6 +262,8 @@ impl Valor {
             (Valor::Decimal(_), Valor::Real(_)) | (Valor::Real(_), Valor::Decimal(_)) => {
                 Err(MotivoAritmetico::ConversionIlegal)
             }
+            // Concatenación de texto (Texto + Texto).
+            (Valor::Texto(a), Valor::Texto(b)) => Ok(Valor::Texto(format!("{a}{b}"))),
             // Lógicos no participan en aritmética (ADR-0007 §1.1).
             _ => Err(MotivoAritmetico::TiposIncompatibles),
         }
@@ -388,6 +393,7 @@ impl Valor {
             Valor::Decimal(a) => *a == 0,
             Valor::Real(a) => *a == 0.0,
             Valor::Logico(_) => false,
+            Valor::Texto(_) => false,
         }
     }
 
@@ -398,6 +404,8 @@ impl Valor {
             Valor::Real(a) => *a,
             // Un lógico no tiene representación numérica (ADR-0007 §1.1).
             Valor::Logico(_) => f64::NAN,
+            // Texto no tiene representación numérica.
+            Valor::Texto(_) => f64::NAN,
         }
     }
 }
@@ -425,6 +433,7 @@ impl fmt::Display for Valor {
             Valor::Real(a) => write!(f, "{a}"),
             Valor::Logico(true) => write!(f, "verdadero"),
             Valor::Logico(false) => write!(f, "falso"),
+            Valor::Texto(s) => write!(f, "{s}"),
         }
     }
 }

@@ -45,17 +45,30 @@ pub enum Expresion {
     No(Box<Expresion>),
     Y(Box<Expresion>, Box<Expresion>),
     O(Box<Expresion>, Box<Expresion>),
+    /// Llamada a función (ADR-0008).
+    Llamada {
+        nombre: String,
+        argumentos: Vec<Expresion>,
+        linea: usize,
+        columna: usize,
+    },
 }
 
-/// Sentencias de un programa (ADR-0006, ampliadas ADR-0007).
+/// Sentencias de un programa (ADR-0006, ampliadas ADR-0007, ADR-0008).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Sentencia {
-    /// `sea nombre = expresión`.
+    /// `sea nombre = expresión` | `var nombre: tipo = expresión` | `dato nombre: tipo = expresión` | `const NOMBRE: tipo = expresión`.
     Declaracion {
         nombre: String,
         linea: usize,
         columna: usize,
         valor: Expresion,
+        /// Tipo anotado (None para `sea` legacy).
+        tipo_anotacion: Option<TipoAnotacion>,
+        /// true = mutable (`sea`, `var`), false = inmutable (`dato`, `const`).
+        mutable: bool,
+        /// true = constante de compilación (`const`).
+        es_const: bool,
     },
     /// `nombre = expresión` sobre una variable existente.
     Asignacion {
@@ -83,6 +96,48 @@ pub enum Sentencia {
     Bloque(Vec<Sentencia>),
     /// Sentencia de expresión: evalúa a un valor.
     Expresion(Expresion),
+    /// Definición de función (ADR-0008).
+    Funcion {
+        nombre: String,
+        parametros: Vec<String>,
+        cuerpo: Vec<Sentencia>,
+        linea: usize,
+        columna: usize,
+    },
+    /// Retorno de función (ADR-0008).
+    Retorno {
+        valor: Option<Expresion>,
+        linea: usize,
+        columna: usize,
+    },
+    /// Sentencia `mostrar expresión`.
+    Mostrar {
+        valor: Expresion,
+        linea: usize,
+        columna: usize,
+    },
+}
+
+/// Anotación de tipo en declaraciones (var/dato/const).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TipoAnotacion {
+    Entero,
+    Decimal,
+    Real,
+    Logico,
+    Texto,
+}
+
+impl TipoAnotacion {
+    pub fn nombre(&self) -> &'static str {
+        match self {
+            TipoAnotacion::Entero => "entero",
+            TipoAnotacion::Decimal => "decimal",
+            TipoAnotacion::Real => "real",
+            TipoAnotacion::Logico => "lógico",
+            TipoAnotacion::Texto => "texto",
+        }
+    }
 }
 
 /// Operador de comparación (ADR-0007 §1.3, nivel 4).
@@ -145,6 +200,8 @@ pub struct Parser {
     pos: usize,
     /// Profundidad de agrupación abierta; > 0 significa dentro de `( … )`.
     en_grupo: usize,
+    /// Estamos dentro de una definición de función (para rechazar anidación).
+    en_funcion: bool,
 }
 
 impl Parser {
@@ -153,6 +210,7 @@ impl Parser {
             tokens,
             pos: 0,
             en_grupo: 0,
+            en_funcion: false,
         }
     }
 
@@ -182,30 +240,13 @@ impl Parser {
 
     /// Parsea una sentencia: declaración, asignación, control de flujo, bloque o expresión.
     fn sentencia(&mut self) -> Result<Sentencia, ErrorSintactico> {
-        if matches!(self.actual(), Some(TipoToken::Sea)) {
-            self.pos += 1; // 'sea'
-            let (nombre, linea, columna) = match self.actual() {
-                Some(TipoToken::Identificador(n)) => {
-                    let t = &self.tokens[self.pos];
-                    (n.clone(), t.linea, t.columna)
-                }
-                _ => return Err(self.error("se esperaba un nombre tras 'sea'")),
-            };
-            self.pos += 1; // identificador
-            if !matches!(self.actual(), Some(TipoToken::Asignacion)) {
-                return Err(self.error(format!(
-                    "se esperaba '=' tras el nombre {nombre:?} en la declaración"
-                )));
-            }
-            self.pos += 1; // '='
-            let valor = self.expresion()?;
-            self.terminar_sentencia()?;
-            Ok(Sentencia::Declaracion {
-                nombre,
-                linea,
-                columna,
-                valor,
-            })
+        // Declaraciones: sea | var | dato | const
+        if matches!(self.actual(), Some(TipoToken::Sea | TipoToken::Var | TipoToken::Dato | TipoToken::Const)) {
+            self.sentencia_declaracion()
+        } else if matches!(self.actual(), Some(TipoToken::Funcion)) {
+            self.sentencia_funcion()
+        } else if matches!(self.actual(), Some(TipoToken::Retornar)) {
+            self.sentencia_retorno()
         } else if matches!(self.actual(), Some(TipoToken::Si)) {
             let s = self.sentencia_si()?;
             self.terminar_sentencia()?;
@@ -214,13 +255,15 @@ impl Parser {
             let s = self.sentencia_mientras()?;
             self.terminar_sentencia()?;
             Ok(s)
+        } else if matches!(self.actual(), Some(TipoToken::Mostrar)) {
+            self.sentencia_mostrar()
         } else if matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
             let bloque = self.bloque()?;
             self.terminar_sentencia()?;
             Ok(Sentencia::Bloque(bloque))
         } else if matches!(self.actual(), Some(TipoToken::Sino)) {
             Err(self.error("'sino' sin un 'si' correspondiente"))
-        } else if let Some(TipoToken::Identificador(n)) = self.actual().cloned() {
+        } else if let Some(TipoToken::Identificador(n)) = self.actual() {
             // Asignación solo si el siguiente token es '='; si no, es una expresión.
             if matches!(
                 self.tokens.get(self.pos + 1).map(|t| &t.tipo),
@@ -250,6 +293,82 @@ impl Parser {
         }
     }
 
+    /// Parsea una declaración: sea | var | dato | const
+    fn sentencia_declaracion(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        let (keyword, mutable, es_const) = match self.actual() {
+            Some(TipoToken::Sea) => ("sea", true, false),
+            Some(TipoToken::Var) => ("var", true, false),
+            Some(TipoToken::Dato) => ("dato", false, false),
+            Some(TipoToken::Const) => ("const", false, true),
+            _ => return Err(self.error("palabra clave de declaración no reconocida")),
+        };
+        self.pos += 1; // keyword
+        let (nombre, linea, columna) = match self.actual() {
+            Some(TipoToken::Identificador(n)) => {
+                let t = &self.tokens[self.pos];
+                (n.clone(), t.linea, t.columna)
+            }
+            _ => return Err(self.error(format!("se esperaba un nombre tras '{}'", keyword))),
+        };
+        self.pos += 1; // identificador
+
+        // Tipo anotado obligatorio para var/dato/const, opcional para sea
+        let tipo_anotacion = if keyword == "sea" {
+            None
+        } else {
+            Some(self.parsear_tipo_anotacion()?)
+        };
+
+        if !matches!(self.actual(), Some(TipoToken::Asignacion)) {
+            return Err(self.error(format!(
+                "se esperaba '=' tras el nombre {nombre:?} en la declaración"
+            )));
+        }
+        self.pos += 1; // '='
+        let valor = self.expresion()?;
+        self.terminar_sentencia()?;
+        Ok(Sentencia::Declaracion {
+            nombre,
+            linea,
+            columna,
+            valor,
+            tipo_anotacion,
+            mutable,
+            es_const,
+        })
+    }
+
+    /// Parsea una anotación de tipo: entero | decimal | real | logico | texto
+    fn parsear_tipo_anotacion(&mut self) -> Result<TipoAnotacion, ErrorSintactico> {
+        if !matches!(self.actual(), Some(TipoToken::DosPuntos)) {
+            return Err(self.error("se esperaba ':' para anotación de tipo"));
+        }
+        self.pos += 1; // ':'
+        match self.actual() {
+            Some(TipoToken::Identificador(t)) if t == "entero" => {
+                self.pos += 1;
+                Ok(TipoAnotacion::Entero)
+            }
+            Some(TipoToken::Identificador(t)) if t == "decimal" => {
+                self.pos += 1;
+                Ok(TipoAnotacion::Decimal)
+            }
+            Some(TipoToken::Identificador(t)) if t == "real" => {
+                self.pos += 1;
+                Ok(TipoAnotacion::Real)
+            }
+            Some(TipoToken::Identificador(t)) if t == "logico" => {
+                self.pos += 1;
+                Ok(TipoAnotacion::Logico)
+            }
+            Some(TipoToken::Identificador(t)) if t == "texto" => {
+                self.pos += 1;
+                Ok(TipoAnotacion::Texto)
+            }
+            _ => Err(self.error("tipo desconocido; se esperaba: entero, decimal, real, logico, texto")),
+        }
+    }
+
     fn bloque(&mut self) -> Result<Vec<Sentencia>, ErrorSintactico> {
         // '{' debe estar en la misma línea que el encabezado (regla ADR-0007).
         self.pos += 1; // '{'
@@ -267,6 +386,94 @@ impl Parser {
             sentencias.push(self.sentencia()?);
         }
         Ok(sentencias)
+    }
+
+    fn sentencia_funcion(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        if self.en_funcion {
+            return Err(self.error("funciones anidadas no están permitidas (ADR-0008)"));
+        }
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'funcion'
+        self.en_funcion = true;
+        let nombre = match self.actual() {
+            Some(TipoToken::Identificador(n)) => {
+                self.pos += 1;
+                n
+            }
+            _ => return Err(self.error("se esperaba el nombre de la función")),
+        };
+        if !matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
+            return Err(self.error("se esperaba '(' tras el nombre de la función"));
+        }
+        self.pos += 1; // '('
+        let mut parametros = Vec::new();
+        loop {
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                self.pos += 1;
+                break;
+            }
+            if let Some(TipoToken::Identificador(n)) = self.actual() {
+                self.pos += 1;
+                parametros.push(n);
+            } else {
+                return Err(self.error("se esperaba un parámetro"));
+            }
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                self.pos += 1;
+                continue;
+            }
+            if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                self.pos += 1;
+                break;
+            }
+            return Err(self.error("se esperaba ',' o ')'"));
+        }
+        if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+            return Err(self.error("se esperaba '{' en la misma línea que la función"));
+        }
+        let llave = &self.tokens[self.pos];
+        if llave.linea != linea {
+            return Err(self.error("el '{' debe estar en la misma línea que 'funcion'"));
+        }
+        let cuerpo = self.bloque()?;
+        self.en_funcion = false;
+        Ok(Sentencia::Funcion {
+            nombre,
+            parametros,
+            cuerpo,
+            linea,
+            columna,
+        })
+    }
+
+    fn sentencia_retorno(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'retornar'
+        match self.actual() {
+            Some(TipoToken::FinDeLinea) | Some(TipoToken::Fin) | None | Some(TipoToken::LlaveDer) => {
+                self.terminar_sentencia()?;
+                Ok(Sentencia::Retorno { valor: None, linea, columna })
+            }
+            _ => {
+                let expr = self.expresion()?;
+                self.terminar_sentencia()?;
+                Ok(Sentencia::Retorno { valor: Some(expr), linea, columna })
+            }
+        }
+    }
+
+    /// Parsea una sentencia `mostrar`.
+    fn sentencia_mostrar(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'mostrar'
+        let expr = self.expresion()?;
+        self.terminar_sentencia()?;
+        Ok(Sentencia::Mostrar { valor: expr, linea, columna })
     }
 
     /// Parsea una sentencia `si` completa, incluidas las ramas `sino`/`sino si`.
@@ -367,8 +574,8 @@ impl Parser {
         }
     }
 
-    fn actual(&self) -> Option<&TipoToken> {
-        self.tokens.get(self.pos).map(|t| &t.tipo)
+    fn actual(&self) -> Option<TipoToken> {
+        self.tokens.get(self.pos).map(|t| t.tipo.clone())
     }
 
     /// Línea del token actual (para comprobar la regla de "misma línea" del ADR-0007).
@@ -588,11 +795,52 @@ impl Parser {
                     columna,
                 })
             }
+            Some(TipoToken::Cadena(s)) => {
+                let t = &self.tokens[self.pos];
+                let (linea, columna) = (t.linea, t.columna);
+                self.pos += 1;
+                Ok(Expresion::Literal {
+                    valor: Valor::Texto(s.clone()),
+                    linea,
+                    columna,
+                })
+            }
             Some(TipoToken::Identificador(nombre)) => {
                 let t = &self.tokens[self.pos];
                 let (linea, columna) = (t.linea, t.columna);
                 let nombre = nombre.clone();
                 self.pos += 1;
+                // Llamada a función: identificador seguido de '('
+                if matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
+                    self.pos += 1;
+                    let mut args = Vec::new();
+                    self.omitir_finales_de_linea();
+                    if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                        self.pos += 1;
+                    } else {
+                        loop {
+                            let a = self.expresion()?;
+                            args.push(a);
+                            self.omitir_finales_de_linea();
+                            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                                self.pos += 1;
+                                self.omitir_finales_de_linea();
+                                continue;
+                            }
+                            if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                                self.pos += 1;
+                                break;
+                            }
+                            return Err(self.error("se esperaba ',' o ')'"));
+                        }
+                    }
+                    return Ok(Expresion::Llamada {
+                        nombre,
+                        argumentos: args,
+                        linea,
+                        columna,
+                    });
+                }
                 Ok(Expresion::Variable {
                     nombre,
                     linea,
@@ -908,6 +1156,67 @@ mod tests {
                 !e.mensaje.is_empty(),
                 "{fuente:?} debería ser error de sintaxis"
             );
+        }
+    }
+
+    #[test]
+    fn debug_dato_tokens() {
+        let tokens = Lexer::nuevo("dato y: decimal = 3.14").tokenizar().unwrap();
+        for t in &tokens {
+            eprintln!("{:?} @ {}:{} lexema='{}'", t.tipo, t.linea, t.columna, t.lexema);
+        }
+    }
+
+    #[test]
+    fn declaraciones_tipadas_var_dato_const() {
+        let tokens = Lexer::nuevo("var x: entero = 42").tokenizar().unwrap();
+        let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+        assert_eq!(ss.len(), 1);
+        match &ss[0] {
+            Sentencia::Declaracion { nombre, tipo_anotacion, mutable, es_const, .. } => {
+                assert_eq!(nombre, "x");
+                assert_eq!(*tipo_anotacion, Some(TipoAnotacion::Entero));
+                assert!(*mutable);
+                assert!(!*es_const);
+            }
+            _ => panic!("esperaba declaración"),
+        }
+
+        let tokens = Lexer::nuevo("dato valor: decimal = 3.14").tokenizar().unwrap();
+        let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+        match &ss[0] {
+            Sentencia::Declaracion { nombre, tipo_anotacion, mutable, es_const, .. } => {
+                assert_eq!(nombre, "valor");
+                assert_eq!(*tipo_anotacion, Some(TipoAnotacion::Decimal));
+                assert!(!*mutable);
+                assert!(!*es_const);
+            }
+            _ => panic!("esperaba declaración"),
+        }
+
+        let tokens = Lexer::nuevo("const PI: real = 3.14159e0").tokenizar().unwrap();
+        let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+        match &ss[0] {
+            Sentencia::Declaracion { nombre, tipo_anotacion, mutable, es_const, .. } => {
+                assert_eq!(nombre, "PI");
+                assert_eq!(*tipo_anotacion, Some(TipoAnotacion::Real));
+                assert!(!*mutable);
+                assert!(*es_const);
+            }
+            _ => panic!("esperaba declaración"),
+        }
+
+        // sea legacy sigue funcionando
+        let tokens = Lexer::nuevo("sea z = 10").tokenizar().unwrap();
+        let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+        match &ss[0] {
+            Sentencia::Declaracion { nombre, tipo_anotacion, mutable, es_const, .. } => {
+                assert_eq!(nombre, "z");
+                assert_eq!(*tipo_anotacion, None);
+                assert!(*mutable);
+                assert!(!*es_const);
+            }
+            _ => panic!("esperaba declaración"),
         }
     }
 }

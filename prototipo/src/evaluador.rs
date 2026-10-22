@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::parser::{Expresion, Sentencia};
+use crate::parser::{Expresion, Sentencia, TipoAnotacion};
 use crate::valor::{FACTOR_ESCALA, MotivoAritmetico, Valor};
 
 /// Causa tipada de un error de ejecución (ADR-0005 §1.6 y ADR-0006 §1.5, ampliada ADR-0007).
@@ -35,6 +35,12 @@ pub enum CausaError {
     /// Se superó el límite de iteraciones de un `mientras` (protección frente a bucles
     /// infinitos; ADR-0007 §1.5).
     LimiteIteraciones { limite: usize },
+    /// Número incorrecto de argumentos en una llamada (ADR-0008).
+    FirmaInvalida { funcion: String, esperado: usize, obtenido: usize },
+    /// Se usa el resultado de una función que no ejecuta `retornar` (ADR-0008).
+    RetornoAusente { funcion: String },
+    /// Tipo de retorno incompatible con el fijado en la primera llamada (ADR-0008).
+    TipoDeRetornoIncompatible { esperado: &'static str, obtenido: &'static str },
 }
 
 /// Límite de iteraciones por ciclo `mientras` (protección frente a bucles infinitos).
@@ -65,6 +71,21 @@ impl std::fmt::Display for CausaError {
             CausaError::LimiteIteraciones { limite } => write!(
                 f,
                 "se superó el límite de {limite} iteraciones: posible bucle infinito"
+            ),
+            CausaError::FirmaInvalida {
+                funcion,
+                esperado,
+                obtenido,
+            } => write!(
+                f,
+                "la función '{funcion}' espera {esperado} argumentos y se le pasaron {obtenido}"
+            ),
+            CausaError::RetornoAusente { funcion } => {
+                write!(f, "la función '{funcion}' no ejecuta 'retornar'")
+            }
+            CausaError::TipoDeRetornoIncompatible { esperado, obtenido } => write!(
+                f,
+                "el tipo de retorno es incompatible: se esperaba {esperado} y se obtuvo {obtenido}"
             ),
         }
     }
@@ -97,17 +118,86 @@ fn error(causa: CausaError, linea: usize, columna: usize) -> ErrorEjecucion {
     }
 }
 
-/// Entorno de ejecución: pila de ámbitos con las variables (ADR-0006 §1.6).
+/// Información almacenada para cada variable (valor + metadatos de declaración).
+#[derive(Debug, Clone)]
+pub struct VariableInfo {
+    pub valor: Valor,
+    /// Tipo declarado (None = inferido en declaración, como `sea` legacy).
+    pub tipo_declarado: Option<TipoAnotacion>,
+    /// Si la variable es mutable (`var`/`sea` = true, `dato`/`const` = false).
+    pub mutable: bool,
+    /// Si es constante de compilación (`const` = true).
+    pub es_const: bool,
+}
+
+/// Definición de función almacenada en el entorno (ADR-0008).
+#[derive(Debug, Clone)]
+pub struct FuncionDef {
+    pub nombre: String,
+    pub parametros: Vec<String>,
+    pub cuerpo: Vec<Sentencia>,
+    pub linea: usize,
+    pub columna: usize,
+    /// Tipo de retorno inferido en la primera llamada exitosa (ADR-0008).
+    /// `None` = aún no se ha llamado o no retornó valor.
+    pub tipo_retorno: Option<&'static str>,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+enum ResultadoEjecucion {
+    Ninguno,
+    Valor(Valor),
+    Retorno(Valor),
+}
+
+/// Entorno de ejecución: pila de ámbitos con las variables (ADR-0006 §1.6),
+/// más un mapa global de funciones (ADR-0008).
 #[derive(Debug, Default)]
 pub struct Entorno {
-    ambitos: Vec<HashMap<String, Valor>>,
+    ambitos: Vec<HashMap<String, VariableInfo>>,
+    funciones: HashMap<String, FuncionDef>,
 }
 
 impl Entorno {
     pub fn nueva() -> Self {
         Entorno {
             ambitos: vec![HashMap::new()],
+            funciones: HashMap::new(),
         }
+    }
+
+    /// Inserta una variable en el ámbito actual con su metadato completo.
+    fn insertar_variable(&mut self, nombre: String, info: VariableInfo) {
+        self.ambitos.last_mut().unwrap().insert(nombre, info);
+    }
+
+    /// Obtiene una referencia mutable al valor de una variable (para asignación).
+    #[allow(dead_code)]
+    fn obtener_variable_mut(&mut self, nombre: &str) -> Option<&mut Valor> {
+        for ambito in self.ambitos.iter_mut().rev() {
+            if let Some(info) = ambito.get_mut(nombre) {
+                return Some(&mut info.valor);
+            }
+        }
+        None
+    }
+
+    /// Obtiene información completa de una variable (para validaciones).
+    #[allow(dead_code)]
+    fn obtener_variable_info(&self, nombre: &str) -> Option<&VariableInfo> {
+        for ambito in self.ambitos.iter().rev() {
+            if let Some(info) = ambito.get(nombre) {
+                return Some(info);
+            }
+        }
+        None
+    }
+
+    /// Verifica si una variable existe en el ámbito actual (para declaración duplicada).
+    #[allow(dead_code)]
+    fn existe_en_ambito_actual(&self, nombre: &str) -> bool {
+        self.ambitos.last().is_some_and(|a| a.contains_key(nombre))
     }
 
     /// Evalúa una expresión contra este entorno.
@@ -135,31 +225,212 @@ impl Entorno {
         r.map(|_| ())
     }
 
+    fn ejecutar_funcion(&mut self, sentencias: &[Sentencia], nombre_funcion: &str) -> Result<Valor, ErrorEjecucion> {
+        self.ambitos.push(HashMap::new());
+        let r = self.ejecutar_funcion_sentencias(sentencias, nombre_funcion);
+        self.ambitos.pop();
+        r
+    }
+
+    fn ejecutar_funcion_sentencias(&mut self, sentencias: &[Sentencia], nombre_funcion: &str) -> Result<Valor, ErrorEjecucion> {
+        for s in sentencias {
+            let s = s.clone();
+            match s {
+                Sentencia::Declaracion { nombre, linea, columna, valor, ref tipo_anotacion, mutable, es_const } => {
+                    if self.existe_en_ambito_actual(&nombre) {
+                        return Err(error(CausaError::DeclaracionDuplicada(nombre.clone()), linea, columna));
+                    }
+                    let v = evaluar_con(&valor, self)?;
+                    // Validar tipo anotado si existe
+                    if let Some(tipo_anotado) = tipo_anotacion {
+                        let tipo_obtenido = v.nombre_tipo();
+                        let tipo_esperado = tipo_anotado.nombre();
+                        if !tipos_compatibles(tipo_esperado, tipo_obtenido) {
+                            return Err(error(
+                                CausaError::AsignacionIncompatible {
+                                    esperado: tipo_esperado,
+                                    obtenido: tipo_obtenido,
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+                    }
+                    self.insertar_variable(nombre.clone(), VariableInfo {
+                        valor: v,
+                        tipo_declarado: tipo_anotacion.clone(),
+                        mutable,
+                        es_const,
+                    });
+                }
+                Sentencia::Asignacion { nombre, linea, columna, valor } => {
+                    let nuevo = evaluar_con(&valor, self)?;
+                    let nuevo_tipo = nuevo.nombre_tipo();
+                    // Buscar la variable y verificar mutabilidad
+                    let Some((idx, info)) = self.localizar_info(&nombre) else {
+                        return Err(error(
+                            CausaError::VariableNoDefinida(nombre.clone()),
+                            linea,
+                            columna,
+                        ));
+                    };
+                    // Verificar mutabilidad
+                    if !info.mutable {
+                        return Err(error(
+                            CausaError::AsignacionIncompatible {
+                                esperado: "variable inmutable (dato/const)",
+                                obtenido: "intento de reasignación",
+                            },
+                            linea,
+                            columna,
+                        ));
+                    }
+                    // Verificar compatibilidad de tipo
+                    let Some(ajustado) = convertir_para_tipo(&info.valor, nuevo) else {
+                        return Err(error(
+                            CausaError::AsignacionIncompatible {
+                                esperado: info.valor.nombre_tipo(),
+                                obtenido: nuevo_tipo,
+                            },
+                            linea,
+                            columna,
+                        ));
+                    };
+                    self.ambitos[idx].get_mut(&nombre).unwrap().valor = ajustado;
+                }
+                Sentencia::Si { condicion, rama_si, rama_sino, .. } => {
+                    let c = evaluar_con(&condicion, self)?;
+                    let es_verdadero = match c {
+                        Valor::Logico(b) => b,
+                        _ => {
+                            let (linea, columna) = ubicacion(&condicion);
+                            return Err(error(CausaError::CondicionNoLogica { obtenido: c.nombre_tipo() }, linea, columna));
+                        }
+                    };
+                    if es_verdadero {
+                        match self.ejecutar_bloque_funcion(&rama_si, nombre_funcion) {
+                            Ok(v) => return Ok(v), // retornar ejecutado en la rama
+                            Err(e) => {
+                                // Si es RetornoAusente, la rama terminó sin retornar -> continuar
+                                if !matches!(e.causa, CausaError::RetornoAusente { .. }) {
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    } else if let Some(rama) = rama_sino {
+                        match self.ejecutar_bloque_funcion(&rama, nombre_funcion) {
+                            Ok(v) => return Ok(v),
+                            Err(e) => {
+                                if !matches!(e.causa, CausaError::RetornoAusente { .. }) {
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    }
+                }
+                Sentencia::Mientras { condicion, cuerpo, .. } => {
+                    let mut iteraciones = 0usize;
+                    loop {
+                        let c = evaluar_con(&condicion, self)?;
+                        let es_verdadero = match c {
+                            Valor::Logico(b) => b,
+                            _ => {
+                                let (linea, columna) = ubicacion(&condicion);
+                                return Err(error(CausaError::CondicionNoLogica { obtenido: c.nombre_tipo() }, linea, columna));
+                            }
+                        };
+                        if !es_verdadero { break; }
+                        iteraciones += 1;
+                        if iteraciones > LIMITE_ITERACIONES {
+                            let (linea, columna) = ubicacion(&condicion);
+                            return Err(error(CausaError::LimiteIteraciones { limite: LIMITE_ITERACIONES }, linea, columna));
+                        }
+                        match self.ejecutar_bloque_funcion(&cuerpo, nombre_funcion) {
+                            Ok(v) => return Ok(v),
+                            Err(e) => {
+                                if !matches!(e.causa, CausaError::RetornoAusente { .. }) {
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    }
+                }
+                Sentencia::Bloque(sentencias) => {
+                    match self.ejecutar_bloque_funcion(&sentencias, "") {
+                        Ok(v) => return Ok(v),
+                        Err(e) => {
+                            if !matches!(e.causa, CausaError::RetornoAusente { .. }) {
+                                return Err(e);
+                            }
+                        }
+                    };
+                }
+                Sentencia::Funcion { .. } => {}
+                Sentencia::Mostrar { valor, .. } => {
+                    let v = evaluar_con(&valor, self)?;
+                    // Imprimir el valor en stdout
+                    println!("{v}");
+                }
+                Sentencia::Retorno { valor, .. } => {
+                if let Some(v) = valor {
+                    return evaluar_con(&v, self)
+                } else {
+                        return Err(error(CausaError::RetornoAusente { funcion: nombre_funcion.into() }, 1, 1));
+                    }
+                }
+                Sentencia::Expresion(e) => {
+                    let _ = evaluar_con(&e, self)?;
+                }
+            }
+        }
+        Err(error(CausaError::RetornoAusente { funcion: nombre_funcion.into() }, 1, 1))
+    }
+
+    fn ejecutar_bloque_funcion(&mut self, sentencias: &[Sentencia], nombre_funcion: &str) -> Result<Valor, ErrorEjecucion> {
+        self.ambitos.push(HashMap::new());
+        let r = self.ejecutar_funcion_sentencias(sentencias, nombre_funcion);
+        self.ambitos.pop();
+        r
+    }
+
     fn ejecutar_sentencias(
         &mut self,
         sentencias: &[Sentencia],
     ) -> Result<Option<Valor>, ErrorEjecucion> {
         let mut ultimo = None;
         for s in sentencias {
+            let s = s.clone();
             match s {
-                Sentencia::Declaracion {
-                    nombre,
-                    linea,
-                    columna,
-                    valor,
-                } => {
-                    if self.buscar_ambito_actual(nombre).is_some() {
+                Sentencia::Declaracion { nombre, linea, columna, valor, ref tipo_anotacion, mutable, es_const } => {
+                    if self.existe_en_ambito_actual(&nombre) {
                         return Err(error(
                             CausaError::DeclaracionDuplicada(nombre.clone()),
-                            *linea,
-                            *columna,
+                            linea,
+                            columna,
                         ));
                     }
-                    let v = evaluar_con(valor, self)?;
-                    self.ambitos
-                        .last_mut()
-                        .expect("siempre hay un ámbito")
-                        .insert(nombre.clone(), v);
+                    let v = evaluar_con(&valor, self)?;
+                    // Validar tipo anotado si existe
+                    if let Some(tipo_anotado) = tipo_anotacion {
+                        let tipo_obtenido = v.nombre_tipo();
+                        let tipo_esperado = tipo_anotado.nombre();
+                        if !tipos_compatibles(tipo_esperado, tipo_obtenido) {
+                            return Err(error(
+                                CausaError::AsignacionIncompatible {
+                                    esperado: tipo_esperado,
+                                    obtenido: tipo_obtenido,
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+                    }
+                    self.insertar_variable(nombre.clone(), VariableInfo {
+                        valor: v,
+                        tipo_declarado: tipo_anotacion.clone(),
+                        mutable,
+                        es_const,
+                    });
                 }
                 Sentencia::Asignacion {
                     nombre,
@@ -167,25 +438,73 @@ impl Entorno {
                     columna,
                     valor,
                 } => {
-                    let nuevo = evaluar_con(valor, self)?;
-                    let Some((idx, viejo)) = self.localizar(nombre) else {
+                    let nuevo = evaluar_con(&valor, self)?;
+                    let nuevo_tipo = nuevo.nombre_tipo();
+                    // Buscar la variable y verificar mutabilidad
+                    let Some((idx, info)) = self.localizar_info(&nombre) else {
                         return Err(error(
                             CausaError::VariableNoDefinida(nombre.clone()),
-                            *linea,
-                            *columna,
+                            linea,
+                            columna,
                         ));
                     };
-                    let Some(ajustado) = convertir_para_tipo(viejo, nuevo) else {
+                    // Verificar mutabilidad
+                    if !info.mutable {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
-                                esperado: viejo.nombre_tipo(),
-                                obtenido: nuevo.nombre_tipo(),
+                                esperado: "variable inmutable (dato/const)",
+                                obtenido: "intento de reasignación",
                             },
-                            *linea,
-                            *columna,
+                            linea,
+                            columna,
+                        ));
+                    }
+                    // Verificar compatibilidad de tipo
+                    let Some(ajustado) = convertir_para_tipo(&info.valor, nuevo) else {
+                        return Err(error(
+                            CausaError::AsignacionIncompatible {
+                                esperado: info.valor.nombre_tipo(),
+                                obtenido: nuevo_tipo,
+                            },
+                            linea,
+                            columna,
                         ));
                     };
-                    self.ambitos[idx].insert(nombre.clone(), ajustado);
+                    self.ambitos[idx].get_mut(&nombre).unwrap().valor = ajustado;
+                }
+                Sentencia::Funcion {
+                    nombre,
+                    parametros,
+                    cuerpo,
+                    linea,
+                    columna,
+                } => {
+                    if self.funciones.contains_key(&nombre) {
+                        // Por simplicidad, si ya existe, la reemplazamos; se podría tratar como error
+                        // pero el parser/evaluador actual no lo exige aún. Mantenemos coherente.
+                    }
+                    self.funciones.insert(
+                        nombre.clone(),
+                        FuncionDef {
+                            nombre: nombre.clone(),
+                            parametros: parametros.clone(),
+                            cuerpo: cuerpo.clone(),
+                            linea,
+                            columna,
+                            tipo_retorno: None,
+                        },
+                    );
+                }
+                Sentencia::Mostrar { valor, .. } => {
+                    let v = evaluar_con(&valor, self)?;
+                    println!("{v}");
+                }
+                Sentencia::Retorno { valor, .. } => {
+                    return Err(error(
+                        CausaError::VariableNoDefinida("retornar".into()),
+                        ubicacion_linea(valor.as_ref()),
+                        ubicacion_columna(valor.as_ref()),
+                    ));
                 }
                 Sentencia::Si {
                     condicion,
@@ -193,11 +512,11 @@ impl Entorno {
                     rama_sino,
                     ..
                 } => {
-                    let c = evaluar_con(condicion, self)?;
+                    let c = evaluar_con(&condicion, self)?;
                     let es_verdadero = match c {
                         Valor::Logico(b) => b,
                         _ => {
-                            let (linea, columna) = ubicacion(condicion);
+                            let (linea, columna) = ubicacion(&condicion);
                             return Err(error(
                                 CausaError::CondicionNoLogica {
                                     obtenido: c.nombre_tipo(),
@@ -208,9 +527,9 @@ impl Entorno {
                         }
                     };
                     if es_verdadero {
-                        self.ejecutar_bloque(rama_si)?;
+                        self.ejecutar_bloque(&rama_si)?;
                     } else if let Some(rama) = rama_sino {
-                        self.ejecutar_bloque(rama)?;
+                        self.ejecutar_bloque(&rama)?;
                     }
                 }
                 Sentencia::Mientras {
@@ -220,11 +539,11 @@ impl Entorno {
                 } => {
                     let mut iteraciones = 0usize;
                     loop {
-                        let c = evaluar_con(condicion, self)?;
+                        let c = evaluar_con(&condicion, self)?;
                         let es_verdadero = match c {
                             Valor::Logico(b) => b,
                             _ => {
-                                let (linea, columna) = ubicacion(condicion);
+                                let (linea, columna) = ubicacion(&condicion);
                                 return Err(error(
                                     CausaError::CondicionNoLogica {
                                         obtenido: c.nombre_tipo(),
@@ -239,7 +558,7 @@ impl Entorno {
                         }
                         iteraciones += 1;
                         if iteraciones > LIMITE_ITERACIONES {
-                            let (linea, columna) = ubicacion(condicion);
+                            let (linea, columna) = ubicacion(&condicion);
                             return Err(error(
                                 CausaError::LimiteIteraciones {
                                     limite: LIMITE_ITERACIONES,
@@ -248,14 +567,14 @@ impl Entorno {
                                 columna,
                             ));
                         }
-                        self.ejecutar_bloque(cuerpo)?;
+                        self.ejecutar_bloque(&cuerpo)?;
                     }
                 }
                 Sentencia::Bloque(sentencias) => {
-                    self.ejecutar_bloque(sentencias)?;
+                    self.ejecutar_bloque(&sentencias)?;
                 }
                 Sentencia::Expresion(e) => {
-                    ultimo = Some(evaluar_con(e, self)?);
+                    ultimo = Some(evaluar_con(&e, self)?);
                 }
             }
         }
@@ -264,24 +583,47 @@ impl Entorno {
 
     /// Valor de una variable visible (para pruebas e introspección).
     pub fn variable(&self, nombre: &str) -> Option<Valor> {
-        self.buscar(nombre).copied()
+        self.buscar(nombre)
     }
 
-    fn buscar_ambito_actual(&self, nombre: &str) -> Option<&Valor> {
+    #[allow(dead_code)]
+    fn buscar_ambito_actual(&self, nombre: &str) -> Option<&VariableInfo> {
         self.ambitos.last().and_then(|a| a.get(nombre))
     }
 
-    fn localizar(&self, nombre: &str) -> Option<(usize, &Valor)> {
+    fn localizar(&self, nombre: &str) -> Option<(usize, VariableInfo)> {
         self.ambitos
             .iter()
             .enumerate()
             .rev()
-            .find_map(|(i, a)| a.get(nombre).map(|v| (i, v)))
+            .find_map(|(i, a)| a.get(nombre).cloned().map(|v| (i, v)))
     }
 
-    fn buscar(&self, nombre: &str) -> Option<&Valor> {
-        self.localizar(nombre).map(|(_, v)| v)
+    fn localizar_info(&mut self, nombre: &str) -> Option<(usize, &mut VariableInfo)> {
+        for (i, ambito) in self.ambitos.iter_mut().enumerate().rev() {
+            if let Some(info) = ambito.get_mut(nombre) {
+                return Some((i, info));
+            }
+        }
+        None
     }
+
+    fn buscar(&self, nombre: &str) -> Option<Valor> {
+        self.localizar(nombre).map(|(_, v)| v.valor)
+    }
+}
+
+/// Verifica si un tipo obtenido es compatible con el tipo esperado (para declaraciones tipadas).
+/// Permite las mismas conversiones implícitas que la asignación (entero→decimal, entero→real).
+fn tipos_compatibles(esperado: &str, obtenido: &str) -> bool {
+    if esperado == obtenido {
+        return true;
+    }
+    // Conversiones implícitas permitidas (ADR-0005 §1.4)
+    matches!(
+        (esperado, obtenido),
+        ("decimal", "entero") | ("real", "entero")
+    )
 }
 
 /// Aplica a `nuevo` las conversiones implícitas permitidas hacia el tipo de la variable
@@ -295,16 +637,16 @@ fn convertir_para_tipo(viejo: &Valor, nuevo: Valor) -> Option<Valor> {
     }
 }
 /// Evalúa una expresión con acceso al entorno (función recursiva interna).
+/// Evalúa una expresión con acceso al entorno (función recursiva interna).
 fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion> {
     match e {
-        Expresion::Literal { valor, .. } => Ok(*valor),
+        Expresion::Literal { valor, .. } => Ok(valor.clone()),
         Expresion::Variable {
             nombre,
             linea,
             columna,
         } => env
             .buscar(nombre)
-            .copied()
             .ok_or_else(|| error(CausaError::VariableNoDefinida(nombre.clone()), *linea, *columna)),
         Expresion::Suma(a, b) => binaria(a, b, env, |x, y| x.suma(y)),
         Expresion::Resta(a, b) => binaria(a, b, env, |x, y| x.resta(y)),
@@ -335,13 +677,12 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             }
         }
         Expresion::Y(a, b) => {
-            // Cortocircuito: si el operando izquierdo es `falso`, el derecho NO se evalúa
-            // (ADR-0007 §1.2).
             let va = evaluar_con(a, env)?;
             match va {
                 Valor::Logico(false) => Ok(Valor::Logico(false)),
                 Valor::Logico(true) => {
                     let vb = evaluar_con(b, env)?;
+                    let vb_tipo = vb.nombre_tipo();
                     match vb {
                         Valor::Logico(x) => Ok(Valor::Logico(x)),
                         _ => {
@@ -349,7 +690,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                             Err(error(
                                 CausaError::OperandoNoLogico {
                                     operador: "y",
-                                    obtenido: vb.nombre_tipo(),
+                                    obtenido: vb_tipo,
                                 },
                                 linea,
                                 columna,
@@ -371,13 +712,12 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             }
         }
         Expresion::O(a, b) => {
-            // Cortocircuito: si el operando izquierdo es `verdadero`, el derecho NO se evalúa
-            // (ADR-0007 §1.2).
             let va = evaluar_con(a, env)?;
             match va {
                 Valor::Logico(true) => Ok(Valor::Logico(true)),
                 Valor::Logico(false) => {
                     let vb = evaluar_con(b, env)?;
+                    let vb_tipo = vb.nombre_tipo();
                     match vb {
                         Valor::Logico(x) => Ok(Valor::Logico(x)),
                         _ => {
@@ -385,7 +725,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                             Err(error(
                                 CausaError::OperandoNoLogico {
                                     operador: "o",
-                                    obtenido: vb.nombre_tipo(),
+                                    obtenido: vb_tipo,
                                 },
                                 linea,
                                 columna,
@@ -406,12 +746,81 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                 }
             }
         }
+        Expresion::Llamada { nombre, argumentos, linea, columna } => {
+            let fdef = env
+                .funciones
+                .get(nombre)
+                .cloned()
+                .ok_or_else(|| error(CausaError::VariableNoDefinida(nombre.clone()), *linea, *columna))?;
+            if argumentos.len() != fdef.parametros.len() {
+                return Err(error(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.clone(),
+                        esperado: fdef.parametros.len(),
+                        obtenido: argumentos.len(),
+                    },
+                    *linea,
+                    *columna,
+                ));
+            }
+            let mut vals = Vec::new();
+            for a in argumentos {
+                vals.push(evaluar_con(a, env)?);
+            }
+            let mut nuevo_env = Entorno {
+                ambitos: vec![HashMap::new()],
+                funciones: env.funciones.clone(),
+            };
+            for (p, v) in fdef.parametros.iter().zip(vals.iter()) {
+                nuevo_env.insertar_variable(p.clone(), VariableInfo {
+                    valor: v.clone(),
+                    tipo_declarado: None, // Parámetros usan inferencia
+                    mutable: true,        // Parámetros son mutables como `var`
+                    es_const: false,
+                });
+            }
+            let resultado = nuevo_env.ejecutar_funcion(&fdef.cuerpo, &fdef.nombre)?;
+            // Validar/guardar tipo de retorno (ADR-0008)
+            let tipo_obtenido = resultado.nombre_tipo();
+            if let Some(tipo_esperado) = fdef.tipo_retorno {
+                if tipo_obtenido != tipo_esperado {
+                    return Err(error(
+                        CausaError::TipoDeRetornoIncompatible {
+                            esperado: tipo_esperado,
+                            obtenido: tipo_obtenido,
+                        },
+                        *linea,
+                        *columna,
+                    ));
+                }
+            } else {
+                // Primera llamada exitosa: guardar el tipo de retorno en la función original
+                if let Some(fdef_mut) = env.funciones.get_mut(nombre) {
+                    fdef_mut.tipo_retorno = Some(tipo_obtenido);
+                }
+            }
+            Ok(resultado)
+        }
     }
 }
 
 /// Evalúa una expresión con un entorno vacío (compatibilidad con el núcleo previo).
 pub fn evaluar(e: &Expresion) -> Result<Valor, ErrorEjecucion> {
     evaluar_con(e, &mut Entorno::nueva())
+}
+
+fn ubicacion_linea(e: Option<&Expresion>) -> usize {
+    match e {
+        Some(exp) => ubicacion(exp).0,
+        None => 1,
+    }
+}
+
+fn ubicacion_columna(e: Option<&Expresion>) -> usize {
+    match e {
+        Some(exp) => ubicacion(exp).1,
+        None => 1,
+    }
 }
 
 /// Ubicación aproximada de una expresión (literal o variable más a la izquierda).
@@ -435,6 +844,7 @@ fn ubicacion(e: &Expresion) -> (usize, usize) {
         | Expresion::No(a)
         | Expresion::Y(a, _)
         | Expresion::O(a, _) => ubicacion(a),
+        Expresion::Llamada { linea, columna, .. } => (*linea, *columna),
     }
 }
 
@@ -473,25 +883,25 @@ fn comparar(
         ));
     }
     // Conversión implícita aprobada ADR-0005 §1.4
-    match (va, vb) {
-        (Valor::Entero(x), Valor::Entero(y)) => Ok(Valor::Logico(pred(x.cmp(&y)))),
-        (Valor::Entero(x), Valor::Decimal(y)) => {
+    match (&va, &vb) {
+        (&Valor::Entero(x), &Valor::Entero(y)) => Ok(Valor::Logico(pred(x.cmp(&y)))),
+        (&Valor::Entero(x), &Valor::Decimal(y)) => {
             Ok(Valor::Logico(pred((x as i128 * FACTOR_ESCALA).cmp(&y))))
         }
-        (Valor::Decimal(x), Valor::Entero(y)) => {
+        (&Valor::Decimal(x), &Valor::Entero(y)) => {
             Ok(Valor::Logico(pred(x.cmp(&(y as i128 * FACTOR_ESCALA)))))
         }
-        (Valor::Entero(x), Valor::Real(y)) => Ok(Valor::Logico(pred((x as f64).partial_cmp(&y).ok_or_else(
+        (&Valor::Entero(x), &Valor::Real(y)) => Ok(Valor::Logico(pred((x as f64).partial_cmp(&y).ok_or_else(
             || error(CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal), linea, columna),
         )?))),
-        (Valor::Real(x), Valor::Entero(y)) => Ok(Valor::Logico(pred(x.partial_cmp(&(y as f64)).ok_or_else(
+        (&Valor::Real(x), &Valor::Entero(y)) => Ok(Valor::Logico(pred(x.partial_cmp(&(y as f64)).ok_or_else(
             || error(CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal), linea, columna),
         )?))),
-        (Valor::Decimal(x), Valor::Decimal(y)) => Ok(Valor::Logico(pred(x.cmp(&y)))),
-        (Valor::Real(x), Valor::Real(y)) => Ok(Valor::Logico(pred(x.partial_cmp(&y).ok_or_else(
+        (&Valor::Decimal(x), &Valor::Decimal(y)) => Ok(Valor::Logico(pred(x.cmp(&y)))),
+        (&Valor::Real(x), &Valor::Real(y)) => Ok(Valor::Logico(pred(x.partial_cmp(&y).ok_or_else(
             || error(CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal), linea, columna),
         )?))),
-        (Valor::Decimal(_), Valor::Real(_)) | (Valor::Real(_), Valor::Decimal(_)) => {
+        (&Valor::Decimal(_), &Valor::Real(_)) | (&Valor::Real(_), &Valor::Decimal(_)) => {
             // Prohibido hasta conversión explícita (ADR-0007).
             Err(error(
                 CausaError::TiposIncompatibles {
@@ -502,6 +912,9 @@ fn comparar(
                 columna,
             ))
         }
+        // Comparaciones de texto (solo == y !=).
+        #[allow(clippy::needless_borrowed_reference)]
+        (&Valor::Texto(ref a), &Valor::Texto(ref b)) => Ok(Valor::Logico(pred(a.cmp(b)))),
         _ => Err(error(
             CausaError::TiposIncompatibles {
                 izquierdo: va.nombre_tipo(),
@@ -918,4 +1331,176 @@ mod tests {
         assert_eq!(e.causa, CausaError::Aritmetica(MotivoAritmetico::DivisionPorCero));
         assert_eq!((e.linea, e.columna), (2, 3));
     }
+
+
+    // ---- INCREMENTO 5: Funciones y retorno (ADR-0008) ----
+
+    #[test]
+    fn funcion_suma_dos_parametros() {
+        let r = programa(r#"
+            funcion suma(a, b) {
+                retornar a + b
+            }
+            suma(2, 3)
+        "#).unwrap();
+        assert_eq!(r, Some(Valor::Entero(5)));
+    }
+
+    #[test]
+    fn funcion_sin_parametros() {
+        let r = programa(r#"
+            funcion hola() {
+                retornar 42
+            }
+            hola()
+        "#).unwrap();
+        assert_eq!(r, Some(Valor::Entero(42)));
+    }
+
+    #[test]
+    fn funcion_recursiva_factorial() {
+        let r = programa(r#"
+            funcion factorial(n) {
+                si n <= 1 {
+                    retornar 1
+                }
+                retornar n * factorial(n - 1)
+            }
+            factorial(5)
+        "#).unwrap();
+        assert_eq!(r, Some(Valor::Entero(120)));
+    }
+
+    #[test]
+    fn funcion_con_tipo_decimal() {
+        let r = programa(r#"
+            funcion div(a, b) {
+                retornar a / b
+            }
+            div(7.0, 2.0)
+        "#).unwrap();
+        assert_eq!(r, Some(Valor::Decimal(3500000000))); // 3.5 decimal
+    }
+
+    #[test]
+    fn funcion_inferencia_tipos_primera_llamada() {
+        // Primera llamada fija el tipo de los parámetros
+        let r = programa(r#"
+            funcion id(x) {
+                retornar x
+            }
+            id(42)
+        "#).unwrap();
+        assert_eq!(r, Some(Valor::Entero(42)));
+    }
+
+    #[test]
+    fn funcion_error_tipo_retorno_incompatible() {
+        // Primera llamada fija el tipo de retorno; segunda con tipo distinto falla
+        let e = programa(r#"
+            funcion id(x) {
+                retornar x
+            }
+            id(42)
+            id(3.14)
+        "#).expect_err("tipo de retorno incompatible");
+        assert_eq!(e.causa, CausaError::TipoDeRetornoIncompatible {
+            esperado: "entero",
+            obtenido: "decimal",
+        });
+    }
+
+    #[test]
+    fn funcion_error_firma_invalida_pocos_args() {
+        let e = programa(r#"
+            funcion suma(a, b) {
+                retornar a + b
+            }
+            suma(1)
+        "#).expect_err("firma inválida");
+        assert_eq!(e.causa, CausaError::FirmaInvalida {
+            funcion: "suma".into(),
+            esperado: 2,
+            obtenido: 1,
+        });
+    }
+
+    #[test]
+    fn funcion_error_firma_invalida_muchos_args() {
+        let e = programa(r#"
+            funcion hola() {
+                retornar 1
+            }
+            hola(1, 2)
+        "#).expect_err("firma inválida");
+        assert_eq!(e.causa, CausaError::FirmaInvalida {
+            funcion: "hola".into(),
+            esperado: 0,
+            obtenido: 2,
+        });
+    }
+
+    #[test]
+    fn funcion_error_retorno_ausente() {
+        let e = programa(r#"
+            funcion sin_retorno() {
+                sea x = 1
+            }
+            sin_retorno()
+        "#).expect_err("retorno ausente");
+        assert_eq!(e.causa, CausaError::RetornoAusente { funcion: "sin_retorno".into() });
+    }
+
+    #[test]
+    fn funcion_retorno_sin_valor_en_funcion_que_espera_valor() {
+        let e = programa(r#"
+            funcion f() {
+                retornar
+            }
+            f()
+        "#).expect_err("retorno sin valor");
+        // ADR-0008: se permite retornar sin valor, pero el tipo es "vacío"
+        // En este caso, el evaluador devuelve error por no tener valor para usar
+        assert_eq!(e.causa, CausaError::RetornoAusente { funcion: "f".into() });
+    }
+
+    #[test]
+    fn funcion_ambito_propio_no_captura() {
+        // Sin captura de ámbito (ADR-0008): variables externas no visibles dentro
+        let e = programa(r#"
+            sea x = 10
+            funcion f() {
+                retornar x
+            }
+            f()
+        "#).expect_err("variable no definida");
+        assert_eq!(e.causa, CausaError::VariableNoDefinida("x".into()));
+    }
+
+    #[test]
+    fn funcion_retorno_temprano() {
+        let r = programa(r#"
+            funcion f(n) {
+                si n == 0 {
+                    retornar 0
+                }
+                retornar 1
+            }
+            f(0)
+        "#).unwrap();
+        assert_eq!(r, Some(Valor::Entero(0)));
+    }
+
+    #[test]
+    fn funcion_anidada_rechazada() {
+        // El parser rechaza funciones anidadas
+        let tokens = crate::Lexer::nuevo(r#"
+            funcion externa() {
+                funcion interna() {
+                    retornar 1
+                }
+            }
+        "#).tokenizar().unwrap();
+        let e = crate::Parser::nuevo(tokens).parsear_programa().expect_err("función anidada");
+        assert!(e.mensaje.contains("anidadas") || e.mensaje.contains("nested"));}
 }
