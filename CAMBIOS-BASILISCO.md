@@ -1,7 +1,11 @@
 # Cambios de identidad y CLI — BASILISCO
 
 **Fecha:** 2026-10-22  
-**Estado:** aplicado en el árbol de trabajo; pendiente de commit, CI y publicación.
+**Estado:** aplicado, commiteado y publicado en `main`; CI en verde. Publicación/licencia pendiente.
+
+- Commit: `ec3b1f2e20657d9286a99491eda93ebb5db4d746`.
+- Push: `origin/main` (`a0c1a22..ec3b1f2`).
+- CI: run [39872722106](https://github.com/alexandevs2309/nexo/actions/runs/39872722106), conclusión `success`.
 
 ## Decisión
 
@@ -58,8 +62,8 @@ bsk run tests/fixtures/legado.nx   # error esperado, código 2
 
 ## Pendientes
 
-- Commit y CI; no se ha hecho push.
 - Licencia y metadatos de publicación.
+- Verificación macOS/Linux (el CI actual es Ubuntu).
 - Búsqueda formal de marca, dominios y registros.
 - Detección de conflicto de `bsk` con BrowserSkill en instalación.
 - Política de MIME/asociación para `.bsk` (Nero/Bryce).

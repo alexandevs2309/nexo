@@ -1,7 +1,7 @@
 # Verificación 2026-10-22 — identidad BASILISCO y CLI
 
-**Estado:** evidencia local; no es CI y no implica publicación.  
-**Base de código:** `main` `a0c1a22564983c4fd4346122f40977d5552ed8f5` (2026-10-22), más los cambios de identidad/CLI aplicados en el árbol de trabajo local.  
+**Estado:** evidencia local + CI en verde; no implica publicación.  
+**Base de código:** `main` `a0c1a22564983c4fd4346122f40977d5552ed8f5` (2026-10-22), más los cambios de identidad/CLI integrados en el commit `ec3b1f2e20657d9286a99491eda93ebb5db4d746`.  
 **Entorno:** Windows, `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-08-27)`.  
 **Repositorio de trabajo:** `C:\Users\Alexander\AppData\Local\Temp\opencode\nexo-repo-latest`.
 
@@ -89,9 +89,9 @@ También se verificaron rutas con espacios, archivo inexistente (código 1), ext
 
 ## 6. Limitaciones de esta evidencia
 
-- No se ejecutó CI (GitHub Actions); la API pública devolvió 404 en la consulta previa. El workflow local se actualizó para incluir formato, Clippy, build de binarios y tests, pero no se ejecutó en esta ronda.
-- No se hizo commit ni push; los cambios están en el árbol de trabajo del clon local.
-- Solo se verificó Windows; no hay evidencia de macOS ni Linux en esta ronda.
+- CI ejecutado en GitHub Actions: run [39872722106](https://github.com/alexandevs2309/nexo/actions/runs/39872722106), conclusión `success` (formato, Clippy, build y tests).
+- Commit `ec3b1f2` publicado en `origin/main`; no hay cambios pendientes en el clon.
+- La verificación local fue en Windows; CI se ejecutó en Ubuntu. No hay evidencia de macOS en esta ronda.
 - No hay prueba de instalación (`cargo install`), firma, publicación ni detección de conflicto de `bsk` con BrowserSkill.
 - `.nx` se rechaza por decisión; no hay archivos `.nx` en el repositorio.
 - La licencia y los metadatos de publicación siguen pendientes.
@@ -103,3 +103,10 @@ También se verificaron rutas con espacios, archivo inexistente (código 1), ext
 - Binarios verificados: `basilisco.exe` y `bsk.exe` en el target de pruebas.
 
 Estos artefactos no se versionan.
+
+## 8. CI
+
+- Run: [39872722106](https://github.com/alexandevs2309/nexo/actions/runs/39872722106).
+- Commit: `ec3b1f2e20657d9286a99491eda93ebb5db4d746`.
+- Resultado: `success`.
+- Pasos: checkout, Rust estable con rustfmt/clippy, formato, Clippy, `cargo build --bins` y `cargo test`.

@@ -42,4 +42,4 @@ Los identificadores `REQ-*` son estables. Cada requisito debe enlazarse a una re
 | ADR-0008 | Funciones/retorno | `prototipo/tests/conformidad_funciones.rs` (12), `conformidad_texto.rs` (13) | IMPLEMENTADO-REFERENCIA ✓ |
 | ADR-0009/0010 | Identidad y CLI (`.bsk`, `.nexo`, `.nx`) | `prototipo/tests/cli.rs` (12) | IMPLEMENTADO-REFERENCIA ✓ |
 
-**Verificación:** `cargo test` → **264 pruebas, 0 fallos** (252 de lenguaje + 12 de CLI) | `cargo clippy --all-targets` → **0 advertencias** | `cargo fmt --check` limpio. Evidencia: `10-especificacion/verificacion-2026-10-22/resumen.md`.
+**Verificación:** `cargo test` → **264 pruebas, 0 fallos** (252 de lenguaje + 12 de CLI) | `cargo clippy --all-targets` → **0 advertencias** | `cargo fmt --check` limpio. Evidencia: `10-especificacion/verificacion-2026-10-22/resumen.md`; CI en verde en el run 39872722106.
