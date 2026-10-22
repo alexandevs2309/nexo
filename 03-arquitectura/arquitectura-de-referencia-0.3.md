@@ -1,4 +1,4 @@
-# Arquitectura de referencia Nexo 0.3
+# Arquitectura de referencia BASILISCO 0.3 (histórico «Nexo»)
 
 ## Objetivo
 Definir límites de componentes sin comprometer prematuramente un backend definitivo. La arquitectura debe permitir evolucionar el prototipo sin confundir frontend, semántica, ejecución y herramientas.

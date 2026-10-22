@@ -1,5 +1,7 @@
 # Cambios de Base Ultra 0.3.1
 
+> **Documento histórico.** Describe la edición 0.3.1; para el estado actual de identidad y CLI, ver `CAMBIOS-BASILISCO.md`.
+
 - Auditoría cruzada realizada contra la rama `main` del repositorio `alexandevs2309/nexo`.
 - Corregida la gramática de referencia para reflejar la precedencia aprobada en ADR-0007.
 - Documentado que `funcion`, `retornar` y `mostrar` están reservados por el lexer, pero que ADR-0008 está propuesto y el parser/evaluador aún no implementan funciones.

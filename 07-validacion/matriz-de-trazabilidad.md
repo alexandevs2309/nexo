@@ -39,6 +39,7 @@ Los identificadores `REQ-*` son estables. Cada requisito debe enlazarse a una re
 | ADR-0005 | Números (entero/decimal/real), semántica D1-D6 | `prototipo/tests/conformidad.rs` (29) | IMPLEMENTADO-REFERENCIA ✓ |
 | ADR-0006 | `sea`, asignación, ámbitos, mutabilidad | `prototipo/tests/variables.rs` (14), `prototipo/src/evaluador.rs` | IMPLEMENTADO-REFERENCIA ✓ |
 | ADR-0007 | `si`/`sino`/`mientras`, bloques, lógicos, cortocircuito | `prototipo/tests/conformidad_control.rs` (39), `prototipo/tests/control_flujo.rs` (19) | IMPLEMENTADO-REFERENCIA ✓ |
-| ADR-0008 | Funciones/retorno | — | PROPUESTO (pendiente aprobación) |
+| ADR-0008 | Funciones/retorno | `prototipo/tests/conformidad_funciones.rs` (12), `conformidad_texto.rs` (13) | IMPLEMENTADO-REFERENCIA ✓ |
+| ADR-0009/0010 | Identidad y CLI (`.bsk`, `.nexo`, `.nx`) | `prototipo/tests/cli.rs` (12) | IMPLEMENTADO-REFERENCIA ✓ |
 
-**Verificación:** `cargo test` → **211 pruebas, 0 fallos** | `cargo clippy --all-targets` → **0 advertencias** (commit `bf2798f`).
+**Verificación:** `cargo test` → **264 pruebas, 0 fallos** (252 de lenguaje + 12 de CLI) | `cargo clippy --all-targets` → **0 advertencias** | `cargo fmt --check` limpio. Evidencia: `10-especificacion/verificacion-2026-10-22/resumen.md`.

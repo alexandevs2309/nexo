@@ -1,4 +1,4 @@
-# Hoja de ruta ejecutable de Nexo
+# Hoja de ruta ejecutable de BASILISCO
 
 La hoja de ruta está ordenada por dependencias, no por fechas prometidas. Cada fase debe cerrarse con evidencia.
 

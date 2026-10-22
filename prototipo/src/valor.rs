@@ -1,4 +1,4 @@
-//! Valores y tipos del núcleo de Nexo (ADR-0005 aprobado; tipo `lógico` ADR-0007 aprobado).
+//! Valores y tipos del núcleo de BASILISCO (ADR-0005 aprobado; tipo `lógico` ADR-0007 aprobado).
 //!
 //! Tres tipos numéricos: `entero` (i64), `decimal` (DECIMAL(28,9) escalonado i128) y
 //! `real` (f64). Semántica:
@@ -22,7 +22,7 @@ pub const FACTOR_ESCALA: i128 = 1_000_000_000;
 /// 10^19, para validación de rango del decimal.
 const DIEZ_POT_19: i128 = 10_000_000_000_000_000_000;
 
-/// Un valor de Nexo con su tipo (tres numéricos + `lógico` + `texto`).
+/// Un valor de BASILISCO con su tipo (tres numéricos + `lógico` + `texto`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Valor {
     Entero(i64),
@@ -158,17 +158,17 @@ fn redondear_half_even(x: i128, factor: i128) -> i128 {
     };
     let r = (cociente + ajuste) * f;
     let r = i128::try_from(r).unwrap_or(i128::MAX);
-    if negativo {
-        -r
-    } else {
-        r
-    }
+    if negativo { -r } else { r }
 }
 
 // ---------------------------------------------------------------- Operaciones
 
 /// Suma/resta de decimales: mismos operandos con escala 9, resultado escala 9 sin redondeo.
-fn combinar_decimales(a: i128, b: i128, op: fn(i128, i128) -> Option<i128>) -> Result<i128, MotivoAritmetico> {
+fn combinar_decimales(
+    a: i128,
+    b: i128,
+    op: fn(i128, i128) -> Option<i128>,
+) -> Result<i128, MotivoAritmetico> {
     let bruto = op(a, b).ok_or(MotivoAritmetico::ExcesoRangoDecimal)?;
     validar_rango_decimal(bruto)?;
     Ok(bruto)
@@ -213,7 +213,9 @@ fn division_decimal(a: i128, b: i128) -> Result<i128, MotivoAritmetico> {
         .ok_or(MotivoAritmetico::ExcesoRangoDecimal)?;
     // Redondeo half-even sobre el residuo para corregir el truncado de checked_div.
     // Criterio: comparar 2·|resto| con |b| (|resto| < |b| siempre).
-    let resto = numerador.checked_rem(b).ok_or(MotivoAritmetico::ExcesoRangoDecimal)?;
+    let resto = numerador
+        .checked_rem(b)
+        .ok_or(MotivoAritmetico::ExcesoRangoDecimal)?;
     let doble_resto = resto.unsigned_abs().checked_mul(2);
     let abs_b = b.unsigned_abs();
     let ajuste = match doble_resto {
@@ -241,23 +243,23 @@ impl Valor {
                 .ok_or(MotivoAritmetico::DesbordamientoEntero),
             (Valor::Entero(a), Valor::Decimal(b)) => {
                 let a = Valor::decimal_desde_entero(*a);
-                let Valor::Decimal(am) = a else { unreachable!() };
+                let Valor::Decimal(am) = a else {
+                    unreachable!()
+                };
                 combinar_decimales(am, *b, suma_dec).map(Valor::Decimal)
             }
             (Valor::Decimal(a), Valor::Entero(b)) => {
                 let b = Valor::decimal_desde_entero(*b);
-                let Valor::Decimal(bm) = b else { unreachable!() };
+                let Valor::Decimal(bm) = b else {
+                    unreachable!()
+                };
                 combinar_decimales(*a, bm, suma_dec).map(Valor::Decimal)
             }
             (Valor::Decimal(a), Valor::Decimal(b)) => {
                 combinar_decimales(*a, *b, suma_dec).map(Valor::Decimal)
             }
-            (Valor::Entero(a), Valor::Real(b)) => {
-                Ok(Valor::Real(*a as f64 + *b))
-            }
-            (Valor::Real(a), Valor::Entero(b)) => {
-                Ok(Valor::Real(*a + *b as f64))
-            }
+            (Valor::Entero(a), Valor::Real(b)) => Ok(Valor::Real(*a as f64 + *b)),
+            (Valor::Real(a), Valor::Entero(b)) => Ok(Valor::Real(*a + *b as f64)),
             (Valor::Real(a), Valor::Real(b)) => Ok(Valor::Real(a + b)),
             (Valor::Decimal(_), Valor::Real(_)) | (Valor::Real(_), Valor::Decimal(_)) => {
                 Err(MotivoAritmetico::ConversionIlegal)
@@ -276,11 +278,15 @@ impl Valor {
                 .map(Valor::Entero)
                 .ok_or(MotivoAritmetico::DesbordamientoEntero),
             (Valor::Entero(a), Valor::Decimal(b)) => {
-                let Valor::Decimal(am) = Valor::decimal_desde_entero(*a) else { unreachable!() };
+                let Valor::Decimal(am) = Valor::decimal_desde_entero(*a) else {
+                    unreachable!()
+                };
                 combinar_decimales(am, *b, resta_dec).map(Valor::Decimal)
             }
             (Valor::Decimal(a), Valor::Entero(b)) => {
-                let Valor::Decimal(bm) = Valor::decimal_desde_entero(*b) else { unreachable!() };
+                let Valor::Decimal(bm) = Valor::decimal_desde_entero(*b) else {
+                    unreachable!()
+                };
                 combinar_decimales(*a, bm, resta_dec).map(Valor::Decimal)
             }
             (Valor::Decimal(a), Valor::Decimal(b)) => {
@@ -304,7 +310,9 @@ impl Valor {
                 .map(Valor::Entero)
                 .ok_or(MotivoAritmetico::DesbordamientoEntero),
             (Valor::Entero(a), Valor::Decimal(b)) | (Valor::Decimal(b), Valor::Entero(a)) => {
-                let Valor::Decimal(am) = Valor::decimal_desde_entero(*a) else { unreachable!() };
+                let Valor::Decimal(am) = Valor::decimal_desde_entero(*a) else {
+                    unreachable!()
+                };
                 combinar_decimales(am, *b, mul_dec).map(Valor::Decimal)
             }
             (Valor::Decimal(a), Valor::Decimal(b)) => {
@@ -335,11 +343,15 @@ impl Valor {
                 Ok(Valor::Entero(a / b))
             }
             (Valor::Entero(a), Valor::Decimal(b)) => {
-                let Valor::Decimal(am) = Valor::decimal_desde_entero(*a) else { unreachable!() };
+                let Valor::Decimal(am) = Valor::decimal_desde_entero(*a) else {
+                    unreachable!()
+                };
                 division_decimal(am, *b).map(Valor::Decimal)
             }
             (Valor::Decimal(a), Valor::Entero(b)) => {
-                let Valor::Decimal(bm) = Valor::decimal_desde_entero(*b) else { unreachable!() };
+                let Valor::Decimal(bm) = Valor::decimal_desde_entero(*b) else {
+                    unreachable!()
+                };
                 division_decimal(*a, bm).map(Valor::Decimal)
             }
             (Valor::Decimal(a), Valor::Decimal(b)) => division_decimal(*a, *b).map(Valor::Decimal),
@@ -527,10 +539,22 @@ mod tests {
 
     #[test]
     fn modulo_signo_del_dividendo() {
-        assert_eq!(Valor::Entero(-7).modulo(&Valor::Entero(3)), Ok(Valor::Entero(-1)));
-        assert_eq!(Valor::Entero(7).modulo(&Valor::Entero(-3)), Ok(Valor::Entero(1)));
-        assert_eq!(Valor::Entero(-7).modulo(&Valor::Entero(-3)), Ok(Valor::Entero(-1)));
-        assert_eq!(Valor::Entero(6).modulo(&Valor::Entero(3)), Ok(Valor::Entero(0)));
+        assert_eq!(
+            Valor::Entero(-7).modulo(&Valor::Entero(3)),
+            Ok(Valor::Entero(-1))
+        );
+        assert_eq!(
+            Valor::Entero(7).modulo(&Valor::Entero(-3)),
+            Ok(Valor::Entero(1))
+        );
+        assert_eq!(
+            Valor::Entero(-7).modulo(&Valor::Entero(-3)),
+            Ok(Valor::Entero(-1))
+        );
+        assert_eq!(
+            Valor::Entero(6).modulo(&Valor::Entero(3)),
+            Ok(Valor::Entero(0))
+        );
     }
 
     #[test]

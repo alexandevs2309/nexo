@@ -1,5 +1,6 @@
 # EJEMPLO — control de flujo y operadores lógicos (ADR-0007)
-# Reproducir con:  cd prototipo && cargo run
+# Archivo de documentación; para ejecutarlo, copia el contenido a control-de-flujo.bsk y usa:
+#   basilisco run control-de-flujo.bsk
 
 # Condicional con rama alternativa
 sea edad = 20

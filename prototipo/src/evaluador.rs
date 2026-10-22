@@ -1,4 +1,4 @@
-//! Evaluador del prototipo de Nexo.
+//! Evaluador del prototipo de BASILISCO.
 //!
 //! Semántica numérica normativa (ADR-0005, aprobado):
 //! - Tres tipos: `entero` (i64), `decimal` (DECIMAL(28,9)), `real` (f64).
@@ -29,18 +29,31 @@ pub enum CausaError {
     /// Condición de `si`/`mientras` no es `lógico` (ADR-0007).
     CondicionNoLogica { obtenido: &'static str },
     /// Operando de `no`/`y`/`o` no es `lógico` (ADR-0007).
-    OperandoNoLogico { operador: &'static str, obtenido: &'static str },
+    OperandoNoLogico {
+        operador: &'static str,
+        obtenido: &'static str,
+    },
     /// Comparación con tipos incompatibles sin conversión implícita aprobada (ADR-0007).
-    TiposIncompatibles { izquierdo: &'static str, derecho: &'static str },
+    TiposIncompatibles {
+        izquierdo: &'static str,
+        derecho: &'static str,
+    },
     /// Se superó el límite de iteraciones de un `mientras` (protección frente a bucles
     /// infinitos; ADR-0007 §1.5).
     LimiteIteraciones { limite: usize },
     /// Número incorrecto de argumentos en una llamada (ADR-0008).
-    FirmaInvalida { funcion: String, esperado: usize, obtenido: usize },
+    FirmaInvalida {
+        funcion: String,
+        esperado: usize,
+        obtenido: usize,
+    },
     /// Se usa el resultado de una función que no ejecuta `retornar` (ADR-0008).
     RetornoAusente { funcion: String },
     /// Tipo de retorno incompatible con el fijado en la primera llamada (ADR-0008).
-    TipoDeRetornoIncompatible { esperado: &'static str, obtenido: &'static str },
+    TipoDeRetornoIncompatible {
+        esperado: &'static str,
+        obtenido: &'static str,
+    },
 }
 
 /// Límite de iteraciones por ciclo `mientras` (protección frente a bucles infinitos).
@@ -56,18 +69,16 @@ impl std::fmt::Display for CausaError {
                 f,
                 "asignación incompatible: se esperaba {esperado} y se obtuvo {obtenido}"
             ),
-            CausaError::CondicionNoLogica { obtenido } => write!(
-                f,
-                "la condición debe ser lógica, se obtuvo {obtenido}"
-            ),
+            CausaError::CondicionNoLogica { obtenido } => {
+                write!(f, "la condición debe ser lógica, se obtuvo {obtenido}")
+            }
             CausaError::OperandoNoLogico { operador, obtenido } => write!(
                 f,
                 "el operando de '{operador}' debe ser lógico, se obtuvo {obtenido}"
             ),
-            CausaError::TiposIncompatibles { izquierdo, derecho } => write!(
-                f,
-                "comparación incompatible entre {izquierdo} y {derecho}"
-            ),
+            CausaError::TiposIncompatibles { izquierdo, derecho } => {
+                write!(f, "comparación incompatible entre {izquierdo} y {derecho}")
+            }
             CausaError::LimiteIteraciones { limite } => write!(
                 f,
                 "se superó el límite de {limite} iteraciones: posible bucle infinito"
@@ -225,20 +236,40 @@ impl Entorno {
         r.map(|_| ())
     }
 
-    fn ejecutar_funcion(&mut self, sentencias: &[Sentencia], nombre_funcion: &str) -> Result<Valor, ErrorEjecucion> {
+    fn ejecutar_funcion(
+        &mut self,
+        sentencias: &[Sentencia],
+        nombre_funcion: &str,
+    ) -> Result<Valor, ErrorEjecucion> {
         self.ambitos.push(HashMap::new());
         let r = self.ejecutar_funcion_sentencias(sentencias, nombre_funcion);
         self.ambitos.pop();
         r
     }
 
-    fn ejecutar_funcion_sentencias(&mut self, sentencias: &[Sentencia], nombre_funcion: &str) -> Result<Valor, ErrorEjecucion> {
+    fn ejecutar_funcion_sentencias(
+        &mut self,
+        sentencias: &[Sentencia],
+        nombre_funcion: &str,
+    ) -> Result<Valor, ErrorEjecucion> {
         for s in sentencias {
             let s = s.clone();
             match s {
-                Sentencia::Declaracion { nombre, linea, columna, valor, ref tipo_anotacion, mutable, es_const } => {
+                Sentencia::Declaracion {
+                    nombre,
+                    linea,
+                    columna,
+                    valor,
+                    ref tipo_anotacion,
+                    mutable,
+                    es_const,
+                } => {
                     if self.existe_en_ambito_actual(&nombre) {
-                        return Err(error(CausaError::DeclaracionDuplicada(nombre.clone()), linea, columna));
+                        return Err(error(
+                            CausaError::DeclaracionDuplicada(nombre.clone()),
+                            linea,
+                            columna,
+                        ));
                     }
                     let v = evaluar_con(&valor, self)?;
                     // Validar tipo anotado si existe
@@ -256,14 +287,22 @@ impl Entorno {
                             ));
                         }
                     }
-                    self.insertar_variable(nombre.clone(), VariableInfo {
-                        valor: v,
-                        tipo_declarado: tipo_anotacion.clone(),
-                        mutable,
-                        es_const,
-                    });
+                    self.insertar_variable(
+                        nombre.clone(),
+                        VariableInfo {
+                            valor: v,
+                            tipo_declarado: tipo_anotacion.clone(),
+                            mutable,
+                            es_const,
+                        },
+                    );
                 }
-                Sentencia::Asignacion { nombre, linea, columna, valor } => {
+                Sentencia::Asignacion {
+                    nombre,
+                    linea,
+                    columna,
+                    valor,
+                } => {
                     let nuevo = evaluar_con(&valor, self)?;
                     let nuevo_tipo = nuevo.nombre_tipo();
                     // Buscar la variable y verificar mutabilidad
@@ -298,13 +337,24 @@ impl Entorno {
                     };
                     self.ambitos[idx].get_mut(&nombre).unwrap().valor = ajustado;
                 }
-                Sentencia::Si { condicion, rama_si, rama_sino, .. } => {
+                Sentencia::Si {
+                    condicion,
+                    rama_si,
+                    rama_sino,
+                    ..
+                } => {
                     let c = evaluar_con(&condicion, self)?;
                     let es_verdadero = match c {
                         Valor::Logico(b) => b,
                         _ => {
                             let (linea, columna) = ubicacion(&condicion);
-                            return Err(error(CausaError::CondicionNoLogica { obtenido: c.nombre_tipo() }, linea, columna));
+                            return Err(error(
+                                CausaError::CondicionNoLogica {
+                                    obtenido: c.nombre_tipo(),
+                                },
+                                linea,
+                                columna,
+                            ));
                         }
                     };
                     if es_verdadero {
@@ -328,7 +378,9 @@ impl Entorno {
                         }
                     }
                 }
-                Sentencia::Mientras { condicion, cuerpo, .. } => {
+                Sentencia::Mientras {
+                    condicion, cuerpo, ..
+                } => {
                     let mut iteraciones = 0usize;
                     loop {
                         let c = evaluar_con(&condicion, self)?;
@@ -336,14 +388,28 @@ impl Entorno {
                             Valor::Logico(b) => b,
                             _ => {
                                 let (linea, columna) = ubicacion(&condicion);
-                                return Err(error(CausaError::CondicionNoLogica { obtenido: c.nombre_tipo() }, linea, columna));
+                                return Err(error(
+                                    CausaError::CondicionNoLogica {
+                                        obtenido: c.nombre_tipo(),
+                                    },
+                                    linea,
+                                    columna,
+                                ));
                             }
                         };
-                        if !es_verdadero { break; }
+                        if !es_verdadero {
+                            break;
+                        }
                         iteraciones += 1;
                         if iteraciones > LIMITE_ITERACIONES {
                             let (linea, columna) = ubicacion(&condicion);
-                            return Err(error(CausaError::LimiteIteraciones { limite: LIMITE_ITERACIONES }, linea, columna));
+                            return Err(error(
+                                CausaError::LimiteIteraciones {
+                                    limite: LIMITE_ITERACIONES,
+                                },
+                                linea,
+                                columna,
+                            ));
                         }
                         match self.ejecutar_bloque_funcion(&cuerpo, nombre_funcion) {
                             Ok(v) => return Ok(v),
@@ -372,10 +438,16 @@ impl Entorno {
                     println!("{v}");
                 }
                 Sentencia::Retorno { valor, .. } => {
-                if let Some(v) = valor {
-                    return evaluar_con(&v, self)
-                } else {
-                        return Err(error(CausaError::RetornoAusente { funcion: nombre_funcion.into() }, 1, 1));
+                    if let Some(v) = valor {
+                        return evaluar_con(&v, self);
+                    } else {
+                        return Err(error(
+                            CausaError::RetornoAusente {
+                                funcion: nombre_funcion.into(),
+                            },
+                            1,
+                            1,
+                        ));
                     }
                 }
                 Sentencia::Expresion(e) => {
@@ -383,10 +455,20 @@ impl Entorno {
                 }
             }
         }
-        Err(error(CausaError::RetornoAusente { funcion: nombre_funcion.into() }, 1, 1))
+        Err(error(
+            CausaError::RetornoAusente {
+                funcion: nombre_funcion.into(),
+            },
+            1,
+            1,
+        ))
     }
 
-    fn ejecutar_bloque_funcion(&mut self, sentencias: &[Sentencia], nombre_funcion: &str) -> Result<Valor, ErrorEjecucion> {
+    fn ejecutar_bloque_funcion(
+        &mut self,
+        sentencias: &[Sentencia],
+        nombre_funcion: &str,
+    ) -> Result<Valor, ErrorEjecucion> {
         self.ambitos.push(HashMap::new());
         let r = self.ejecutar_funcion_sentencias(sentencias, nombre_funcion);
         self.ambitos.pop();
@@ -401,7 +483,15 @@ impl Entorno {
         for s in sentencias {
             let s = s.clone();
             match s {
-                Sentencia::Declaracion { nombre, linea, columna, valor, ref tipo_anotacion, mutable, es_const } => {
+                Sentencia::Declaracion {
+                    nombre,
+                    linea,
+                    columna,
+                    valor,
+                    ref tipo_anotacion,
+                    mutable,
+                    es_const,
+                } => {
                     if self.existe_en_ambito_actual(&nombre) {
                         return Err(error(
                             CausaError::DeclaracionDuplicada(nombre.clone()),
@@ -425,12 +515,15 @@ impl Entorno {
                             ));
                         }
                     }
-                    self.insertar_variable(nombre.clone(), VariableInfo {
-                        valor: v,
-                        tipo_declarado: tipo_anotacion.clone(),
-                        mutable,
-                        es_const,
-                    });
+                    self.insertar_variable(
+                        nombre.clone(),
+                        VariableInfo {
+                            valor: v,
+                            tipo_declarado: tipo_anotacion.clone(),
+                            mutable,
+                            es_const,
+                        },
+                    );
                 }
                 Sentencia::Asignacion {
                     nombre,
@@ -533,9 +626,7 @@ impl Entorno {
                     }
                 }
                 Sentencia::Mientras {
-                    condicion,
-                    cuerpo,
-                    ..
+                    condicion, cuerpo, ..
                 } => {
                     let mut iteraciones = 0usize;
                     loop {
@@ -645,9 +736,13 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             nombre,
             linea,
             columna,
-        } => env
-            .buscar(nombre)
-            .ok_or_else(|| error(CausaError::VariableNoDefinida(nombre.clone()), *linea, *columna)),
+        } => env.buscar(nombre).ok_or_else(|| {
+            error(
+                CausaError::VariableNoDefinida(nombre.clone()),
+                *linea,
+                *columna,
+            )
+        }),
         Expresion::Suma(a, b) => binaria(a, b, env, |x, y| x.suma(y)),
         Expresion::Resta(a, b) => binaria(a, b, env, |x, y| x.resta(y)),
         Expresion::Multiplicacion(a, b) => binaria(a, b, env, |x, y| x.multiplicacion(y)),
@@ -656,7 +751,9 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
         Expresion::IgualIgual(a, b) => comparar(a, b, env, |ord| ord == std::cmp::Ordering::Equal),
         Expresion::Distinto(a, b) => comparar(a, b, env, |ord| ord != std::cmp::Ordering::Equal),
         Expresion::Menor(a, b) => comparar(a, b, env, |ord| ord == std::cmp::Ordering::Less),
-        Expresion::MenorIgual(a, b) => comparar(a, b, env, |ord| ord != std::cmp::Ordering::Greater),
+        Expresion::MenorIgual(a, b) => {
+            comparar(a, b, env, |ord| ord != std::cmp::Ordering::Greater)
+        }
         Expresion::Mayor(a, b) => comparar(a, b, env, |ord| ord == std::cmp::Ordering::Greater),
         Expresion::MayorIgual(a, b) => comparar(a, b, env, |ord| ord != std::cmp::Ordering::Less),
         Expresion::No(a) => {
@@ -746,12 +843,19 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                 }
             }
         }
-        Expresion::Llamada { nombre, argumentos, linea, columna } => {
-            let fdef = env
-                .funciones
-                .get(nombre)
-                .cloned()
-                .ok_or_else(|| error(CausaError::VariableNoDefinida(nombre.clone()), *linea, *columna))?;
+        Expresion::Llamada {
+            nombre,
+            argumentos,
+            linea,
+            columna,
+        } => {
+            let fdef = env.funciones.get(nombre).cloned().ok_or_else(|| {
+                error(
+                    CausaError::VariableNoDefinida(nombre.clone()),
+                    *linea,
+                    *columna,
+                )
+            })?;
             if argumentos.len() != fdef.parametros.len() {
                 return Err(error(
                     CausaError::FirmaInvalida {
@@ -772,12 +876,15 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                 funciones: env.funciones.clone(),
             };
             for (p, v) in fdef.parametros.iter().zip(vals.iter()) {
-                nuevo_env.insertar_variable(p.clone(), VariableInfo {
-                    valor: v.clone(),
-                    tipo_declarado: None, // Parámetros usan inferencia
-                    mutable: true,        // Parámetros son mutables como `var`
-                    es_const: false,
-                });
+                nuevo_env.insertar_variable(
+                    p.clone(),
+                    VariableInfo {
+                        valor: v.clone(),
+                        tipo_declarado: None, // Parámetros usan inferencia
+                        mutable: true,        // Parámetros son mutables como `var`
+                        es_const: false,
+                    },
+                );
             }
             let resultado = nuevo_env.ejecutar_funcion(&fdef.cuerpo, &fdef.nombre)?;
             // Validar/guardar tipo de retorno (ADR-0008)
@@ -826,10 +933,9 @@ fn ubicacion_columna(e: Option<&Expresion>) -> usize {
 /// Ubicación aproximada de una expresión (literal o variable más a la izquierda).
 fn ubicacion(e: &Expresion) -> (usize, usize) {
     match e {
-        Expresion::Literal { linea, columna, .. }
-        | Expresion::Variable {
-            linea, columna, ..
-        } => (*linea, *columna),
+        Expresion::Literal { linea, columna, .. } | Expresion::Variable { linea, columna, .. } => {
+            (*linea, *columna)
+        }
         Expresion::Suma(a, _)
         | Expresion::Resta(a, _)
         | Expresion::Multiplicacion(a, _)
@@ -891,16 +997,34 @@ fn comparar(
         (&Valor::Decimal(x), &Valor::Entero(y)) => {
             Ok(Valor::Logico(pred(x.cmp(&(y as i128 * FACTOR_ESCALA)))))
         }
-        (&Valor::Entero(x), &Valor::Real(y)) => Ok(Valor::Logico(pred((x as f64).partial_cmp(&y).ok_or_else(
-            || error(CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal), linea, columna),
-        )?))),
-        (&Valor::Real(x), &Valor::Entero(y)) => Ok(Valor::Logico(pred(x.partial_cmp(&(y as f64)).ok_or_else(
-            || error(CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal), linea, columna),
-        )?))),
+        (&Valor::Entero(x), &Valor::Real(y)) => Ok(Valor::Logico(pred(
+            (x as f64).partial_cmp(&y).ok_or_else(|| {
+                error(
+                    CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal),
+                    linea,
+                    columna,
+                )
+            })?,
+        ))),
+        (&Valor::Real(x), &Valor::Entero(y)) => Ok(Valor::Logico(pred(
+            x.partial_cmp(&(y as f64)).ok_or_else(|| {
+                error(
+                    CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal),
+                    linea,
+                    columna,
+                )
+            })?,
+        ))),
         (&Valor::Decimal(x), &Valor::Decimal(y)) => Ok(Valor::Logico(pred(x.cmp(&y)))),
-        (&Valor::Real(x), &Valor::Real(y)) => Ok(Valor::Logico(pred(x.partial_cmp(&y).ok_or_else(
-            || error(CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal), linea, columna),
-        )?))),
+        (&Valor::Real(x), &Valor::Real(y)) => {
+            Ok(Valor::Logico(pred(x.partial_cmp(&y).ok_or_else(|| {
+                error(
+                    CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal),
+                    linea,
+                    columna,
+                )
+            })?)))
+        }
         (&Valor::Decimal(_), &Valor::Real(_)) | (&Valor::Real(_), &Valor::Decimal(_)) => {
             // Prohibido hasta conversión explícita (ADR-0007).
             Err(error(
@@ -1098,7 +1222,9 @@ mod tests {
     }
 
     fn causa_programa(fuente: &str) -> CausaError {
-        programa(fuente).expect_err("se esperaba error de ejecución").causa
+        programa(fuente)
+            .expect_err("se esperaba error de ejecución")
+            .causa
     }
 
     #[test]
@@ -1220,7 +1346,10 @@ mod tests {
             }
         );
         // Pero la referencia devuelve el valor con su tipo original.
-        assert_eq!(programa("sea x = 7.5\nx").unwrap(), Some(Valor::Decimal(7_500_000_000)));
+        assert_eq!(
+            programa("sea x = 7.5\nx").unwrap(),
+            Some(Valor::Decimal(7_500_000_000))
+        );
     }
 
     // ---- control de flujo y lógicos (ADR-0007) ----
@@ -1285,7 +1414,10 @@ mod tests {
     #[test]
     fn el_bloque_no_produce_valor_hacia_fuera() {
         // El valor del programa es el de la última expresión de nivel superior.
-        assert_eq!(programa("1 + 1\n{\n  5\n}").unwrap(), Some(Valor::Entero(2)));
+        assert_eq!(
+            programa("1 + 1\n{\n  5\n}").unwrap(),
+            Some(Valor::Entero(2))
+        );
     }
 
     #[test]
@@ -1304,7 +1436,8 @@ mod tests {
 
     #[test]
     fn el_ciclo_se_reevalua_por_iteracion() {
-        let r = programa("sea i = 0\nsea n = 0\nmientras i < 4 {\n  i = i + 1\n  n = n + 1\n}\nn").unwrap();
+        let r = programa("sea i = 0\nsea n = 0\nmientras i < 4 {\n  i = i + 1\n  n = n + 1\n}\nn")
+            .unwrap();
         assert_eq!(r, Some(Valor::Entero(4)));
     }
 
@@ -1328,38 +1461,47 @@ mod tests {
     #[test]
     fn los_errores_dentro_de_un_bloque_conservan_ubicacion() {
         let e = programa("si verdadero {\n  10 / 0\n}").expect_err("división por cero");
-        assert_eq!(e.causa, CausaError::Aritmetica(MotivoAritmetico::DivisionPorCero));
+        assert_eq!(
+            e.causa,
+            CausaError::Aritmetica(MotivoAritmetico::DivisionPorCero)
+        );
         assert_eq!((e.linea, e.columna), (2, 3));
     }
-
 
     // ---- INCREMENTO 5: Funciones y retorno (ADR-0008) ----
 
     #[test]
     fn funcion_suma_dos_parametros() {
-        let r = programa(r#"
+        let r = programa(
+            r#"
             funcion suma(a, b) {
                 retornar a + b
             }
             suma(2, 3)
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(r, Some(Valor::Entero(5)));
     }
 
     #[test]
     fn funcion_sin_parametros() {
-        let r = programa(r#"
+        let r = programa(
+            r#"
             funcion hola() {
                 retornar 42
             }
             hola()
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(r, Some(Valor::Entero(42)));
     }
 
     #[test]
     fn funcion_recursiva_factorial() {
-        let r = programa(r#"
+        let r = programa(
+            r#"
             funcion factorial(n) {
                 si n <= 1 {
                     retornar 1
@@ -1367,119 +1509,165 @@ mod tests {
                 retornar n * factorial(n - 1)
             }
             factorial(5)
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(r, Some(Valor::Entero(120)));
     }
 
     #[test]
     fn funcion_con_tipo_decimal() {
-        let r = programa(r#"
+        let r = programa(
+            r#"
             funcion div(a, b) {
                 retornar a / b
             }
             div(7.0, 2.0)
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(r, Some(Valor::Decimal(3500000000))); // 3.5 decimal
     }
 
     #[test]
     fn funcion_inferencia_tipos_primera_llamada() {
         // Primera llamada fija el tipo de los parámetros
-        let r = programa(r#"
+        let r = programa(
+            r#"
             funcion id(x) {
                 retornar x
             }
             id(42)
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(r, Some(Valor::Entero(42)));
     }
 
     #[test]
     fn funcion_error_tipo_retorno_incompatible() {
         // Primera llamada fija el tipo de retorno; segunda con tipo distinto falla
-        let e = programa(r#"
+        let e = programa(
+            r#"
             funcion id(x) {
                 retornar x
             }
             id(42)
             id(3.14)
-        "#).expect_err("tipo de retorno incompatible");
-        assert_eq!(e.causa, CausaError::TipoDeRetornoIncompatible {
-            esperado: "entero",
-            obtenido: "decimal",
-        });
+        "#,
+        )
+        .expect_err("tipo de retorno incompatible");
+        assert_eq!(
+            e.causa,
+            CausaError::TipoDeRetornoIncompatible {
+                esperado: "entero",
+                obtenido: "decimal",
+            }
+        );
     }
 
     #[test]
     fn funcion_error_firma_invalida_pocos_args() {
-        let e = programa(r#"
+        let e = programa(
+            r#"
             funcion suma(a, b) {
                 retornar a + b
             }
             suma(1)
-        "#).expect_err("firma inválida");
-        assert_eq!(e.causa, CausaError::FirmaInvalida {
-            funcion: "suma".into(),
-            esperado: 2,
-            obtenido: 1,
-        });
+        "#,
+        )
+        .expect_err("firma inválida");
+        assert_eq!(
+            e.causa,
+            CausaError::FirmaInvalida {
+                funcion: "suma".into(),
+                esperado: 2,
+                obtenido: 1,
+            }
+        );
     }
 
     #[test]
     fn funcion_error_firma_invalida_muchos_args() {
-        let e = programa(r#"
+        let e = programa(
+            r#"
             funcion hola() {
                 retornar 1
             }
             hola(1, 2)
-        "#).expect_err("firma inválida");
-        assert_eq!(e.causa, CausaError::FirmaInvalida {
-            funcion: "hola".into(),
-            esperado: 0,
-            obtenido: 2,
-        });
+        "#,
+        )
+        .expect_err("firma inválida");
+        assert_eq!(
+            e.causa,
+            CausaError::FirmaInvalida {
+                funcion: "hola".into(),
+                esperado: 0,
+                obtenido: 2,
+            }
+        );
     }
 
     #[test]
     fn funcion_error_retorno_ausente() {
-        let e = programa(r#"
+        let e = programa(
+            r#"
             funcion sin_retorno() {
                 sea x = 1
             }
             sin_retorno()
-        "#).expect_err("retorno ausente");
-        assert_eq!(e.causa, CausaError::RetornoAusente { funcion: "sin_retorno".into() });
+        "#,
+        )
+        .expect_err("retorno ausente");
+        assert_eq!(
+            e.causa,
+            CausaError::RetornoAusente {
+                funcion: "sin_retorno".into()
+            }
+        );
     }
 
     #[test]
     fn funcion_retorno_sin_valor_en_funcion_que_espera_valor() {
-        let e = programa(r#"
+        let e = programa(
+            r#"
             funcion f() {
                 retornar
             }
             f()
-        "#).expect_err("retorno sin valor");
+        "#,
+        )
+        .expect_err("retorno sin valor");
         // ADR-0008: se permite retornar sin valor, pero el tipo es "vacío"
         // En este caso, el evaluador devuelve error por no tener valor para usar
-        assert_eq!(e.causa, CausaError::RetornoAusente { funcion: "f".into() });
+        assert_eq!(
+            e.causa,
+            CausaError::RetornoAusente {
+                funcion: "f".into()
+            }
+        );
     }
 
     #[test]
     fn funcion_ambito_propio_no_captura() {
         // Sin captura de ámbito (ADR-0008): variables externas no visibles dentro
-        let e = programa(r#"
+        let e = programa(
+            r#"
             sea x = 10
             funcion f() {
                 retornar x
             }
             f()
-        "#).expect_err("variable no definida");
+        "#,
+        )
+        .expect_err("variable no definida");
         assert_eq!(e.causa, CausaError::VariableNoDefinida("x".into()));
     }
 
     #[test]
     fn funcion_retorno_temprano() {
-        let r = programa(r#"
+        let r = programa(
+            r#"
             funcion f(n) {
                 si n == 0 {
                     retornar 0
@@ -1487,20 +1675,29 @@ mod tests {
                 retornar 1
             }
             f(0)
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(r, Some(Valor::Entero(0)));
     }
 
     #[test]
     fn funcion_anidada_rechazada() {
         // El parser rechaza funciones anidadas
-        let tokens = crate::Lexer::nuevo(r#"
+        let tokens = crate::Lexer::nuevo(
+            r#"
             funcion externa() {
                 funcion interna() {
                     retornar 1
                 }
             }
-        "#).tokenizar().unwrap();
-        let e = crate::Parser::nuevo(tokens).parsear_programa().expect_err("función anidada");
-        assert!(e.mensaje.contains("anidadas") || e.mensaje.contains("nested"));}
+        "#,
+        )
+        .tokenizar()
+        .unwrap();
+        let e = crate::Parser::nuevo(tokens)
+            .parsear_programa()
+            .expect_err("función anidada");
+        assert!(e.mensaje.contains("anidadas") || e.mensaje.contains("nested"));
+    }
 }

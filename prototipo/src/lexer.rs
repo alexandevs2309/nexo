@@ -1,4 +1,4 @@
-//! Analizador léxico de Nexo.
+//! Analizador léxico de BASILISCO.
 //!
 //! Implementa el borrador aprobado en `02-lenguaje/especificacion-lexica-minima.md`
 //! (decisiones del ADR-0003). Contratos:
@@ -6,7 +6,7 @@
 //! - Nada se descarta en silencio: carácter inválido = error con ubicación.
 //! - Identificadores ASCII provisional; cadenas admiten Unicode.
 
-use crate::token::{ErrorLexico, Token, TipoToken};
+use crate::token::{ErrorLexico, TipoToken, Token};
 
 pub struct Lexer {
     entrada: Vec<char>,
@@ -292,9 +292,7 @@ impl Lexer {
                     return Ok(TipoToken::Cadena(contenido));
                 }
                 '\n' | '\r' => {
-                    return Err(self.error(
-                        "cadena sin cerrar: salto de línea dentro de la cadena",
-                    ));
+                    return Err(self.error("cadena sin cerrar: salto de línea dentro de la cadena"));
                 }
                 '\\' => {
                     self.avanzar(); // barra

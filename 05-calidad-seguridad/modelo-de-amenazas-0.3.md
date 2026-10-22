@@ -1,4 +1,4 @@
-# Modelo de amenazas de Nexo 0.3
+# Modelo de amenazas de BASILISCO 0.3 (histórico «Nexo»)
 
 ## Activos
 - archivos del usuario y credenciales accesibles desde programas;

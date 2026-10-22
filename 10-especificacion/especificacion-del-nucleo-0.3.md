@@ -1,4 +1,6 @@
-# Nexo Core 0.3 — Especificación inicial del núcleo
+# BASILISCO Core 0.3 — Especificación inicial del núcleo
+
+> **Nota de identidad:** el nombre histórico de esta edición es «Nexo Core 0.3». La identidad objetivo es **BASILISCO** (ADR-0009); se conserva el nombre histórico en referencias y archivos para no romper enlaces.
 
 **Estado:** propuesta normativa para revisión; no declarar aprobada sin ADR/revisión formal.  
 **Ámbito:** expresiones, valores básicos, variables, bloques y control de flujo descritos por el prototipo de referencia.
@@ -71,7 +73,7 @@ Los identificadores internos de error deben ser estables aunque cambie el texto 
 El orden de evaluación es parte de la semántica observable. Para los operadores lógicos, el cortocircuito es obligatorio. Para llamadas, asignaciones, operadores con efectos y acceso a colecciones, el orden debe fijarse antes de incorporarlos al núcleo.
 
 ## 10. Límites explícitos
-El estado del repositorio consultado (rama `main`) es el siguiente: `funcion`, `retornar`, `mostrar` y `Cadena` existen como tokens léxicos reservados, pero no forman parte del AST/gramática ejecutable actual; el ADR-0008 sobre funciones y retorno está en estado **Propuesto**, no aprobado ni implementado. Esta versión no define aún de forma exhaustiva:
+El estado actual del prototipo (base `main` `a0c1a22` más cambios locales del 2026-10-22) es: `funcion`, `retornar`, `mostrar` y los valores de texto están implementados en parser/evaluador; ADR-0008 está **aprobado e implementado**. La gramática normativa de esta edición todavía no se actualizó de forma exhaustiva para esas construcciones. Esta versión no define aún de forma exhaustiva:
 - funciones, recursión, retorno y cierres;
 - colecciones y mutabilidad de sus elementos;
 - cadenas como tipo normativo;

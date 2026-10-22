@@ -97,3 +97,13 @@ Las huellas SHA consultadas en `main` incluyen:
 - [x] `gramática-de-referencia` sincronizada con `parser.rs`.
 - [x] `matriz-de-trazabilidad` con evidencia real de tests.
 - [x] Documentación fusionada 0.3.1 integrada en el árbol.
+- [x] Identidad BASILISCO y CLI mínima aplicadas en el árbol de trabajo local (ADR-0009, ADR-0010).
+
+## 9. Actualización 2026-10-22 — identidad BASILISCO y CLI
+
+- Baseline actualizado a `main` `a0c1a22564983c4fd4346122f40977d5552ed8f5`.
+- El baseline implementa funciones/retorno y texto/`mostrar`; la suite de lenguaje queda en **252/252**.
+- Se aplicó la identidad BASILISCO (ADR-0009) y la CLI mínima (ADR-0010): paquete `basilisco`, binarios `basilisco` y `bsk`, `.bsk` canónica, `.nexo` legada, `.nx` rechazada.
+- Resultado local: **264/264** (252 de lenguaje + 12 de CLI), `cargo fmt --check` en verde y Clippy sin avisos.
+- No se ejecutó CI ni se hizo commit/push; los cambios están en el árbol de trabajo local.
+- Evidencia: `verificacion-2026-10-22/resumen.md`.

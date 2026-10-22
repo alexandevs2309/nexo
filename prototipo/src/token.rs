@@ -1,4 +1,4 @@
-/// Tipos de token del lexer de Nexo.
+/// Tipos de token del lexer de BASILISCO.
 ///
 /// Contrato: `02-lenguaje/especificacion-lexica-minima.md` (aprobado junto con ADR-0003).
 /// El lexer solo tokeniza; el rango numérico y la validez gramatical se resuelven más adelante.

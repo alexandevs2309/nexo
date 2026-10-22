@@ -1,0 +1,17 @@
+funcion suma(a, b) {
+  retornar a + b
+}
+mostrar suma(2, 3)
+
+funcion factorial(n) {
+  si n <= 1 {
+    retornar 1
+  }
+  retornar n * factorial(n - 1)
+}
+mostrar factorial(5)
+
+funcion hola() {
+  retornar 42
+}
+mostrar hola()

@@ -1,4 +1,4 @@
-# EJEMPLO CONCEPTUAL — no ejecutable todavía
+# EJEMPLO CONCEPTUAL — nota, no archivo ejecutable (usa un .bsk para ejecutar)
 10 + 5
 
 Preguntas por resolver: tipo del resultado, conversión entre tipos, rango numérico y error ante literal inválido.

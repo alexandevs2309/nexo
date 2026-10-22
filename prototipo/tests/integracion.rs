@@ -3,11 +3,13 @@
 //!
 //! Semántica normativa: ADR-0005 (aprobado).
 
-use nexo::{evaluar, ErrorEjecucion, ErrorSintactico, Lexer, Parser, Valor};
+use basilisco::{ErrorEjecucion, ErrorSintactico, Lexer, Parser, Valor, evaluar};
 
 /// Ejecuta el flujo completo y devuelve el valor o el error de ejecución.
 fn ejecutar(fuente: &str) -> Result<Valor, ErrorEjecucion> {
-    let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido en test");
+    let tokens = Lexer::nuevo(fuente)
+        .tokenizar()
+        .expect("léxico válido en test");
     let expr = Parser::nuevo(tokens)
         .parsear_expresion()
         .expect("sintaxis válida en test");
@@ -19,7 +21,9 @@ fn error_ejecucion(fuente: &str) -> ErrorEjecucion {
 }
 
 fn error_sintactico(fuente: &str) -> ErrorSintactico {
-    let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido en test");
+    let tokens = Lexer::nuevo(fuente)
+        .tokenizar()
+        .expect("léxico válido en test");
     Parser::nuevo(tokens)
         .parsear_expresion()
         .expect_err("se esperaba error sintáctico")
@@ -118,7 +122,10 @@ fn error_literal_entero_fuera_de_rango_es_sintactico() {
 #[test]
 fn display_del_error_incluye_ubicacion_y_motivo() {
     let e = error_ejecucion("5 + 10 / 0");
-    assert_eq!(e.to_string(), "error de ejecución [1:5]: división entre cero");
+    assert_eq!(
+        e.to_string(),
+        "error de ejecución [1:5]: división entre cero"
+    );
 }
 
 // ---------------------------------------------------------------- Contrato "sin valor por defecto"
@@ -126,17 +133,17 @@ fn display_del_error_incluye_ubicacion_y_motivo() {
 #[test]
 fn ningun_fallo_de_ejecucion_devuelve_un_valor() {
     let fallidos = [
-        "9223372036854775807 + 1",          // desbordamiento entero
-        "-9223372036854775808 - 1",         // desbordamiento entero
-        "9223372036854775807 * 2",          // desbordamiento entero
-        "-9223372036854775808 / -1",        // desbordamiento entero
-        "10 / 0",                           // división entre cero
-        "10 % 0",                           // división entre cero
-        "1.0 / 0.0",                        // división entre cero
-        "1.0e0 / 0.0e0",                    // división entre cero
-        "1.5 + 2.0e0",                      // conversión ilegal
-        "4.5 % 2",                          // conversión ilegal
-        "9999999999999999999.5 + 0.5",      // exceso de rango decimal
+        "9223372036854775807 + 1",     // desbordamiento entero
+        "-9223372036854775808 - 1",    // desbordamiento entero
+        "9223372036854775807 * 2",     // desbordamiento entero
+        "-9223372036854775808 / -1",   // desbordamiento entero
+        "10 / 0",                      // división entre cero
+        "10 % 0",                      // división entre cero
+        "1.0 / 0.0",                   // división entre cero
+        "1.0e0 / 0.0e0",               // división entre cero
+        "1.5 + 2.0e0",                 // conversión ilegal
+        "4.5 % 2",                     // conversión ilegal
+        "9999999999999999999.5 + 0.5", // exceso de rango decimal
         "9999999999999999999.999999999 * 9999999999999999999.999999999", // exceso rango
     ];
     for fuente in fallidos {

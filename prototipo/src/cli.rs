@@ -1,0 +1,202 @@
+//! Interfaz de línea de comandos de BASILISCO.
+//!
+//! Contrato: ADR-0010. Extensión canónica: `.bsk`; legado: `.nexo`.
+//! `.nx` no se acepta mientras no exista evidencia de archivos externos.
+
+use std::env;
+use std::ffi::OsString;
+use std::fs;
+use std::path::Path;
+use std::process::ExitCode;
+
+use crate::{Entorno, Lexer, Parser, Valor, evaluar};
+
+pub const NOMBRE: &str = "BASILISCO";
+pub const COMANDO: &str = "basilisco";
+pub const ALIAS: &str = "bsk";
+pub const EXT_CANONICA: &str = "bsk";
+pub const EXT_LEGADO: &str = "nexo";
+
+/// Punto de entrada común de `basilisco` y `bsk`.
+pub fn main() -> ExitCode {
+    let mut args = env::args_os();
+    let _programa = args.next();
+    let args: Vec<OsString> = args.collect();
+
+    if args.is_empty() {
+        demo();
+        return ExitCode::SUCCESS;
+    }
+
+    let comando = args[0].to_string_lossy();
+    match comando.as_ref() {
+        "--version" | "-V" | "version" => {
+            println!("{NOMBRE} {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
+        "--help" | "-h" | "ayuda" => {
+            ayuda();
+            ExitCode::SUCCESS
+        }
+        "demo" => {
+            demo();
+            ExitCode::SUCCESS
+        }
+        "run" | "ejecutar" => {
+            if args.len() != 2 {
+                eprintln!("uso: {COMANDO} run <archivo.bsk|archivo.nexo>");
+                return ExitCode::from(2);
+            }
+            ejecutar_archivo(Path::new(&args[1]))
+        }
+        otro => {
+            eprintln!("comando no reconocido: {otro}");
+            ayuda();
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn ayuda() {
+    println!("{NOMBRE} — intérprete del lenguaje (prototipo)");
+    println!();
+    println!("Uso:");
+    println!("  {COMANDO} run <archivo.bsk>      ejecuta un programa");
+    println!("  {COMANDO} run <archivo.nexo>     ejecuta un programa legado");
+    println!("  {COMANDO} demo                   ejecuta una demostración");
+    println!("  {COMANDO} --version              muestra la versión");
+    println!("  {COMANDO} --help                 muestra esta ayuda");
+    println!();
+    println!("Alias: {ALIAS} (mismos comandos).");
+    println!("Extensiones aceptadas: .{EXT_CANONICA} (canónica), .{EXT_LEGADO} (legado).");
+}
+
+fn ejecutar_archivo(ruta: &Path) -> ExitCode {
+    let Some(extension) = ruta.extension().and_then(|e| e.to_str()) else {
+        eprintln!("error: el archivo debe tener extensión .{EXT_CANONICA} o .{EXT_LEGADO}");
+        return ExitCode::from(2);
+    };
+    let extension = extension.to_ascii_lowercase();
+    match extension.as_str() {
+        EXT_CANONICA => {}
+        EXT_LEGADO => eprintln!("aviso: .{EXT_LEGADO} es legado; usa .{EXT_CANONICA}"),
+        "nx" => {
+            eprintln!("error: .nx no está soportado; usa .{EXT_CANONICA} o .{EXT_LEGADO}");
+            return ExitCode::from(2);
+        }
+        otra => {
+            eprintln!("error: extensión .{otra} no soportada; usa .{EXT_CANONICA} o .{EXT_LEGADO}");
+            return ExitCode::from(2);
+        }
+    }
+
+    let fuente = match fs::read_to_string(ruta) {
+        Ok(fuente) => fuente,
+        Err(e) => {
+            eprintln!("error: no se pudo leer '{}': {e}", ruta.display());
+            return ExitCode::from(1);
+        }
+    };
+
+    match ejecutar_fuente(&fuente) {
+        Ok(Some(valor)) => {
+            println!("{valor}");
+            ExitCode::SUCCESS
+        }
+        Ok(None) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn ejecutar_fuente(fuente: &str) -> Result<Option<Valor>, String> {
+    let tokens = Lexer::nuevo(fuente)
+        .tokenizar()
+        .map_err(|e| e.to_string())?;
+    let sentencias = Parser::nuevo(tokens)
+        .parsear_programa()
+        .map_err(|e| e.to_string())?;
+    Entorno::nueva()
+        .ejecutar_programa(&sentencias)
+        .map_err(|e| e.to_string())
+}
+
+fn principal(fuente: &str) -> Result<Valor, String> {
+    let tokens = Lexer::nuevo(fuente)
+        .tokenizar()
+        .map_err(|e| e.to_string())?;
+    let expr = Parser::nuevo(tokens)
+        .parsear_expresion()
+        .map_err(|e| e.to_string())?;
+    evaluar(&expr).map_err(|e| e.to_string())
+}
+
+fn demo() {
+    println!("{NOMBRE} — prototipo v{}", env!("CARGO_PKG_VERSION"));
+    println!();
+
+    let casos = [
+        "10 + 5",
+        "0.1 + 0.2",
+        "2 + 3.5",
+        "1e10",
+        "7 / 2",
+        "10.0 / 4.0",
+        "-7 % 3",
+        "10 / 0",
+        "9223372036854775807 + 1",
+    ];
+
+    println!("Evaluación de expresiones:");
+    for caso in casos {
+        match principal(caso) {
+            Ok(v) => println!("  {caso:<24} = {v}"),
+            Err(e) => println!("  {caso:<24} → {e}"),
+        }
+    }
+
+    println!();
+    println!("Programa con variables:");
+    let programa = "sea precio = 10.5\nsea total = precio * 3\ntotal = total - 1.5\ntotal";
+    match ejecutar_fuente(programa) {
+        Ok(Some(v)) => println!("  total después de la modificación = {v}"),
+        Ok(None) => println!("  (el programa no produjo valor)"),
+        Err(e) => println!("  → {e}"),
+    }
+
+    println!();
+    println!("Funciones y texto:");
+    let programa = "\
+funcion suma(a, b) {
+  retornar a + b
+}
+mostrar suma(2, 3)
+mostrar \"Hola \" + \"BASILISCO\"";
+    match ejecutar_fuente(programa) {
+        Ok(Some(v)) => println!("  resultado = {v}"),
+        Ok(None) => {}
+        Err(e) => println!("  → {e}"),
+    }
+
+    println!();
+    println!("Control de flujo y lógicos:");
+    let control = "\
+sea total = 0
+sea contador = 0
+mientras contador < 5 {
+  contador = contador + 1
+  si contador % 2 == 0 {
+    total = total + contador
+  } sino {
+    total = total + 1
+  }
+}
+total";
+    match ejecutar_fuente(control) {
+        Ok(Some(v)) => println!("  total acumulado = {v}"),
+        Ok(None) => println!("  (el programa no produjo valor)"),
+        Err(e) => println!("  → {e}"),
+    }
+}

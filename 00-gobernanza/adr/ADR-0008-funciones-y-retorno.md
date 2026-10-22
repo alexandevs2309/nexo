@@ -1,8 +1,8 @@
 # ADR-0008 — Funciones, retorno y llamadas (incremento 5)
-- Estado: **Aprobado** (incremento 5 autorizado, **no implementado**).
+- Estado: **Aprobado e implementado** (incremento 5 verificado; ver §6).
 - Fecha: 2026-10-21.
-- Aprobado: 2026-10-22.
-- Responsable: proyecto Nexo.
+- Aprobado: 2026-10-22; implementación verificada el 2026-10-22.
+- Responsable: proyecto BASILISCO (histórico «Nexo»).
 - Revisión prevista: al implementar el incremento 5, o antes si se decide añadir módulos,
   recursión o sobrecarga.
 
@@ -119,10 +119,10 @@ argumentos          → expresion ("," expresion)*
 - El léxico ya reconoce `funcion`/`retornar`/`mostrar` (ADR-0003), lo que reduce el riesgo
   léxico de este incremento a casi cero.
 - La infraestructura de ámbitos (pila de `HashMap`) y de errores tipados con ubicación ya
-  existe y está verificada por 211 pruebas (ADR-0006, ADR-0007).
-- No hay todavía measurements de rendimiento, de usabilidad de la sintaxis de funciones ni de
-  impresión de la recursión: **la evidencia es insuficiente para aprobar**; por eso el estado es
-  *Propuesto*.
+  existe y está verificada por 252 pruebas de lenguaje (ADR-0006, ADR-0007).
+- La implementación y las pruebas del incremento 5 están registradas en §6. Siguen pendientes
+  las mediciones de rendimiento y usabilidad, pero no bloquean la aprobación del contrato del
+  prototipo.
 
 ## 5. Consecuencias y migración
 - El espacio de identificadores no cambia (las palabras clave ya existían): **sin migración**.

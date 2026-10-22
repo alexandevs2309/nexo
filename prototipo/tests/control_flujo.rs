@@ -4,11 +4,13 @@
 //!
 //! Semántica normativa: ADR-0007 (aprobado) sobre ADR-0005 y ADR-0006.
 
-use nexo::{CausaError, Entorno, ErrorEjecucion, ErrorSintactico, Lexer, Parser, Valor};
+use basilisco::{CausaError, Entorno, ErrorEjecucion, ErrorSintactico, Lexer, Parser, Valor};
 
 /// Ejecuta un programa completo y devuelve el valor de la última expresión.
 fn ejecutar(fuente: &str) -> Result<Option<Valor>, ErrorEjecucion> {
-    let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido en test");
+    let tokens = Lexer::nuevo(fuente)
+        .tokenizar()
+        .expect("léxico válido en test");
     let ss = Parser::nuevo(tokens)
         .parsear_programa()
         .expect("sintaxis válida en test");
@@ -20,7 +22,9 @@ fn error_ejecucion(fuente: &str) -> ErrorEjecucion {
 }
 
 fn error_sintactico(fuente: &str) -> ErrorSintactico {
-    let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido en test");
+    let tokens = Lexer::nuevo(fuente)
+        .tokenizar()
+        .expect("léxico válido en test");
     Parser::nuevo(tokens)
         .parsear_programa()
         .expect_err("se esperaba error sintáctico")
@@ -77,7 +81,8 @@ fn programa_con_mientras_de_cero_iteraciones() {
 
 #[test]
 fn el_cuerpo_del_ciclo_ve_las_variables_externas() {
-    let p = "sea total = 0\nsea i = 1\nmientras i <= 3 {\n  total = total + i\n  i = i + 1\n}\ntotal";
+    let p =
+        "sea total = 0\nsea i = 1\nmientras i <= 3 {\n  total = total + i\n  i = i + 1\n}\ntotal";
     assert_eq!(valor(p), Valor::Entero(6));
 }
 
@@ -125,7 +130,10 @@ fn programa_con_operadores_logicos_entre_comparaciones() {
 #[test]
 fn condicion_no_logica_es_error_tipeado_con_ubicacion() {
     let e = error_ejecucion("si 5 {\n  1\n}");
-    assert_eq!(e.causa, CausaError::CondicionNoLogica { obtenido: "entero" });
+    assert_eq!(
+        e.causa,
+        CausaError::CondicionNoLogica { obtenido: "entero" }
+    );
     assert_eq!((e.linea, e.columna), (1, 4));
 }
 
@@ -134,7 +142,7 @@ fn error_dentro_de_un_bloque_propaga_su_tipo_y_ubicacion() {
     let e = error_ejecucion("si verdadero {\n  10 / 0\n}");
     assert_eq!(
         e.causa,
-        CausaError::Aritmetica(nexo::MotivoAritmetico::DivisionPorCero)
+        CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
     assert_eq!((e.linea, e.columna), (2, 3));
 }
@@ -144,7 +152,7 @@ fn error_dentro_de_un_ciclo_propaga_su_tipo_y_ubicacion() {
     let e = error_ejecucion("sea i = 0\nmientras i < 3 {\n  10 / 0\n}");
     assert_eq!(
         e.causa,
-        CausaError::Aritmetica(nexo::MotivoAritmetico::DivisionPorCero)
+        CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
     assert_eq!((e.linea, e.columna), (3, 3));
 }
@@ -165,7 +173,7 @@ fn el_cortocircuito_evita_el_error_del_operando_derecho() {
     let e = error_ejecucion("si verdadero y (10 / 0) {\n  1\n}\n7");
     assert_eq!(
         e.causa,
-        CausaError::Aritmetica(nexo::MotivoAritmetico::DivisionPorCero)
+        CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
 }
 

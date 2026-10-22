@@ -14,8 +14,8 @@
 //! - Dentro de un grupo `( … )` los finales de línea se omiten también en los operadores.
 //! - Fuera de ese contexto, un fin de línea termina la expresión.
 
-use crate::token::{Token, TipoToken};
-use crate::valor::{Valor, MotivoAritmetico};
+use crate::token::{TipoToken, Token};
+use crate::valor::{MotivoAritmetico, Valor};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expresion {
@@ -241,7 +241,10 @@ impl Parser {
     /// Parsea una sentencia: declaración, asignación, control de flujo, bloque o expresión.
     fn sentencia(&mut self) -> Result<Sentencia, ErrorSintactico> {
         // Declaraciones: sea | var | dato | const
-        if matches!(self.actual(), Some(TipoToken::Sea | TipoToken::Var | TipoToken::Dato | TipoToken::Const)) {
+        if matches!(
+            self.actual(),
+            Some(TipoToken::Sea | TipoToken::Var | TipoToken::Dato | TipoToken::Const)
+        ) {
             self.sentencia_declaracion()
         } else if matches!(self.actual(), Some(TipoToken::Funcion)) {
             self.sentencia_funcion()
@@ -365,7 +368,10 @@ impl Parser {
                 self.pos += 1;
                 Ok(TipoAnotacion::Texto)
             }
-            _ => Err(self.error("tipo desconocido; se esperaba: entero, decimal, real, logico, texto")),
+            _ => {
+                Err(self
+                    .error("tipo desconocido; se esperaba: entero, decimal, real, logico, texto"))
+            }
         }
     }
 
@@ -454,14 +460,25 @@ impl Parser {
         let (linea, columna) = (t.linea, t.columna);
         self.pos += 1; // 'retornar'
         match self.actual() {
-            Some(TipoToken::FinDeLinea) | Some(TipoToken::Fin) | None | Some(TipoToken::LlaveDer) => {
+            Some(TipoToken::FinDeLinea)
+            | Some(TipoToken::Fin)
+            | None
+            | Some(TipoToken::LlaveDer) => {
                 self.terminar_sentencia()?;
-                Ok(Sentencia::Retorno { valor: None, linea, columna })
+                Ok(Sentencia::Retorno {
+                    valor: None,
+                    linea,
+                    columna,
+                })
             }
             _ => {
                 let expr = self.expresion()?;
                 self.terminar_sentencia()?;
-                Ok(Sentencia::Retorno { valor: Some(expr), linea, columna })
+                Ok(Sentencia::Retorno {
+                    valor: Some(expr),
+                    linea,
+                    columna,
+                })
             }
         }
     }
@@ -473,7 +490,11 @@ impl Parser {
         self.pos += 1; // 'mostrar'
         let expr = self.expresion()?;
         self.terminar_sentencia()?;
-        Ok(Sentencia::Mostrar { valor: expr, linea, columna })
+        Ok(Sentencia::Mostrar {
+            valor: expr,
+            linea,
+            columna,
+        })
     }
 
     /// Parsea una sentencia `si` completa, incluidas las ramas `sino`/`sino si`.
@@ -509,11 +530,7 @@ impl Parser {
                     self.exigir_llave_misma_linea(linea_sino, "sino")?;
                     Some(self.bloque()?)
                 }
-                _ => {
-                    return Err(self.error(
-                        "se esperaba '{' o 'si' en la misma línea que 'sino'",
-                    ))
-                }
+                _ => return Err(self.error("se esperaba '{' o 'si' en la misma línea que 'sino'")),
             }
         } else {
             None
@@ -564,7 +581,9 @@ impl Parser {
         palabra: &str,
     ) -> Result<(), ErrorSintactico> {
         if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
-            return Err(self.error(format!("se esperaba '{{' en la misma línea que '{palabra}'")));
+            return Err(self.error(format!(
+                "se esperaba '{{' en la misma línea que '{palabra}'"
+            )));
         }
         match self.linea_actual() {
             Some(l) if l == linea_palabra => Ok(()),
@@ -739,7 +758,10 @@ impl Parser {
             // `-x` con x expresión sigue prohibido por ADR-0004). Necesario para la
             // semántica aprobada de D4 (`-7 % 3` = -1).
             Some(TipoToken::Menos)
-                if matches!(self.tokens.get(self.pos + 1).map(|t| &t.tipo), Some(TipoToken::Numero)) =>
+                if matches!(
+                    self.tokens.get(self.pos + 1).map(|t| &t.tipo),
+                    Some(TipoToken::Numero)
+                ) =>
             {
                 let (linea, columna) = {
                     let t = &self.tokens[self.pos];
@@ -873,19 +895,23 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evaluador::evaluar;
     use crate::Lexer;
+    use crate::evaluador::evaluar;
 
     /// Tokeniza, parsea y evalúa; devuelve el valor o el error sintáctico.
     fn valor(fuente: &str) -> Result<Valor, ErrorSintactico> {
-        let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido en test");
-        Parser::nuevo(tokens).parsear_expresion().map(|e| {
-            evaluar(&e).expect("evaluación sin error en tests sin división entre cero")
-        })
+        let tokens = Lexer::nuevo(fuente)
+            .tokenizar()
+            .expect("léxico válido en test");
+        Parser::nuevo(tokens)
+            .parsear_expresion()
+            .map(|e| evaluar(&e).expect("evaluación sin error en tests sin división entre cero"))
     }
 
     fn error_sintactico(fuente: &str) -> ErrorSintactico {
-        let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido en test");
+        let tokens = Lexer::nuevo(fuente)
+            .tokenizar()
+            .expect("léxico válido en test");
         Parser::nuevo(tokens)
             .parsear_expresion()
             .expect_err("se esperaba error sintáctico")
@@ -974,7 +1000,9 @@ mod tests {
     // ---- sentencias (ADR-0006) ----
 
     fn programa(fuente: &str) -> Vec<Sentencia> {
-        let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido en test");
+        let tokens = Lexer::nuevo(fuente)
+            .tokenizar()
+            .expect("léxico válido en test");
         Parser::nuevo(tokens)
             .parsear_programa()
             .expect("sintaxis de programa válida en test")
@@ -1024,7 +1052,9 @@ mod tests {
     // ---- control de flujo y lógicos (ADR-0007) ----
 
     fn error_programa(fuente: &str) -> ErrorSintactico {
-        let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido en test");
+        let tokens = Lexer::nuevo(fuente)
+            .tokenizar()
+            .expect("léxico válido en test");
         Parser::nuevo(tokens)
             .parsear_programa()
             .expect_err("se esperaba error sintáctico")
@@ -1116,11 +1146,7 @@ mod tests {
     #[test]
     fn las_comparaciones_encadenadas_son_error_sintactico() {
         let e = error_sintactico("1 < 2 < 3");
-        assert!(
-            e.mensaje.contains("encadenadas"),
-            "mensaje: {}",
-            e.mensaje
-        );
+        assert!(e.mensaje.contains("encadenadas"), "mensaje: {}", e.mensaje);
     }
 
     #[test]
@@ -1163,7 +1189,10 @@ mod tests {
     fn debug_dato_tokens() {
         let tokens = Lexer::nuevo("dato y: decimal = 3.14").tokenizar().unwrap();
         for t in &tokens {
-            eprintln!("{:?} @ {}:{} lexema='{}'", t.tipo, t.linea, t.columna, t.lexema);
+            eprintln!(
+                "{:?} @ {}:{} lexema='{}'",
+                t.tipo, t.linea, t.columna, t.lexema
+            );
         }
     }
 
@@ -1173,7 +1202,13 @@ mod tests {
         let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
         assert_eq!(ss.len(), 1);
         match &ss[0] {
-            Sentencia::Declaracion { nombre, tipo_anotacion, mutable, es_const, .. } => {
+            Sentencia::Declaracion {
+                nombre,
+                tipo_anotacion,
+                mutable,
+                es_const,
+                ..
+            } => {
                 assert_eq!(nombre, "x");
                 assert_eq!(*tipo_anotacion, Some(TipoAnotacion::Entero));
                 assert!(*mutable);
@@ -1182,10 +1217,18 @@ mod tests {
             _ => panic!("esperaba declaración"),
         }
 
-        let tokens = Lexer::nuevo("dato valor: decimal = 3.14").tokenizar().unwrap();
+        let tokens = Lexer::nuevo("dato valor: decimal = 3.14")
+            .tokenizar()
+            .unwrap();
         let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
         match &ss[0] {
-            Sentencia::Declaracion { nombre, tipo_anotacion, mutable, es_const, .. } => {
+            Sentencia::Declaracion {
+                nombre,
+                tipo_anotacion,
+                mutable,
+                es_const,
+                ..
+            } => {
                 assert_eq!(nombre, "valor");
                 assert_eq!(*tipo_anotacion, Some(TipoAnotacion::Decimal));
                 assert!(!*mutable);
@@ -1194,10 +1237,18 @@ mod tests {
             _ => panic!("esperaba declaración"),
         }
 
-        let tokens = Lexer::nuevo("const PI: real = 3.14159e0").tokenizar().unwrap();
+        let tokens = Lexer::nuevo("const PI: real = 3.14159e0")
+            .tokenizar()
+            .unwrap();
         let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
         match &ss[0] {
-            Sentencia::Declaracion { nombre, tipo_anotacion, mutable, es_const, .. } => {
+            Sentencia::Declaracion {
+                nombre,
+                tipo_anotacion,
+                mutable,
+                es_const,
+                ..
+            } => {
                 assert_eq!(nombre, "PI");
                 assert_eq!(*tipo_anotacion, Some(TipoAnotacion::Real));
                 assert!(!*mutable);
@@ -1210,7 +1261,13 @@ mod tests {
         let tokens = Lexer::nuevo("sea z = 10").tokenizar().unwrap();
         let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
         match &ss[0] {
-            Sentencia::Declaracion { nombre, tipo_anotacion, mutable, es_const, .. } => {
+            Sentencia::Declaracion {
+                nombre,
+                tipo_anotacion,
+                mutable,
+                es_const,
+                ..
+            } => {
                 assert_eq!(nombre, "z");
                 assert_eq!(*tipo_anotacion, None);
                 assert!(*mutable);

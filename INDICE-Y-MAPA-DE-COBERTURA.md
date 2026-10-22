@@ -2,7 +2,7 @@
 La base cubre gobernanza, visión, requisitos, sintaxis, gramática, semántica, tipos, memoria, funciones, concurrencia, E/S, versiones, arquitectura, plataformas, seguridad, calidad, herramientas, interoperabilidad, pruebas y hoja de ruta.
 
 ## Estado real
-Los temas están organizados y cuentan con marcos de análisis. Muchas decisiones normativas siguen pendientes y no hay implementación funcional. La existencia de un documento no equivale a que el área esté resuelta.
+Los temas están organizados y cuentan con marcos de análisis. Existe un prototipo Rust funcional (incrementos 1–5, 264 pruebas y CLI mínima), pero muchas decisiones normativas siguen pendientes y la implementación no cubre el lenguaje completo. La existencia de un documento no equivale a que el área esté resuelta.
 
 ## Para acercarse a una especificación técnica completa
 1. Resolver preguntas abiertas mediante investigación y ADR.
@@ -21,7 +21,7 @@ Toda decisión debe enlazarse con requisitos, evidencia y pruebas.
 
 - `10-especificacion/` — Núcleo normativo 0.3: `estado-normativo.md`, `especificacion-del-nucleo-0.3.md`, `gramatica-de-referencia-0.3.md`, `registro-de-brechas.md`, `auditoria-cruzada-repositorio.md`, `compatibilidad-y-versionado.md`, `decisiones-que-no-deben-inventarse.md`
 - `02-lenguaje/catalogo-de-errores-y-diagnosticos.md` — Catálogo unificado de errores/diagnósticos
-- `06-herramientas-ecosistema/contrato-de-cli.md` — Contrato de CLI para futuras implementaciones
+- `06-herramientas-ecosistema/contrato-de-cli.md` — Contrato de CLI; subconjunto `run`/`demo`/`--version`/`--help` implementado (ADR-0010)
 - `07-validacion/puertas-de-liberacion.md` y `matriz-de-trazabilidad.md` — Trazabilidad ADR→regla→test
 - `03-arquitectura/arquitectura-de-referencia-0.3.md` — Arquitectura de referencia actualizada
 - `08-plan/hoja-de-ruta-ejecutable.md` — Hoja de ruta accionable

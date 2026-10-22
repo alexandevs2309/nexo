@@ -1,0 +1,7 @@
+funcion factorial(n) {
+    si n <= 1 {
+        retornar 1
+    }
+    retornar n * factorial(n - 1)
+}
+factorial(5)

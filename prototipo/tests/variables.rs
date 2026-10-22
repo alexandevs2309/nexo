@@ -2,10 +2,14 @@
 //!
 //! Recorre el flujo real cadena fuente → léxico → sintaxis → ejecución con entorno.
 
-use nexo::{CausaError, Entorno, ErrorEjecucion, Lexer, MotivoAritmetico, Parser, Sentencia, Valor};
+use basilisco::{
+    CausaError, Entorno, ErrorEjecucion, Lexer, MotivoAritmetico, Parser, Sentencia, Valor,
+};
 
 fn ejecutar(fuente: &str) -> Result<Option<Valor>, ErrorEjecucion> {
-    let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido en test");
+    let tokens = Lexer::nuevo(fuente)
+        .tokenizar()
+        .expect("léxico válido en test");
     let sentencias = Parser::nuevo(tokens)
         .parsear_programa()
         .expect("sintaxis válida en test");
@@ -104,13 +108,13 @@ fn asignacion_admite_solo_conversiones_implicitas_aprobadas() {
 #[test]
 fn error_variable_no_definida_tipeado_y_ubicado() {
     let e = error("sea total = 1\ntotal + descuento");
-    assert_eq!(
-        e.causa,
-        CausaError::VariableNoDefinida("descuento".into())
-    );
+    assert_eq!(e.causa, CausaError::VariableNoDefinida("descuento".into()));
     assert_eq!(e.mensaje, "variable no definida: descuento");
     assert_eq!((e.linea, e.columna), (2, 9));
-    assert_eq!(e.to_string(), "error de ejecución [2:9]: variable no definida: descuento");
+    assert_eq!(
+        e.to_string(),
+        "error de ejecución [2:9]: variable no definida: descuento"
+    );
 }
 
 #[test]
@@ -159,7 +163,10 @@ fn error_asignacion_incompatible_tipeado_y_ubicado() {
 #[test]
 fn errores_aritmeticos_con_causa_y_ubicacion_en_programas() {
     let e = error("sea x = 10\nx / 0");
-    assert_eq!(e.causa, CausaError::Aritmetica(MotivoAritmetico::DivisionPorCero));
+    assert_eq!(
+        e.causa,
+        CausaError::Aritmetica(MotivoAritmetico::DivisionPorCero)
+    );
     assert_eq!((e.linea, e.columna), (2, 1));
 
     let e = error("sea grande = 9223372036854775807\ngrande + 1");
@@ -173,11 +180,17 @@ fn errores_aritmeticos_con_causa_y_ubicacion_en_programas() {
 #[test]
 fn semantica_numerica_aprobada_no_se_modifica_con_variables() {
     // Los valores pasados por variables se comportan igual que los literales.
-    assert_eq!(valor("sea x = 0.1\nsea z = 0.2\nx + z"), Valor::Decimal(300_000_000));
+    assert_eq!(
+        valor("sea x = 0.1\nsea z = 0.2\nx + z"),
+        Valor::Decimal(300_000_000)
+    );
     assert_eq!(valor("sea a = -7\na % 3"), Valor::Entero(-1));
     assert_eq!(valor("sea a = 7\nsea b = -3\na % b"), Valor::Entero(1));
     let e = error("sea cero = 0\n10 / cero");
-    assert_eq!(e.causa, CausaError::Aritmetica(MotivoAritmetico::DivisionPorCero));
+    assert_eq!(
+        e.causa,
+        CausaError::Aritmetica(MotivoAritmetico::DivisionPorCero)
+    );
 }
 
 // ================================================================ Entorno y ámbitos

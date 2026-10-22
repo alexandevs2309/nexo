@@ -53,12 +53,12 @@ Los operadores binarios indicados son asociativos a izquierda, salvo `no`, que e
 - La llave de apertura de `si`, `sino` y `mientras` debe ir en la misma línea de la palabra clave/condición, conforme a ADR-0007.
 - El salto de línea termina una sentencia cuando esta está completa; puede ignorarse en los contextos de continuación que define el parser.
 - Los identificadores del prototipo son ASCII (`[A-Za-z_][A-Za-z0-9_]*`); las cadenas admiten Unicode en el lexer.
-- `funcion`, `retornar` y `mostrar` son palabras reservadas en el lexer, pero eso no significa que el parser o evaluador implementen esas construcciones.
-- El token de cadena existe en el lexer, pero la gramática de expresiones del parser actual no acepta cadenas como expresión primaria.
+- `funcion`, `retornar` y `mostrar` están implementados en el prototipo (ADR-0008), pero esta gramática de referencia no se ha actualizado todavía para reflejarlos por completo.
+- El token de cadena existe en el lexer y el prototipo acepta cadenas como expresión primaria desde el 2026-10-22; la gramática normativa aún debe actualizarse.
 - El signo negativo se admite en la posición de literal numérico negativo; no equivale a un operador unario general aplicable a cualquier expresión.
 
 ## Límites
-Esta gramática no incluye funciones ni llamadas: ADR-0008 sigue propuesto y el parser actual no contiene nodos de AST para declaración/llamada de funciones o retorno. La gramática debe transformarse en una norma de conformidad automatizada antes de declarar especificación completa.
+Esta gramática de referencia todavía no incluye funciones ni llamadas, aunque el prototipo sí las implementa desde el 2026-10-22. La gramática debe actualizarse y transformarse en una norma de conformidad automatizada antes de declarar especificación completa.
 
 
 ## Sincronización con implementación

@@ -4,7 +4,7 @@
 //! Cada bloque cita la sección del ADR que verifica. Casos límite con
 //! resultado esperado explícito.
 
-use nexo::{CausaError, Entorno, ErrorEjecucion, Lexer, Parser, Sentencia, Valor};
+use basilisco::{CausaError, Entorno, ErrorEjecucion, Lexer, Parser, Sentencia, Valor};
 
 /// Ejecuta un programa completo y devuelve el valor de la última expresión.
 fn ejecutar_programa(fuente: &str) -> Result<Option<Valor>, String> {
@@ -30,7 +30,7 @@ fn error_programa(fuente: &str) -> ErrorEjecucion {
 }
 
 /// Ejecuta un programa y devuelve el error sintáctico con su ubicación.
-fn error_sintactico(fuente: &str) -> nexo::ErrorSintactico {
+fn error_sintactico(fuente: &str) -> basilisco::ErrorSintactico {
     let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido");
     Parser::nuevo(tokens)
         .parsear_programa()
@@ -57,19 +57,31 @@ fn s11_literales_logicos_devuelven_valor_logico() {
 fn s11_no_hay_conversion_implicita_entre_logico_y_numerico() {
     // `1 + verdadero` es error, no 2 ni 1 ni un valor por defecto.
     let e = error_programa("1 + verdadero");
-    assert_eq!(e.causa, CausaError::Aritmetica(nexo::MotivoAritmetico::TiposIncompatibles));
+    assert_eq!(
+        e.causa,
+        CausaError::Aritmetica(basilisco::MotivoAritmetico::TiposIncompatibles)
+    );
     // Y tampoco al revés: `verdadero + 1`.
     let e = error_programa("verdadero + 1");
-    assert_eq!(e.causa, CausaError::Aritmetica(nexo::MotivoAritmetico::TiposIncompatibles));
+    assert_eq!(
+        e.causa,
+        CausaError::Aritmetica(basilisco::MotivoAritmetico::TiposIncompatibles)
+    );
 }
 
 #[test]
 fn s11_un_logico_no_es_verdad_numerica() {
     // El `0` no se interpreta como `falso` ni el `1` como `verdadero`.
     let e = error_programa("si 0 {\n  1\n}");
-    assert_eq!(e.causa, CausaError::CondicionNoLogica { obtenido: "entero" });
+    assert_eq!(
+        e.causa,
+        CausaError::CondicionNoLogica { obtenido: "entero" }
+    );
     let e = error_programa("si 1 {\n  1\n}");
-    assert_eq!(e.causa, CausaError::CondicionNoLogica { obtenido: "entero" });
+    assert_eq!(
+        e.causa,
+        CausaError::CondicionNoLogica { obtenido: "entero" }
+    );
 }
 
 // ================================================================ §1.2 comparaciones
@@ -194,12 +206,12 @@ fn s12_cortocircuito_no_evalua_el_operando_derecho() {
     let e = error_programa("verdadero y (10 / 0)");
     assert_eq!(
         e.causa,
-        CausaError::Aritmetica(nexo::MotivoAritmetico::DivisionPorCero)
+        CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
     let e = error_programa("falso o (10 / 0)");
     assert_eq!(
         e.causa,
-        CausaError::Aritmetica(nexo::MotivoAritmetico::DivisionPorCero)
+        CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
 }
 
@@ -275,20 +287,26 @@ fn s14_sino_se_ejecuta_cuando_la_condicion_es_falsa() {
 #[test]
 fn s14_sino_si_encadena_condiciones() {
     // La cadena `si / sino si / sino` se evalúa como if/else-if/else.
-    let fuente = "sea r = 0\nsi 1 > 5 {\n  r = 1\n} sino si 1 > 2 {\n  r = 2\n} sino {\n  r = 3\n}\nr";
+    let fuente =
+        "sea r = 0\nsi 1 > 5 {\n  r = 1\n} sino si 1 > 2 {\n  r = 2\n} sino {\n  r = 3\n}\nr";
     assert_eq!(ok_programa(fuente), Some(Valor::Entero(3)));
 
-    let fuente = "sea r = 0\nsi 1 > 5 {\n  r = 1\n} sino si 2 > 1 {\n  r = 2\n} sino {\n  r = 3\n}\nr";
+    let fuente =
+        "sea r = 0\nsi 1 > 5 {\n  r = 1\n} sino si 2 > 1 {\n  r = 2\n} sino {\n  r = 3\n}\nr";
     assert_eq!(ok_programa(fuente), Some(Valor::Entero(2)));
 
-    let fuente = "sea r = 0\nsi 5 > 1 {\n  r = 1\n} sino si 2 > 1 {\n  r = 2\n} sino {\n  r = 3\n}\nr";
+    let fuente =
+        "sea r = 0\nsi 5 > 1 {\n  r = 1\n} sino si 2 > 1 {\n  r = 2\n} sino {\n  r = 3\n}\nr";
     assert_eq!(ok_programa(fuente), Some(Valor::Entero(1)));
 }
 
 #[test]
 fn s14_condicion_no_logica_es_error_tipado() {
     let e = error_programa("si 5 {\n  1\n}");
-    assert_eq!(e.causa, CausaError::CondicionNoLogica { obtenido: "entero" });
+    assert_eq!(
+        e.causa,
+        CausaError::CondicionNoLogica { obtenido: "entero" }
+    );
     // Con ubicación real: la condición `5` está en la línea 1, columna 4.
     assert_eq!((e.linea, e.columna), (1, 4));
 }
@@ -327,7 +345,10 @@ fn s15_mientras_reevalua_la_condicion_antes_de_cada_iteracion() {
 #[test]
 fn s15_condicion_de_mientras_no_logica_es_error_tipado() {
     let e = error_programa("mientras 1 {\n  2\n}");
-    assert_eq!(e.causa, CausaError::CondicionNoLogica { obtenido: "entero" });
+    assert_eq!(
+        e.causa,
+        CausaError::CondicionNoLogica { obtenido: "entero" }
+    );
 }
 
 // ================================================================ §1.6 bloques y ámbitos
@@ -384,7 +405,7 @@ fn s17_error_dentro_de_un_bloque_propaga_ubicacion_y_tipo() {
     let e = error_programa("si verdadero {\n  10 / 0\n}");
     assert_eq!(
         e.causa,
-        CausaError::Aritmetica(nexo::MotivoAritmetico::DivisionPorCero)
+        CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
     assert_eq!((e.linea, e.columna), (2, 3));
 }
@@ -394,7 +415,7 @@ fn s17_error_dentro_de_un_ciclo_propaga_ubicacion_y_tipo() {
     let e = error_programa("mientras verdadero {\n  10 / 0\n}");
     assert_eq!(
         e.causa,
-        CausaError::Aritmetica(nexo::MotivoAritmetico::DivisionPorCero)
+        CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
     assert_eq!((e.linea, e.columna), (2, 3));
 }
@@ -450,7 +471,9 @@ fn g_el_lexer_reconoce_las_palabras_clave_nuevas() {
 
 #[test]
 fn g_el_lexer_distingue_igual_de_igual_igual() {
-    let tokens = Lexer::nuevo("a = 1\nb == 1\nc != 1").tokenizar().expect("léxico válido");
+    let tokens = Lexer::nuevo("a = 1\nb == 1\nc != 1")
+        .tokenizar()
+        .expect("léxico válido");
     let ops: Vec<String> = tokens
         .iter()
         .map(|t| format!("{:?}", t.tipo))

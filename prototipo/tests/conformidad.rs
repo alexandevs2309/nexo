@@ -4,7 +4,7 @@
 //! Cada bloque cita la sección del ADR que verifica. Casos límite con
 //! resultado esperado explícito.
 
-use nexo::{evaluar, Lexer, Parser, Valor};
+use basilisco::{Lexer, Parser, Valor, evaluar};
 
 fn ejecutar(fuente: &str) -> Result<Valor, String> {
     let tokens = Lexer::nuevo(fuente)
@@ -138,13 +138,22 @@ fn s12_limites_de_rango_decimal() {
         ok("9999999999999999999.999999999").to_string(),
         "9999999999999999999.999999999"
     );
-    assert_eq!(ok("9999999999999999999.5").to_string(), "9999999999999999999.5");
+    assert_eq!(
+        ok("9999999999999999999.5").to_string(),
+        "9999999999999999999.5"
+    );
     // 20 dígitos enteros → exceso de rango (se rechaza al clasificar el literal).
     assert!(err("99999999999999999999.0").contains("exceso de rango decimal"));
     // Alcance del límite por suma (no solo en el literal).
-    assert_eq!(err("9999999999999999999.5 + 0.5"), "exceso de rango decimal");
+    assert_eq!(
+        err("9999999999999999999.5 + 0.5"),
+        "exceso de rango decimal"
+    );
     // Alcance del límite por resta hacia el extremo negativo.
-    assert_eq!(err("-9999999999999999999.5 - 0.5"), "exceso de rango decimal");
+    assert_eq!(
+        err("-9999999999999999999.5 - 0.5"),
+        "exceso de rango decimal"
+    );
 }
 
 #[test]
@@ -245,11 +254,15 @@ fn s13_division_por_cero_es_error_no_inf_ni_nan() {
 fn s13_infinito_por_desbordamiento_de_magnitud_es_admitido() {
     // §1.3: el tipo admite +inf que nace por desbordamiento de magnitud.
     let r = ok("1e308 * 10");
-    let Valor::Real(x) = r else { panic!("esperaba real") };
+    let Valor::Real(x) = r else {
+        panic!("esperaba real")
+    };
     assert!(x.is_infinite() && x > 0.0, "esperaba +inf, obtuvo {x}");
     // Operación posterior sobre infinito sigue siendo valor real (no error).
     let r = ok("1e308 * 10 + 1e0");
-    let Valor::Real(x) = r else { panic!("esperaba real") };
+    let Valor::Real(x) = r else {
+        panic!("esperaba real")
+    };
     assert!(x.is_infinite());
 }
 
@@ -315,7 +328,10 @@ fn s16_los_cuatro_motivos_tienen_mensaje_exacto() {
     assert_eq!(err("10 / 0"), "división entre cero");
     // El literal fuera de rango se rechaza en la fase sintáctica; el motivo es el mismo.
     assert!(err("99999999999999999999.0").contains("exceso de rango decimal"));
-    assert_eq!(err("9999999999999999999.5 + 0.5"), "exceso de rango decimal");
+    assert_eq!(
+        err("9999999999999999999.5 + 0.5"),
+        "exceso de rango decimal"
+    );
     assert_eq!(err("1.5 + 2.0e0"), "conversión ilegal");
 }
 
@@ -348,7 +364,7 @@ fn s16_todo_error_de_ejecucion_informa_ubicacion() {
     for fuente in fallidos {
         let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico");
         let expr = Parser::nuevo(tokens).parsear_expresion().expect("sintaxis");
-        let e = nexo::evaluar(&expr).expect_err("esperaba error");
+        let e = basilisco::evaluar(&expr).expect_err("esperaba error");
         assert!(e.linea >= 1 && e.columna >= 1, "ubicación para {fuente:?}");
         let display = e.to_string();
         assert!(

@@ -1,4 +1,6 @@
-# Estado normativo de Nexo
+# Estado normativo de BASILISCO (edición histórica «Nexo Core 0.3»)
+
+> **Nota de identidad:** «Nexo Core 0.3» es el nombre histórico de esta edición. La identidad objetivo es **BASILISCO** (ADR-0009). El contrato normativo no se renombra en esta edición para no romper referencias; los documentos nuevos usan BASILISCO.
 
 ## Propósito
 Este documento evita mezclar decisiones firmes, reglas del prototipo y propuestas de futuro.

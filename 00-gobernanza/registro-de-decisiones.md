@@ -19,6 +19,8 @@ Toda decisión importante debe documentar contexto, requisitos, opciones, criter
 | [ADR-0006](adr/ADR-0006-declaraciones-y-variables.md) | Declaraciones, variables y ámbitos iniciales | Aprobado |
 | [ADR-0007](adr/ADR-0007-estructuras-de-control-y-logicos.md) | Bloques, condiciones, ciclos y tipos lógicos (incremento 4) | **Aprobado** |
 | [ADR-0008](adr/ADR-0008-funciones-y-retorno.md) | Funciones, retorno y llamadas (incremento 5) | **Aprobado** |
+| [ADR-0009](adr/ADR-0009-identidad-basilisco.md) | Identidad BASILISCO y retirada progresiva de Nexo | **Aprobado** |
+| [ADR-0010](adr/ADR-0010-cli-y-extension.md) | CLI y ejecución de archivos | **Aprobado** |
 
 ## ADR previstas
 Modelo de ejecución; sistema de tipos; memoria; errores; concurrencia; módulos y paquetes; interoperabilidad; compatibilidad; licencia y gobernanza; codificación; IR y optimización; pruebas de conformidad.

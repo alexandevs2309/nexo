@@ -13,8 +13,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Instalar Rust (estable)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Comprobar formato
+        run: cargo fmt --check
+        working-directory: prototipo
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: prototipo
       - name: Compilar
-        run: cargo build --verbose
+        run: cargo build --bins --verbose
         working-directory: prototipo
       - name: Ejecutar pruebas
         run: cargo test --verbose

@@ -1,7 +1,17 @@
 [package]
-name = "nexo"
+name = "basilisco"
 version = "0.1.0"
 edition = "2024"
-description = "Prototipo vertical de Nexo (lexer + parser + evaluación de expresiones)"
+description = "BASILISCO — intérprete del lenguaje (prototipo)"
+autobins = false
+default-run = "basilisco"
+
+[[bin]]
+name = "basilisco"
+path = "src/main.rs"
+
+[[bin]]
+name = "bsk"
+path = "src/bin/bsk.rs"
 
 [dependencies]
