@@ -31,3 +31,14 @@ Los identificadores `REQ-*` son estables. Cada requisito debe enlazarse a una re
 - Una prueba debe tener un identificador o nombre estable y ejecutarse en CI.
 - Los estados posibles son: `pendiente`, `especificado`, `implementado`, `verificado`, `bloqueado`.
 - No marcar `verificado` sin salida de CI del commit exacto.
+
+## Evidencia real (incrementos 1-4)
+
+| ADR | Regla | Test | Estado |
+|---|---|---|---|
+| ADR-0005 | Números (entero/decimal/real), semántica D1-D6 | `prototipo/tests/conformidad.rs` (29) | IMPLEMENTADO-REFERENCIA ✓ |
+| ADR-0006 | `sea`, asignación, ámbitos, mutabilidad | `prototipo/tests/variables.rs` (14), `prototipo/src/evaluador.rs` | IMPLEMENTADO-REFERENCIA ✓ |
+| ADR-0007 | `si`/`sino`/`mientras`, bloques, lógicos, cortocircuito | `prototipo/tests/conformidad_control.rs` (39), `prototipo/tests/control_flujo.rs` (19) | IMPLEMENTADO-REFERENCIA ✓ |
+| ADR-0008 | Funciones/retorno | — | PROPUESTO (pendiente aprobación) |
+
+**Verificación:** `cargo test` → **211 pruebas, 0 fallos** | `cargo clippy --all-targets` → **0 advertencias** (commit `bf2798f`).

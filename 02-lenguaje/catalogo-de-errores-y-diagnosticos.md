@@ -38,3 +38,25 @@ Los prefijos son una propuesta; deben aprobarse antes de fijarlos como interfaz 
 
 ## Pendiente
 Definir columnas en bytes, puntos de código o unidades UTF-16; comportamiento con tabulaciones; normalización de identificadores; estrategia de recuperación sintáctica y códigos definitivos.
+
+
+## Sincronización con código (prototipo)
+
+Este catálogo se sincroniza con `prototipo/src/evaluador.rs::CausaError` (fuente de verdad en implementación).
+
+```rust
+pub enum CausaError {
+    /// Motivo aritmético o de tipos del sistema numérico (ADR-0005).
+    Aritmetica(MotivoAritmetico),
+    /// Referencia o asignación a un nombre no declarado (ADR-0006).
+    VariableNoDefinida(String),
+    /// `sea nombre` repetido en el mismo ámbito (ADR-0006).
+    DeclaracionDuplicada(String),
+    /// Asignación con un tipo distinto al declarado y sin conversión implícita.
+    AsignacionIncompatible {
+        esperado: &'static str,
+        obtenido: &'static str,
+    }
+```
+
+**Regla:** Cualquier nueva causa en el evaluador debe reflejarse aquí con código estable, mensaje, ubicación y acción sugerida.

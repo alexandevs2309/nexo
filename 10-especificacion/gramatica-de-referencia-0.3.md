@@ -59,3 +59,17 @@ Los operadores binarios indicados son asociativos a izquierda, salvo `no`, que e
 
 ## Límites
 Esta gramática no incluye funciones ni llamadas: ADR-0008 sigue propuesto y el parser actual no contiene nodos de AST para declaración/llamada de funciones o retorno. La gramática debe transformarse en una norma de conformidad automatizada antes de declarar especificación completa.
+
+
+## Sincronización con implementación
+
+Comparado con `prototipo/src/parser.rs`:
+
+- **Sentencias:** `sea`, asignación, `si`/`sino`/`sino si`, `mientras`, bloque, expresión
+- **Precedencia:** `( )` → `* / %` → `+ -` → comparaciones → `no` → `y` → `o`
+- **Bloques:** `{` debe estar en la misma línea que `si`/`sino`/`mientras` (ADR-0007 §1.6)
+- **Lógicos:** `verdadero`/`falso`, `y`/`o` con cortocircuito, `no` unario
+- **Comparaciones:** sin encadenamiento
+- **Variables:** `y`/`o` son palabras clave (migración requerida si se usaban como identificadores)
+
+**Fuente de verdad para el parser:** `prototipo/src/parser.rs`. Esta gramática es de referencia y debe actualizarse ante cambios en el AST.
