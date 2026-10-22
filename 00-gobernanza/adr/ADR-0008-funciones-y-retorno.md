@@ -1,6 +1,7 @@
 # ADR-0008 — Funciones, retorno y llamadas (incremento 5)
-- Estado: **Propuesto** (incremento 5 preparado, **no implementado**).
+- Estado: **Aprobado** (incremento 5 autorizado, **no implementado**).
 - Fecha: 2026-10-21.
+- Aprobado: 2026-10-22.
 - Responsable: proyecto Nexo.
 - Revisión prevista: al implementar el incremento 5, o antes si se decide añadir módulos,
   recursión o sobrecarga.
@@ -22,6 +23,19 @@ Requisitos asumidos del encargo:
 Las palabras clave `funcion`, `retornar` y `mostrar` ya están reservadas por el léxico desde
 ADR-0003 (`TipoToken::Funcion`, `Retornar`, `Mostrar`), de modo que este incremento no amplía
 el espacio de identificadores salvo que se proponga lo contrario en §6.
+
+## Decisión (aprobada 2026-10-22)
+
+Los seis puntos se resuelven de la siguiente manera:
+
+1. **Tipos de parámetros:** inferencia fijada en la primera llamada. Se comporta igual que `sea`: el tipo queda fijado al recibir el primer valor.
+2. **Retorno múltiple:** rechazado. Solo se admite `retornar expresion?` con un valor único.
+3. **Acceso a variables externas:** no. El cuerpo solo accede a parámetros y variables declaradas dentro de la función (sin captura de ámbito).
+4. **`mostrar`:** diferido al incremento de E/S. No se implementa en el incremento 5.
+5. **Recursión:** admitida desde el primer incremento. Si fuera necesario, se añadirá un límite de profundidad con evidencia.
+6. **Funciones anidadas:** no permitidas en este incremento.
+
+Esta decisión no altera el léxico ni crea nuevos tipos; solo añade declaraciones de función, llamadas en expresiones/sentencias y `retornar` explícito.
 
 ## 2. Opciones consideradas
 

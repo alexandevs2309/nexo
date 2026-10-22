@@ -47,7 +47,7 @@ Una brecha no se cierra porque exista un documento. Debe tener decisión aprobad
 | Núcleo numérico (entero/decimal/real) | **IMPLEMENTADO** | ADR-0005, `prototipo/tests/conformidad.rs` |
 | Variables, asignación, ámbitos | **IMPLEMENTADO** | ADR-0006, `prototipo/tests/variables.rs` |
 | `si`/`sino`/`sino si`, `mientras`, bloques | **IMPLEMENTADO** | ADR-0007, `prototipo/tests/conformidad_control.rs`, `prototipo/tests/control_flujo.rs` |
-| Funciones/parámetros/retorno/llamadas | **PROPUESTO** | ADR-0008 (6 puntos pendientes) |
+| Funciones/parámetros/retorno/llamadas | **AUTORIZADO** | ADR-0008 aprobado (2026-10-22) |
 | Cadenas como valores primarios | **PARCIAL/NO-SOPORTADO** | Lexer tokeniza, parser/evaluador no las aceptan como expresión primaria |
 | Módulos/importaciones | **PENDIENTE** | GAP-010 |
 | Colecciones | **PENDIENTE** | GAP-008 |

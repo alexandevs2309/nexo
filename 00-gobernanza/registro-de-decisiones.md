@@ -18,7 +18,7 @@ Toda decisión importante debe documentar contexto, requisitos, opciones, criter
 | [ADR-0005](adr/ADR-0005-sistema-numerico.md) | Sistema numérico del núcleo | Aprobado |
 | [ADR-0006](adr/ADR-0006-declaraciones-y-variables.md) | Declaraciones, variables y ámbitos iniciales | Aprobado |
 | [ADR-0007](adr/ADR-0007-estructuras-de-control-y-logicos.md) | Bloques, condiciones, ciclos y tipos lógicos (incremento 4) | **Aprobado** |
-| [ADR-0008](adr/ADR-0008-funciones-y-retorno.md) | Funciones, retorno y llamadas (incremento 5) | Propuesto |
+| [ADR-0008](adr/ADR-0008-funciones-y-retorno.md) | Funciones, retorno y llamadas (incremento 5) | **Aprobado** |
 
 ## ADR previstas
 Modelo de ejecución; sistema de tipos; memoria; errores; concurrencia; módulos y paquetes; interoperabilidad; compatibilidad; licencia y gobernanza; codificación; IR y optimización; pruebas de conformidad.
