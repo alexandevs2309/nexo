@@ -89,3 +89,11 @@ Las huellas SHA consultadas en `main` incluyen:
 - `ADR-0008-funciones-y-retorno.md`: `e1bab1a855c1a0a37626c8fde49c838ecf2699ab`
 - `prototipo/src/parser.rs`: `f6598895479c47cad581d6310894c2909b46db14`
 - `prototipo/src/evaluador.rs`: `6e589809c2b4beb646830a52de3551ae9d07cb0f`
+
+## Acciones aplicadas tras esta auditoría
+- [x] `README.md` actualizado para reflejar prototipo funcional en `prototipo/`.
+- [x] `registro-de-brechas.md` sincronizado con capacidades reales.
+- [x] `catálogo-de-errores` sincronizado con `CausaError` real.
+- [x] `gramática-de-referencia` sincronizada con `parser.rs`.
+- [x] `matriz-de-trazabilidad` con evidencia real de tests.
+- [x] Documentación fusionada 0.3.1 integrada en el árbol.

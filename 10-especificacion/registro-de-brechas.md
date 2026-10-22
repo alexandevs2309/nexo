@@ -39,3 +39,19 @@ Este registro es el backlog de especificación. Las prioridades son recomendacio
 
 ## Regla de cierre
 Una brecha no se cierra porque exista un documento. Debe tener decisión aprobada, especificación, pruebas y estado de implementación; el nivel de cierre se marca por separado en cada una de esas dimensiones.
+
+## Estado actual del prototipo (sincronizado)
+
+| Capacidad | Estado | Evidencia |
+|---|---|---|
+| Núcleo numérico (entero/decimal/real) | **IMPLEMENTADO** | ADR-0005, `prototipo/tests/conformidad.rs` |
+| Variables, asignación, ámbitos | **IMPLEMENTADO** | ADR-0006, `prototipo/tests/variables.rs` |
+| `si`/`sino`/`sino si`, `mientras`, bloques | **IMPLEMENTADO** | ADR-0007, `prototipo/tests/conformidad_control.rs`, `prototipo/tests/control_flujo.rs` |
+| Funciones/parámetros/retorno/llamadas | **PROPUESTO** | ADR-0008 (6 puntos pendientes) |
+| Cadenas como valores primarios | **PARCIAL/NO-SOPORTADO** | Lexer tokeniza, parser/evaluador no las aceptan como expresión primaria |
+| Módulos/importaciones | **PENDIENTE** | GAP-010 |
+| Colecciones | **PENDIENTE** | GAP-008 |
+| E/S | **PENDIENTE** | GAP-013 |
+| CLI completa | **PARCIAL** | `06-herramientas-ecosistema/contrato-de-cli.md` (diseño) |
+
+**Total:** 211 pruebas en verde, clippy limpio.
