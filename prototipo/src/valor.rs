@@ -22,7 +22,7 @@ pub const FACTOR_ESCALA: i128 = 1_000_000_000;
 /// 10^19, para validación de rango del decimal.
 const DIEZ_POT_19: i128 = 10_000_000_000_000_000_000;
 
-/// Un valor de BASILISCO con su tipo (tres numéricos + `lógico` + `texto`).
+/// Un valor de BASILISCO con su tipo (tres numéricos + `lógico` + `texto` + `arreglo` + `lista`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Valor {
     Entero(i64),
@@ -33,6 +33,10 @@ pub enum Valor {
     Logico(bool),
     /// Valor de texto (string UTF-8).
     Texto(String),
+    /// Arreglo de tamaño fijo: `arreglo<T, N>`.
+    Arreglo(Vec<Valor>),
+    /// Lista dinámica: `lista<T>`.
+    Lista(Vec<Valor>),
 }
 
 /// Motivos de error aritmético, alineados con `ErrorEjecucion`.
@@ -133,6 +137,8 @@ impl Valor {
             Valor::Real(_) => "real",
             Valor::Logico(_) => "lógico",
             Valor::Texto(_) => "texto",
+            Valor::Arreglo(_) => "arreglo",
+            Valor::Lista(_) => "lista",
         }
     }
 }
@@ -406,6 +412,8 @@ impl Valor {
             Valor::Real(a) => *a == 0.0,
             Valor::Logico(_) => false,
             Valor::Texto(_) => false,
+            Valor::Arreglo(_) => false,
+            Valor::Lista(_) => false,
         }
     }
 
@@ -418,6 +426,9 @@ impl Valor {
             Valor::Logico(_) => f64::NAN,
             // Texto no tiene representación numérica.
             Valor::Texto(_) => f64::NAN,
+            // Arreglos y listas no tienen representación numérica.
+            Valor::Arreglo(_) => f64::NAN,
+            Valor::Lista(_) => f64::NAN,
         }
     }
 }
@@ -446,6 +457,26 @@ impl fmt::Display for Valor {
             Valor::Logico(true) => write!(f, "verdadero"),
             Valor::Logico(false) => write!(f, "falso"),
             Valor::Texto(s) => write!(f, "{s}"),
+            Valor::Arreglo(v) => {
+                write!(f, "[")?;
+                for (i, elem) in v.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{elem}")?;
+                }
+                write!(f, "]")
+            }
+            Valor::Lista(v) => {
+                write!(f, "[")?;
+                for (i, elem) in v.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{elem}")?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }

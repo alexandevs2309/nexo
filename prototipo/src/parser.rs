@@ -52,6 +52,19 @@ pub enum Expresion {
         linea: usize,
         columna: usize,
     },
+    /// Literal de arreglo/lista `[...]` (resuelto en evaluación según tipo esperado).
+    ArregloLiteral {
+        elementos: Vec<Expresion>,
+        linea: usize,
+        columna: usize,
+    },
+    /// Indexación `objeto[indice]`.
+    Indice {
+        objeto: Box<Expresion>,
+        indice: Box<Expresion>,
+        linea: usize,
+        columna: usize,
+    },
 }
 
 /// Sentencias de un programa (ADR-0006, ampliadas ADR-0007, ADR-0008).
@@ -126,6 +139,8 @@ pub enum TipoAnotacion {
     Real,
     Logico,
     Texto,
+    Arreglo(Box<TipoAnotacion>, usize),
+    Lista(Box<TipoAnotacion>),
 }
 
 impl TipoAnotacion {
@@ -136,6 +151,12 @@ impl TipoAnotacion {
             TipoAnotacion::Real => "real",
             TipoAnotacion::Logico => "lógico",
             TipoAnotacion::Texto => "texto",
+            TipoAnotacion::Arreglo(_t, _n) => {
+                // This is a workaround since we can't return a formatted string
+                // The caller should use a different method for display
+                "arreglo"
+            }
+            TipoAnotacion::Lista(_) => "lista",
         }
     }
 }
@@ -247,7 +268,9 @@ impl Parser {
         ) {
             self.sentencia_declaracion()
         } else if matches!(self.actual(), Some(TipoToken::Funcion)) {
-            self.sentencia_funcion()
+            let s = self.sentencia_funcion()?;
+            self.terminar_sentencia()?;
+            Ok(s)
         } else if matches!(self.actual(), Some(TipoToken::Retornar)) {
             self.sentencia_retorno()
         } else if matches!(self.actual(), Some(TipoToken::Si)) {
@@ -347,6 +370,61 @@ impl Parser {
             return Err(self.error("se esperaba ':' para anotación de tipo"));
         }
         self.pos += 1; // ':'
+        // Soporte para arreglo<T, N> y lista<T>
+        if matches!(self.actual(), Some(TipoToken::Arreglo)) {
+            self.pos += 1; // 'arreglo'
+            if !matches!(self.actual(), Some(TipoToken::Menor)) {
+                return Err(self.error("se esperaba '<' después de 'arreglo'"));
+            }
+            self.pos += 1; // '<'
+            let tipo_elem = self.parsear_tipo_anotacion_simple()?;
+            self.omitir_finales_de_linea();
+            if !matches!(self.actual(), Some(TipoToken::Coma)) {
+                return Err(self.error("se esperaba ',' después del tipo de elemento en arreglo"));
+            }
+            self.pos += 1; // ','
+            self.omitir_finales_de_linea();
+            let tamano = match self.actual() {
+                Some(TipoToken::Numero) => {
+                    let t = &self.tokens[self.pos];
+                    let tam: usize = t
+                        .lexema
+                        .parse()
+                        .map_err(|_| self.error("tamaño de arreglo inválido"))?;
+                    if tam == 0 {
+                        return Err(self.error("el tamaño del arreglo debe ser mayor que 0"));
+                    }
+                    self.pos += 1;
+                    tam
+                }
+                _ => return Err(self.error("se esperaba un número para el tamaño del arreglo")),
+            };
+            self.omitir_finales_de_linea();
+            if !matches!(self.actual(), Some(TipoToken::Mayor)) {
+                return Err(self.error("se esperaba '>' para cerrar el tipo de arreglo"));
+            }
+            self.pos += 1; // '>'
+            return Ok(TipoAnotacion::Arreglo(Box::new(tipo_elem), tamano));
+        }
+        if matches!(self.actual(), Some(TipoToken::Lista)) {
+            self.pos += 1; // 'lista'
+            if !matches!(self.actual(), Some(TipoToken::Menor)) {
+                return Err(self.error("se esperaba '<' después de 'lista'"));
+            }
+            self.pos += 1; // '<'
+            let tipo_elem = self.parsear_tipo_anotacion_simple()?;
+            self.omitir_finales_de_linea();
+            if !matches!(self.actual(), Some(TipoToken::Mayor)) {
+                return Err(self.error("se esperaba '>' para cerrar el tipo de lista"));
+            }
+            self.pos += 1; // '>'
+            return Ok(TipoAnotacion::Lista(Box::new(tipo_elem)));
+        }
+        // Tipos simples
+        self.parsear_tipo_anotacion_simple()
+    }
+
+    fn parsear_tipo_anotacion_simple(&mut self) -> Result<TipoAnotacion, ErrorSintactico> {
         match self.actual() {
             Some(TipoToken::Identificador(t)) if t == "entero" => {
                 self.pos += 1;
@@ -368,10 +446,7 @@ impl Parser {
                 self.pos += 1;
                 Ok(TipoAnotacion::Texto)
             }
-            _ => {
-                Err(self
-                    .error("tipo desconocido; se esperaba: entero, decimal, real, logico, texto"))
-            }
+            _ => Err(self.error("tipo desconocido; se esperaba: entero, decimal, real, logico, texto, arreglo<T, N>, lista<T>")),
         }
     }
 
@@ -750,7 +825,7 @@ impl Parser {
         Ok(izq)
     }
 
-    fn primaria(&mut self) -> Result<Expresion, ErrorSintactico> {
+    fn primaria_sin_indice(&mut self) -> Result<Expresion, ErrorSintactico> {
         // Continuación contextual: tras un operador o '(' el salto de línea no termina.
         self.omitir_finales_de_linea();
         match self.actual() {
@@ -827,6 +902,37 @@ impl Parser {
                     columna,
                 })
             }
+            Some(TipoToken::CorcheteIzq) => {
+                let t_corchete = &self.tokens[self.pos];
+                let (linea, columna) = (t_corchete.linea, t_corchete.columna);
+                self.pos += 1; // '['
+                self.omitir_finales_de_linea();
+                let mut elementos = Vec::new();
+                if matches!(self.actual(), Some(TipoToken::CorcheteDer)) {
+                    self.pos += 1; // ']'
+                } else {
+                    loop {
+                        let elem = self.expresion()?;
+                        elementos.push(elem);
+                        self.omitir_finales_de_linea();
+                        if matches!(self.actual(), Some(TipoToken::Coma)) {
+                            self.pos += 1;
+                            self.omitir_finales_de_linea();
+                            continue;
+                        }
+                        if matches!(self.actual(), Some(TipoToken::CorcheteDer)) {
+                            self.pos += 1;
+                            break;
+                        }
+                        return Err(self.error("se esperaba ',' o ']'"));
+                    }
+                }
+                Ok(Expresion::ArregloLiteral {
+                    elementos,
+                    linea,
+                    columna,
+                })
+            }
             Some(TipoToken::Identificador(nombre)) => {
                 let t = &self.tokens[self.pos];
                 let (linea, columna) = (t.linea, t.columna);
@@ -889,6 +995,32 @@ impl Parser {
             }
             _ => Err(self.error("se esperaba un número o '('")),
         }
+    }
+
+    /// Parsea una expresión primaria y maneja indexación posterior `[indice]`.
+    fn primaria(&mut self) -> Result<Expresion, ErrorSintactico> {
+        let mut expr = self.primaria_sin_indice()?;
+        // La indexación es un sufijo de la misma línea: un salto de línea termina
+        // la expresión (p. ej. `a` seguido de `[0]` en otra línea son dos sentencias).
+        while matches!(self.actual(), Some(TipoToken::CorcheteIzq)) {
+            let t_corchete = &self.tokens[self.pos];
+            let (linea, columna) = (t_corchete.linea, t_corchete.columna);
+            self.pos += 1; // '['
+            self.omitir_finales_de_linea();
+            let indice = self.expresion()?;
+            self.omitir_finales_de_linea();
+            if !matches!(self.actual(), Some(TipoToken::CorcheteDer)) {
+                return Err(self.error("se esperaba ']'"));
+            }
+            self.pos += 1; // ']'
+            expr = Expresion::Indice {
+                objeto: Box::new(expr),
+                indice: Box::new(indice),
+                linea,
+                columna,
+            };
+        }
+        Ok(expr)
     }
 }
 

@@ -18,6 +18,8 @@ pub enum TipoToken {
     Dato,
     /// Palabra clave `const` (constante de compilación).
     Const,
+    Arreglo,
+    Lista,
     Funcion,
     Retornar,
     Mostrar,
@@ -46,6 +48,10 @@ pub enum TipoToken {
     LlaveIzq,
     LlaveDer,
     Coma,
+    /// Corchete izquierdo `[`
+    CorcheteIzq,
+    /// Corchete derecho `]`
+    CorcheteDer,
     /// Dos puntos `:` para anotaciones de tipo.
     DosPuntos,
     /// Fin de línea (LF o CRLF). El parser decide contextualmente si termina sentencia.

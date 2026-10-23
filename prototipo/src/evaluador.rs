@@ -24,7 +24,7 @@ pub enum CausaError {
     /// Asignación con un tipo distinto al declarado y sin conversión implícita.
     AsignacionIncompatible {
         esperado: &'static str,
-        obtenido: &'static str,
+        obtenido: String,
     },
     /// Condición de `si`/`mientras` no es `lógico` (ADR-0007).
     CondicionNoLogica { obtenido: &'static str },
@@ -272,21 +272,25 @@ impl Entorno {
                         ));
                     }
                     let v = evaluar_con(&valor, self)?;
-                    // Validar tipo anotado si existe
-                    if let Some(tipo_anotado) = tipo_anotacion {
+                    // Convertir y validar contra el tipo anotado si existe.
+                    let v = if let Some(tipo_anotado) = tipo_anotacion {
                         let tipo_obtenido = v.nombre_tipo();
-                        let tipo_esperado = tipo_anotado.nombre();
-                        if !tipos_compatibles(tipo_esperado, tipo_obtenido) {
-                            return Err(error(
-                                CausaError::AsignacionIncompatible {
-                                    esperado: tipo_esperado,
-                                    obtenido: tipo_obtenido,
-                                },
-                                linea,
-                                columna,
-                            ));
+                        match convertir_a_tipo_anotado(v, tipo_anotado) {
+                            Some(convertido) => convertido,
+                            None => {
+                                return Err(error(
+                                    CausaError::AsignacionIncompatible {
+                                        esperado: tipo_anotado.nombre(),
+                                        obtenido: tipo_obtenido.to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                ));
+                            }
                         }
-                    }
+                    } else {
+                        v
+                    };
                     self.insertar_variable(
                         nombre.clone(),
                         VariableInfo {
@@ -318,18 +322,18 @@ impl Entorno {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
                                 esperado: "variable inmutable (dato/const)",
-                                obtenido: "intento de reasignación",
+                                obtenido: "intento de reasignación".to_string(),
                             },
                             linea,
                             columna,
                         ));
                     }
-                    // Verificar compatibilidad de tipo
-                    let Some(ajustado) = convertir_para_tipo(&info.valor, nuevo) else {
+                    // Verificar compatibilidad de tipo (según el tipo declarado si lo hay).
+                    let Some(ajustado) = convertir_para_variable(info, nuevo) else {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
                                 esperado: info.valor.nombre_tipo(),
-                                obtenido: nuevo_tipo,
+                                obtenido: nuevo_tipo.to_string(),
                             },
                             linea,
                             columna,
@@ -500,21 +504,25 @@ impl Entorno {
                         ));
                     }
                     let v = evaluar_con(&valor, self)?;
-                    // Validar tipo anotado si existe
-                    if let Some(tipo_anotado) = tipo_anotacion {
+                    // Convertir y validar contra el tipo anotado si existe.
+                    let v = if let Some(tipo_anotado) = tipo_anotacion {
                         let tipo_obtenido = v.nombre_tipo();
-                        let tipo_esperado = tipo_anotado.nombre();
-                        if !tipos_compatibles(tipo_esperado, tipo_obtenido) {
-                            return Err(error(
-                                CausaError::AsignacionIncompatible {
-                                    esperado: tipo_esperado,
-                                    obtenido: tipo_obtenido,
-                                },
-                                linea,
-                                columna,
-                            ));
+                        match convertir_a_tipo_anotado(v, tipo_anotado) {
+                            Some(convertido) => convertido,
+                            None => {
+                                return Err(error(
+                                    CausaError::AsignacionIncompatible {
+                                        esperado: tipo_anotado.nombre(),
+                                        obtenido: tipo_obtenido.to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                ));
+                            }
                         }
-                    }
+                    } else {
+                        v
+                    };
                     self.insertar_variable(
                         nombre.clone(),
                         VariableInfo {
@@ -546,18 +554,18 @@ impl Entorno {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
                                 esperado: "variable inmutable (dato/const)",
-                                obtenido: "intento de reasignación",
+                                obtenido: "intento de reasignación".to_string(),
                             },
                             linea,
                             columna,
                         ));
                     }
-                    // Verificar compatibilidad de tipo
-                    let Some(ajustado) = convertir_para_tipo(&info.valor, nuevo) else {
+                    // Verificar compatibilidad de tipo (según el tipo declarado si lo hay).
+                    let Some(ajustado) = convertir_para_variable(info, nuevo) else {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
                                 esperado: info.valor.nombre_tipo(),
-                                obtenido: nuevo_tipo,
+                                obtenido: nuevo_tipo.to_string(),
                             },
                             linea,
                             columna,
@@ -704,17 +712,68 @@ impl Entorno {
     }
 }
 
-/// Verifica si un tipo obtenido es compatible con el tipo esperado (para declaraciones tipadas).
-/// Permite las mismas conversiones implícitas que la asignación (entero→decimal, entero→real).
-fn tipos_compatibles(esperado: &str, obtenido: &str) -> bool {
-    if esperado == obtenido {
-        return true;
+/// Convierte y valida un valor contra una anotación de tipo, aplicando las conversiones
+/// implícitas permitidas (entero→decimal, entero→real) y validando el tamaño y los
+/// elementos de arreglos y listas. `None` = incompatible.
+fn convertir_a_tipo_anotado(valor: Valor, tipo: &TipoAnotacion) -> Option<Valor> {
+    match tipo {
+        TipoAnotacion::Entero => match valor {
+            Valor::Entero(_) => Some(valor),
+            _ => None,
+        },
+        TipoAnotacion::Decimal => match valor {
+            Valor::Decimal(_) => Some(valor),
+            Valor::Entero(n) => Some(Valor::decimal_desde_entero(n)),
+            _ => None,
+        },
+        TipoAnotacion::Real => match valor {
+            Valor::Real(_) => Some(valor),
+            Valor::Entero(n) => Some(Valor::Real(n as f64)),
+            _ => None,
+        },
+        TipoAnotacion::Logico => match valor {
+            Valor::Logico(_) => Some(valor),
+            _ => None,
+        },
+        TipoAnotacion::Texto => match valor {
+            Valor::Texto(_) => Some(valor),
+            _ => None,
+        },
+        TipoAnotacion::Arreglo(tipo_elem, tamano) => {
+            let elementos = match valor {
+                Valor::Arreglo(v) | Valor::Lista(v) => v,
+                _ => return None,
+            };
+            if elementos.len() != *tamano {
+                return None;
+            }
+            let convertidos = elementos
+                .into_iter()
+                .map(|e| convertir_a_tipo_anotado(e, tipo_elem))
+                .collect::<Option<Vec<_>>>()?;
+            Some(Valor::Arreglo(convertidos))
+        }
+        TipoAnotacion::Lista(tipo_elem) => {
+            let elementos = match valor {
+                Valor::Lista(v) | Valor::Arreglo(v) => v,
+                _ => return None,
+            };
+            let convertidos = elementos
+                .into_iter()
+                .map(|e| convertir_a_tipo_anotado(e, tipo_elem))
+                .collect::<Option<Vec<_>>>()?;
+            Some(Valor::Lista(convertidos))
+        }
     }
-    // Conversiones implícitas permitidas (ADR-0005 §1.4)
-    matches!(
-        (esperado, obtenido),
-        ("decimal", "entero") | ("real", "entero")
-    )
+}
+
+/// Convierte `nuevo` al tipo de la variable: usa la anotación declarada si existe y,
+/// si no, las conversiones implícitas basadas en el valor actual (ADR-0005 §1.4).
+fn convertir_para_variable(info: &VariableInfo, nuevo: Valor) -> Option<Valor> {
+    match info.tipo_declarado.as_ref() {
+        Some(tipo) => convertir_a_tipo_anotado(nuevo, tipo),
+        None => convertir_para_tipo(&info.valor, nuevo),
+    }
 }
 
 /// Aplica a `nuevo` las conversiones implícitas permitidas hacia el tipo de la variable
@@ -908,6 +967,83 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             }
             Ok(resultado)
         }
+        Expresion::ArregloLiteral { elementos, .. } => {
+            let mut valores = Vec::new();
+            for elem in elementos {
+                valores.push(evaluar_con(elem, env)?);
+            }
+            // Por defecto, los literales `[...]` crean una Lista (dinámica).
+            // Si se usa en contexto de arreglo con tamaño fijo, el evaluador de declaraciones lo convertirá.
+            Ok(Valor::Lista(valores))
+        }
+        Expresion::Indice {
+            objeto,
+            indice,
+            linea,
+            columna,
+        } => {
+            let obj = evaluar_con(objeto, env)?;
+            let idx = evaluar_con(indice, env)?;
+            let idx_val = match idx {
+                Valor::Entero(i) => i,
+                _ => {
+                    return Err(error(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "entero",
+                            obtenido: idx.nombre_tipo().to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    ));
+                }
+            };
+            match obj {
+                Valor::Arreglo(arr) => {
+                    let idx_usize = idx_val as usize;
+                    if idx_usize >= arr.len() {
+                        return Err(error(
+                            CausaError::AsignacionIncompatible {
+                                esperado: "índice válido",
+                                obtenido: format!(
+                                    "índice {} fuera de rango (tamaño {})",
+                                    idx_usize,
+                                    arr.len()
+                                ),
+                            },
+                            *linea,
+                            *columna,
+                        ));
+                    }
+                    Ok(arr[idx_usize].clone())
+                }
+                Valor::Lista(lst) => {
+                    let idx_usize = idx_val as usize;
+                    if idx_usize >= lst.len() {
+                        return Err(error(
+                            CausaError::AsignacionIncompatible {
+                                esperado: "índice válido",
+                                obtenido: format!(
+                                    "índice {} fuera de rango (tamaño {})",
+                                    idx_usize,
+                                    lst.len()
+                                ),
+                            },
+                            *linea,
+                            *columna,
+                        ));
+                    }
+                    Ok(lst[idx_usize].clone())
+                }
+                _ => Err(error(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "arreglo o lista",
+                        obtenido: obj.nombre_tipo().to_string(),
+                    },
+                    *linea,
+                    *columna,
+                )),
+            }
+        }
     }
 }
 
@@ -951,6 +1087,8 @@ fn ubicacion(e: &Expresion) -> (usize, usize) {
         | Expresion::Y(a, _)
         | Expresion::O(a, _) => ubicacion(a),
         Expresion::Llamada { linea, columna, .. } => (*linea, *columna),
+        Expresion::ArregloLiteral { linea, columna, .. } => (*linea, *columna),
+        Expresion::Indice { linea, columna, .. } => (*linea, *columna),
     }
 }
 
@@ -1273,7 +1411,7 @@ mod tests {
             causa_programa("sea x = 5\nx = 2.5"),
             CausaError::AsignacionIncompatible {
                 esperado: "entero",
-                obtenido: "decimal"
+                obtenido: "decimal".to_string()
             }
         );
         // variable decimal ← real.
@@ -1281,7 +1419,7 @@ mod tests {
             causa_programa("sea x = 1.5\nx = 2.0e0"),
             CausaError::AsignacionIncompatible {
                 esperado: "decimal",
-                obtenido: "real"
+                obtenido: "real".to_string()
             }
         );
         // variable entero ← real.
@@ -1289,7 +1427,7 @@ mod tests {
             causa_programa("sea x = 5\nx = 2.0e0"),
             CausaError::AsignacionIncompatible {
                 esperado: "entero",
-                obtenido: "real"
+                obtenido: "real".to_string()
             }
         );
     }
@@ -1342,7 +1480,7 @@ mod tests {
             causa_programa("sea x = 5\nx = 7.5"),
             CausaError::AsignacionIncompatible {
                 esperado: "entero",
-                obtenido: "decimal"
+                obtenido: "decimal".to_string()
             }
         );
         // Pero la referencia devuelve el valor con su tipo original.

@@ -135,6 +135,14 @@ impl Lexer {
                     self.avanzar();
                     TipoToken::DosPuntos
                 }
+                '[' => {
+                    self.avanzar();
+                    TipoToken::CorcheteIzq
+                }
+                ']' => {
+                    self.avanzar();
+                    TipoToken::CorcheteDer
+                }
                 '=' => {
                     self.avanzar();
                     if self.actual() == Some('=') {
@@ -263,6 +271,8 @@ impl Lexer {
             "var" => TipoToken::Var,
             "dato" => TipoToken::Dato,
             "const" => TipoToken::Const,
+            "arreglo" => TipoToken::Arreglo,
+            "lista" => TipoToken::Lista,
             "funcion" => TipoToken::Funcion,
             "retornar" => TipoToken::Retornar,
             "mostrar" => TipoToken::Mostrar,
