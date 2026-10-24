@@ -21,6 +21,10 @@ Toda decisión importante debe documentar contexto, requisitos, opciones, criter
 | [ADR-0008](adr/ADR-0008-funciones-y-retorno.md) | Funciones, retorno y llamadas (incremento 5) | **Aprobado** |
 | [ADR-0009](adr/ADR-0009-identidad-basilisco.md) | Identidad BASILISCO y retirada progresiva de Nexo | **Aprobado** |
 | [ADR-0010](adr/ADR-0010-cli-y-extension.md) | CLI y ejecución de archivos | **Aprobado** |
+| [ADR-0011](adr/ADR-0011-sistema-de-tipos-gradual.md) | Sistema de tipos gradual, parámetros tipados, retorno anotado y valor nulo | **Aprobado** |
+| [ADR-0012](adr/ADR-0012-iteracion-para-cada-romper-continuar.md) | Iteración: `para cada`, rangos, `romper` y `continuar` | **Aprobado** |
+| [ADR-0013](adr/ADR-0013-entrada-salida-basica-texto-archivos.md) | E/S básica: entrada estándar, operaciones de texto y archivos | **Aprobado** |
+| [ADR-0014](adr/ADR-0014-manejo-de-errores-intentar-rescatar.md) | Manejo de errores: `intentar`/`rescatar` | **Aprobado** |
 
 ## ADR previstas
 Modelo de ejecución; sistema de tipos; memoria; errores; concurrencia; módulos y paquetes; interoperabilidad; compatibilidad; licencia y gobernanza; codificación; IR y optimización; pruebas de conformidad.

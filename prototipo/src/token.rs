@@ -54,6 +54,30 @@ pub enum TipoToken {
     CorcheteDer,
     /// Dos puntos `:` para anotaciones de tipo.
     DosPuntos,
+    /// Flecha `->` para anotación de tipo de retorno (ADR-0011).
+    Flecha,
+    /// Palabra clave `nulo` (ADR-0011 §3.5).
+    Nulo,
+    /// Palabra clave `para` (ADR-0012 §3.1).
+    Para,
+    /// Palabra clave `cada` (ADR-0012 §3.1).
+    Cada,
+    /// Palabra clave `en` (ADR-0012 §3.1).
+    En,
+    /// Palabra clave `romper` (ADR-0012 §3.2).
+    Romper,
+    /// Palabra clave `continuar` (ADR-0012 §3.2).
+    Continuar,
+    /// Operador de rango exclusivo `..` (ADR-0012 §3.3).
+    RangoDos,
+    /// Operador de rango inclusivo `..=` (ADR-0012 §3.3).
+    RangoDosCerrado,
+    /// Sentencia `mostrar_sin_salto` (ADR-0013 §3.3).
+    MostrarSinSalto,
+    /// Palabra clave `intentar` (ADR-0014 §3.1).
+    Intentar,
+    /// Palabra clave `rescatar` (ADR-0014 §3.1).
+    Rescatar,
     /// Fin de línea (LF o CRLF). El parser decide contextualmente si termina sentencia.
     FinDeLinea,
     Fin,

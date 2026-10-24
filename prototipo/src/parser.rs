@@ -65,6 +65,15 @@ pub enum Expresion {
         linea: usize,
         columna: usize,
     },
+    /// Rango `inicio..fin` o `inicio..=fin` (ADR-0012 §3.3).
+    /// Solo válido como iterable en `para cada`; no se almacena en variable.
+    Rango {
+        inicio: Box<Expresion>,
+        fin: Box<Expresion>,
+        inclusivo: bool,
+        linea: usize,
+        columna: usize,
+    },
 }
 
 /// Sentencias de un programa (ADR-0006, ampliadas ADR-0007, ADR-0008).
@@ -117,10 +126,13 @@ pub enum Sentencia {
     Bloque(Vec<Sentencia>),
     /// Sentencia de expresión: evalúa a un valor.
     Expresion(Expresion),
-    /// Definición de función (ADR-0008).
+    /// Definición de función (ADR-0008, ampliada ADR-0011).
     Funcion {
         nombre: String,
-        parametros: Vec<String>,
+        /// Parámetros con tipo anotado opcional. Todos tipados o ninguno (ADR-0011 §3.2).
+        parametros: Vec<(String, Option<TipoAnotacion>)>,
+        /// Tipo de retorno anotado (ADR-0011 §3.4).
+        tipo_retorno: Option<TipoAnotacion>,
         cuerpo: Vec<Sentencia>,
         linea: usize,
         columna: usize,
@@ -137,6 +149,32 @@ pub enum Sentencia {
         linea: usize,
         columna: usize,
     },
+    /// Sentencia `mostrar_sin_salto expresión` (ADR-0013 §3.3).
+    MostrarSinSalto {
+        valor: Expresion,
+        linea: usize,
+        columna: usize,
+    },
+    /// `para cada IDENT en expr_iteracion { ... }` (ADR-0012 §3.1).
+    ParaCada {
+        variable: String,
+        iterable: Expresion,
+        cuerpo: Vec<Sentencia>,
+        linea: usize,
+        columna: usize,
+    },
+    /// `romper` (ADR-0012 §3.2). Solo válido dentro de un ciclo.
+    Romper { linea: usize, columna: usize },
+    /// `continuar` (ADR-0012 §3.2). Solo válido dentro de un ciclo.
+    Continuar { linea: usize, columna: usize },
+    /// `intentar { ... } rescatar [IDENT] { ... }` (ADR-0014 §3.1).
+    IntentarRescatar {
+        cuerpo_intentar: Vec<Sentencia>,
+        variable_error: Option<String>,
+        cuerpo_rescatar: Vec<Sentencia>,
+        linea: usize,
+        columna: usize,
+    },
 }
 
 /// Anotación de tipo en declaraciones (var/dato/const).
@@ -149,6 +187,8 @@ pub enum TipoAnotacion {
     Texto,
     Arreglo(Box<TipoAnotacion>, usize),
     Lista(Box<TipoAnotacion>),
+    /// Tipo nulo (ADR-0011 §3.5). Válido en tipo de retorno `-> nulo`.
+    Nulo,
 }
 
 impl TipoAnotacion {
@@ -161,6 +201,7 @@ impl TipoAnotacion {
             TipoAnotacion::Texto => "texto".to_string(),
             TipoAnotacion::Arreglo(t, n) => format!("arreglo<{}, {}>", t.nombre(), n),
             TipoAnotacion::Lista(t) => format!("lista<{}>", t.nombre()),
+            TipoAnotacion::Nulo => "nulo".to_string(),
         }
     }
 }
@@ -227,6 +268,8 @@ pub struct Parser {
     en_grupo: usize,
     /// Estamos dentro de una definición de función (para rechazar anidación).
     en_funcion: bool,
+    /// Profundidad de ciclos anidados (para detectar `romper`/`continuar` fuera de ciclo).
+    en_ciclo: usize,
 }
 
 impl Parser {
@@ -236,6 +279,7 @@ impl Parser {
             pos: 0,
             en_grupo: 0,
             en_funcion: false,
+            en_ciclo: 0,
         }
     }
 
@@ -265,7 +309,10 @@ impl Parser {
 
     /// Parsea una sentencia: declaración, asignación, control de flujo, bloque o expresión.
     fn sentencia(&mut self) -> Result<Sentencia, ErrorSintactico> {
-        if matches!(self.actual(), Some(TipoToken::Sea | TipoToken::Var | TipoToken::Dato | TipoToken::Const)) {
+        if matches!(
+            self.actual(),
+            Some(TipoToken::Sea | TipoToken::Var | TipoToken::Dato | TipoToken::Const)
+        ) {
             return self.sentencia_declaracion();
         } else if matches!(self.actual(), Some(TipoToken::Funcion)) {
             let st = self.sentencia_funcion()?;
@@ -283,6 +330,36 @@ impl Parser {
             return Ok(st);
         } else if matches!(self.actual(), Some(TipoToken::Mostrar)) {
             return self.sentencia_mostrar();
+        } else if matches!(self.actual(), Some(TipoToken::MostrarSinSalto)) {
+            return self.sentencia_mostrar_sin_salto();
+        } else if matches!(self.actual(), Some(TipoToken::Para)) {
+            let st = self.sentencia_para_cada()?;
+            self.terminar_sentencia()?;
+            return Ok(st);
+        } else if matches!(self.actual(), Some(TipoToken::Romper)) {
+            let t = &self.tokens[self.pos];
+            if self.en_ciclo == 0 {
+                return Err(self.error("'romper' fuera de un ciclo"));
+            }
+            let (linea, columna) = (t.linea, t.columna);
+            self.pos += 1;
+            self.terminar_sentencia()?;
+            return Ok(Sentencia::Romper { linea, columna });
+        } else if matches!(self.actual(), Some(TipoToken::Continuar)) {
+            let t = &self.tokens[self.pos];
+            if self.en_ciclo == 0 {
+                return Err(self.error("'continuar' fuera de un ciclo"));
+            }
+            let (linea, columna) = (t.linea, t.columna);
+            self.pos += 1;
+            self.terminar_sentencia()?;
+            return Ok(Sentencia::Continuar { linea, columna });
+        } else if matches!(self.actual(), Some(TipoToken::Intentar)) {
+            let st = self.sentencia_intentar_rescatar()?;
+            self.terminar_sentencia()?;
+            return Ok(st);
+        } else if matches!(self.actual(), Some(TipoToken::Rescatar)) {
+            return Err(self.error("'rescatar' sin un 'intentar' correspondiente"));
         } else if matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
             let bloque = self.bloque()?;
             self.terminar_sentencia()?;
@@ -291,22 +368,47 @@ impl Parser {
             return Err(self.error("'sino' sin un 'si' correspondiente"));
         }
 
-        if matches!(self.actual(), Some(TipoToken::Identificador(_)) | Some(TipoToken::CorcheteIzq) | Some(TipoToken::ParentesisIzq)) {
+        if matches!(
+            self.actual(),
+            Some(TipoToken::Identificador(_))
+                | Some(TipoToken::CorcheteIzq)
+                | Some(TipoToken::ParentesisIzq)
+        ) {
             let pos_guardado = self.pos;
-            if let Ok(expr_cand) = self.primaria() {
-                if matches!(self.actual(), Some(TipoToken::Asignacion)) {
-                    self.pos += 1; // '='
-                    let valor = self.expresion()?;
-                    self.terminar_sentencia()?;
-                    match expr_cand {
-                        Expresion::Variable { nombre, linea, columna } => {
-                            return Ok(Sentencia::Asignacion { nombre, linea, columna, valor });
-                        }
-                        Expresion::Indice { objeto, indice, linea, columna } => {
-                            return Ok(Sentencia::AsignacionIndice { objeto, indice, valor, linea, columna });
-                        }
-                        _ => return Err(self.error("lado izquierdo de asignación inválido")),
+            if let Ok(expr_cand) = self.primaria()
+                && matches!(self.actual(), Some(TipoToken::Asignacion))
+            {
+                self.pos += 1; // '='
+                let valor = self.expresion()?;
+                self.terminar_sentencia()?;
+                match expr_cand {
+                    Expresion::Variable {
+                        nombre,
+                        linea,
+                        columna,
+                    } => {
+                        return Ok(Sentencia::Asignacion {
+                            nombre,
+                            linea,
+                            columna,
+                            valor,
+                        });
                     }
+                    Expresion::Indice {
+                        objeto,
+                        indice,
+                        linea,
+                        columna,
+                    } => {
+                        return Ok(Sentencia::AsignacionIndice {
+                            objeto,
+                            indice,
+                            valor,
+                            linea,
+                            columna,
+                        });
+                    }
+                    _ => return Err(self.error("lado izquierdo de asignación inválido")),
                 }
             }
             self.pos = pos_guardado;
@@ -361,64 +463,13 @@ impl Parser {
         })
     }
 
-    /// Parsea una anotación de tipo: entero | decimal | real | logico | texto
+    /// Parsea una anotación de tipo: entero | decimal | real | logico | texto | nulo
     fn parsear_tipo_anotacion(&mut self) -> Result<TipoAnotacion, ErrorSintactico> {
         if !matches!(self.actual(), Some(TipoToken::DosPuntos)) {
             return Err(self.error("se esperaba ':' para anotación de tipo"));
         }
         self.pos += 1; // ':'
-        // Soporte para arreglo<T, N> y lista<T>
-        if matches!(self.actual(), Some(TipoToken::Arreglo)) {
-            self.pos += 1; // 'arreglo'
-            if !matches!(self.actual(), Some(TipoToken::Menor)) {
-                return Err(self.error("se esperaba '<' después de 'arreglo'"));
-            }
-            self.pos += 1; // '<'
-            let tipo_elem = self.parsear_tipo_anotacion_simple()?;
-            self.omitir_finales_de_linea();
-            if !matches!(self.actual(), Some(TipoToken::Coma)) {
-                return Err(self.error("se esperaba ',' después del tipo de elemento en arreglo"));
-            }
-            self.pos += 1; // ','
-            self.omitir_finales_de_linea();
-            let tamano = match self.actual() {
-                Some(TipoToken::Numero) => {
-                    let t = &self.tokens[self.pos];
-                    let tam: usize = t
-                        .lexema
-                        .parse()
-                        .map_err(|_| self.error("tamaño de arreglo inválido"))?;
-                    if tam == 0 {
-                        return Err(self.error("el tamaño del arreglo debe ser mayor que 0"));
-                    }
-                    self.pos += 1;
-                    tam
-                }
-                _ => return Err(self.error("se esperaba un número para el tamaño del arreglo")),
-            };
-            self.omitir_finales_de_linea();
-            if !matches!(self.actual(), Some(TipoToken::Mayor)) {
-                return Err(self.error("se esperaba '>' para cerrar el tipo de arreglo"));
-            }
-            self.pos += 1; // '>'
-            return Ok(TipoAnotacion::Arreglo(Box::new(tipo_elem), tamano));
-        }
-        if matches!(self.actual(), Some(TipoToken::Lista)) {
-            self.pos += 1; // 'lista'
-            if !matches!(self.actual(), Some(TipoToken::Menor)) {
-                return Err(self.error("se esperaba '<' después de 'lista'"));
-            }
-            self.pos += 1; // '<'
-            let tipo_elem = self.parsear_tipo_anotacion_simple()?;
-            self.omitir_finales_de_linea();
-            if !matches!(self.actual(), Some(TipoToken::Mayor)) {
-                return Err(self.error("se esperaba '>' para cerrar el tipo de lista"));
-            }
-            self.pos += 1; // '>'
-            return Ok(TipoAnotacion::Lista(Box::new(tipo_elem)));
-        }
-        // Tipos simples
-        self.parsear_tipo_anotacion_simple()
+        self.parsear_tipo_anotacion_cuerpo()
     }
 
     fn parsear_tipo_anotacion_simple(&mut self) -> Result<TipoAnotacion, ErrorSintactico> {
@@ -443,8 +494,66 @@ impl Parser {
                 self.pos += 1;
                 Ok(TipoAnotacion::Texto)
             }
-            _ => Err(self.error("tipo desconocido; se esperaba: entero, decimal, real, logico, texto, arreglo<T, N>, lista<T>")),
+            Some(TipoToken::Nulo) => {
+                self.pos += 1;
+                Ok(TipoAnotacion::Nulo)
+            }
+            _ => Err(self.error("tipo desconocido; se esperaba: entero, decimal, real, logico, texto, nulo, arreglo<T, N>, lista<T>")),
         }
+    }
+
+    /// Parsea un tipo de anotación sin consumir el `:` previo (para tipo de retorno `-> tipo`).
+    fn parsear_tipo_anotacion_cuerpo(&mut self) -> Result<TipoAnotacion, ErrorSintactico> {
+        if matches!(self.actual(), Some(TipoToken::Arreglo)) {
+            self.pos += 1;
+            if !matches!(self.actual(), Some(TipoToken::Menor)) {
+                return Err(self.error("se esperaba '<' después de 'arreglo'"));
+            }
+            self.pos += 1;
+            let tipo_elem = self.parsear_tipo_anotacion_simple()?;
+            self.omitir_finales_de_linea();
+            if !matches!(self.actual(), Some(TipoToken::Coma)) {
+                return Err(self.error("se esperaba ',' después del tipo de elemento en arreglo"));
+            }
+            self.pos += 1;
+            self.omitir_finales_de_linea();
+            let tamano = match self.actual() {
+                Some(TipoToken::Numero) => {
+                    let t = &self.tokens[self.pos];
+                    let tam: usize = t
+                        .lexema
+                        .parse()
+                        .map_err(|_| self.error("tamaño de arreglo inválido"))?;
+                    if tam == 0 {
+                        return Err(self.error("el tamaño del arreglo debe ser mayor que 0"));
+                    }
+                    self.pos += 1;
+                    tam
+                }
+                _ => return Err(self.error("se esperaba un número para el tamaño del arreglo")),
+            };
+            self.omitir_finales_de_linea();
+            if !matches!(self.actual(), Some(TipoToken::Mayor)) {
+                return Err(self.error("se esperaba '>' para cerrar el tipo de arreglo"));
+            }
+            self.pos += 1;
+            return Ok(TipoAnotacion::Arreglo(Box::new(tipo_elem), tamano));
+        }
+        if matches!(self.actual(), Some(TipoToken::Lista)) {
+            self.pos += 1;
+            if !matches!(self.actual(), Some(TipoToken::Menor)) {
+                return Err(self.error("se esperaba '<' después de 'lista'"));
+            }
+            self.pos += 1;
+            let tipo_elem = self.parsear_tipo_anotacion_simple()?;
+            self.omitir_finales_de_linea();
+            if !matches!(self.actual(), Some(TipoToken::Mayor)) {
+                return Err(self.error("se esperaba '>' para cerrar el tipo de lista"));
+            }
+            self.pos += 1;
+            return Ok(TipoAnotacion::Lista(Box::new(tipo_elem)));
+        }
+        self.parsear_tipo_anotacion_simple()
     }
 
     fn bloque(&mut self) -> Result<Vec<Sentencia>, ErrorSintactico> {
@@ -485,19 +594,42 @@ impl Parser {
             return Err(self.error("se esperaba '(' tras el nombre de la función"));
         }
         self.pos += 1; // '('
-        let mut parametros = Vec::new();
+        let mut parametros: Vec<(String, Option<TipoAnotacion>)> = Vec::new();
+        // Primer parámetro determina si se usan tipos (todo-o-nada, ADR-0011 §3.2).
+        let mut primer_tiene_tipo: Option<bool> = None;
         loop {
             self.omitir_finales_de_linea();
             if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
                 self.pos += 1;
                 break;
             }
-            if let Some(TipoToken::Identificador(n)) = self.actual() {
-                self.pos += 1;
-                parametros.push(n);
+            let param_nombre = match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    self.pos += 1;
+                    n
+                }
+                _ => return Err(self.error("se esperaba un parámetro")),
+            };
+            // Tipo anotado opcional
+            let tipo_param = if matches!(self.actual(), Some(TipoToken::DosPuntos)) {
+                let tipo = self.parsear_tipo_anotacion()?;
+                Some(tipo)
             } else {
-                return Err(self.error("se esperaba un parámetro"));
+                None
+            };
+            // Verificar consistencia todo-o-nada
+            let este_tiene_tipo = tipo_param.is_some();
+            match primer_tiene_tipo {
+                None => primer_tiene_tipo = Some(este_tiene_tipo),
+                Some(pt) if pt != este_tiene_tipo => {
+                    return Err(self.error(format!(
+                        "la firma de '{}' mezcla parámetros con y sin tipo; anota todos o ninguno",
+                        nombre
+                    )));
+                }
+                _ => {}
             }
+            parametros.push((param_nombre, tipo_param));
             self.omitir_finales_de_linea();
             if matches!(self.actual(), Some(TipoToken::Coma)) {
                 self.pos += 1;
@@ -509,6 +641,13 @@ impl Parser {
             }
             return Err(self.error("se esperaba ',' o ')'"));
         }
+        // Tipo de retorno opcional `-> tipo` (ADR-0011 §3.4)
+        let tipo_retorno = if matches!(self.actual(), Some(TipoToken::Flecha)) {
+            self.pos += 1; // '->'
+            Some(self.parsear_tipo_anotacion_cuerpo()?)
+        } else {
+            None
+        };
         if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
             return Err(self.error("se esperaba '{' en la misma línea que la función"));
         }
@@ -521,6 +660,7 @@ impl Parser {
         Ok(Sentencia::Funcion {
             nombre,
             parametros,
+            tipo_retorno,
             cuerpo,
             linea,
             columna,
@@ -530,6 +670,9 @@ impl Parser {
     fn sentencia_retorno(&mut self) -> Result<Sentencia, ErrorSintactico> {
         let t = &self.tokens[self.pos];
         let (linea, columna) = (t.linea, t.columna);
+        if !self.en_funcion {
+            return Err(self.error("'retornar' solo puede usarse dentro de una función"));
+        }
         self.pos += 1; // 'retornar'
         match self.actual() {
             Some(TipoToken::FinDeLinea)
@@ -564,6 +707,129 @@ impl Parser {
         self.terminar_sentencia()?;
         Ok(Sentencia::Mostrar {
             valor: expr,
+            linea,
+            columna,
+        })
+    }
+
+    /// Parsea una sentencia `mostrar_sin_salto`.
+    fn sentencia_mostrar_sin_salto(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'mostrar_sin_salto'
+        let expr = self.expresion()?;
+        self.terminar_sentencia()?;
+        Ok(Sentencia::MostrarSinSalto {
+            valor: expr,
+            linea,
+            columna,
+        })
+    }
+
+    /// Parsea `para cada IDENT en expr_iteracion bloque`.
+    fn sentencia_para_cada(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'para'
+        if !matches!(self.actual(), Some(TipoToken::Cada)) {
+            return Err(self.error("se esperaba 'cada' después de 'para'"));
+        }
+        self.pos += 1; // 'cada'
+        let variable = match self.actual() {
+            Some(TipoToken::Identificador(n)) => {
+                self.pos += 1;
+                n
+            }
+            _ => return Err(self.error("se esperaba el nombre de la variable de iteración")),
+        };
+        if !matches!(self.actual(), Some(TipoToken::En)) {
+            return Err(self.error("se esperaba 'en' después del nombre de la variable"));
+        }
+        self.pos += 1; // 'en'
+        let iterable = self.expr_iteracion()?;
+        self.exigir_llave_misma_linea(linea, "para")?;
+        self.en_ciclo += 1;
+        let cuerpo = self.bloque()?;
+        self.en_ciclo -= 1;
+        Ok(Sentencia::ParaCada {
+            variable,
+            iterable,
+            cuerpo,
+            linea,
+            columna,
+        })
+    }
+
+    /// Parsea una expresión de iteración: puede ser colección o rango `inicio..fin` / `inicio..=fin`.
+    fn expr_iteracion(&mut self) -> Result<Expresion, ErrorSintactico> {
+        let inicio = self.expresion()?;
+        let (linea, columna) = ubicacion_expr(&inicio);
+        if matches!(self.actual(), Some(TipoToken::RangoDos)) {
+            self.pos += 1;
+            let fin = self.expresion()?;
+            Ok(Expresion::Rango {
+                inicio: Box::new(inicio),
+                fin: Box::new(fin),
+                inclusivo: false,
+                linea,
+                columna,
+            })
+        } else if matches!(self.actual(), Some(TipoToken::RangoDosCerrado)) {
+            self.pos += 1;
+            let fin = self.expresion()?;
+            Ok(Expresion::Rango {
+                inicio: Box::new(inicio),
+                fin: Box::new(fin),
+                inclusivo: true,
+                linea,
+                columna,
+            })
+        } else {
+            Ok(inicio)
+        }
+    }
+
+    /// Parsea `intentar { ... } rescatar [IDENT] { ... }`.
+    fn sentencia_intentar_rescatar(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'intentar'
+        if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+            return Err(self.error("se esperaba '{' en la misma línea que 'intentar'"));
+        }
+        let llave = &self.tokens[self.pos];
+        if llave.linea != linea {
+            return Err(self.error("el '{' debe estar en la misma línea que 'intentar'"));
+        }
+        let cuerpo_intentar = self.bloque()?;
+        // `rescatar` puede ir en la línea siguiente
+        let guarda = self.pos;
+        self.omitir_finales_de_linea();
+        if !matches!(self.actual(), Some(TipoToken::Rescatar)) {
+            self.pos = guarda;
+            return Err(self.error("se esperaba 'rescatar' después del bloque 'intentar'"));
+        }
+        let linea_rescatar = self.tokens[self.pos].linea;
+        self.pos += 1; // 'rescatar'
+        // Variable de error opcional
+        let variable_error = if let Some(TipoToken::Identificador(n)) = self.actual() {
+            self.pos += 1;
+            Some(n)
+        } else {
+            None
+        };
+        if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+            return Err(self.error("se esperaba '{' en la misma línea que 'rescatar'"));
+        }
+        let llave2 = &self.tokens[self.pos];
+        if llave2.linea != linea_rescatar {
+            return Err(self.error("el '{' debe estar en la misma línea que 'rescatar'"));
+        }
+        let cuerpo_rescatar = self.bloque()?;
+        Ok(Sentencia::IntentarRescatar {
+            cuerpo_intentar,
+            variable_error,
+            cuerpo_rescatar,
             linea,
             columna,
         })
@@ -622,7 +888,9 @@ impl Parser {
         self.pos += 1; // 'mientras'
         let condicion = self.expresion()?;
         self.exigir_llave_misma_linea(linea, "mientras")?;
+        self.en_ciclo += 1;
         let cuerpo = self.bloque()?;
+        self.en_ciclo -= 1;
         Ok(Sentencia::Mientras {
             condicion,
             cuerpo,
@@ -889,6 +1157,16 @@ impl Parser {
                     columna,
                 })
             }
+            Some(TipoToken::Nulo) => {
+                let t = &self.tokens[self.pos];
+                let (linea, columna) = (t.linea, t.columna);
+                self.pos += 1;
+                Ok(Expresion::Literal {
+                    valor: Valor::Nulo,
+                    linea,
+                    columna,
+                })
+            }
             Some(TipoToken::Cadena(s)) => {
                 let t = &self.tokens[self.pos];
                 let (linea, columna) = (t.linea, t.columna);
@@ -1018,6 +1296,32 @@ impl Parser {
             };
         }
         Ok(expr)
+    }
+}
+
+/// Obtiene la ubicación (linea, columna) de una expresión (para rangos).
+fn ubicacion_expr(e: &Expresion) -> (usize, usize) {
+    match e {
+        Expresion::Literal { linea, columna, .. }
+        | Expresion::Variable { linea, columna, .. }
+        | Expresion::Llamada { linea, columna, .. }
+        | Expresion::ArregloLiteral { linea, columna, .. }
+        | Expresion::Indice { linea, columna, .. }
+        | Expresion::Rango { linea, columna, .. } => (*linea, *columna),
+        Expresion::Suma(a, _)
+        | Expresion::Resta(a, _)
+        | Expresion::Multiplicacion(a, _)
+        | Expresion::Division(a, _)
+        | Expresion::Modulo(a, _)
+        | Expresion::IgualIgual(a, _)
+        | Expresion::Distinto(a, _)
+        | Expresion::Menor(a, _)
+        | Expresion::MenorIgual(a, _)
+        | Expresion::Mayor(a, _)
+        | Expresion::MayorIgual(a, _)
+        | Expresion::No(a)
+        | Expresion::Y(a, _)
+        | Expresion::O(a, _) => ubicacion_expr(a),
     }
 }
 

@@ -97,7 +97,12 @@ impl Lexer {
                 }
                 '-' => {
                     self.avanzar();
-                    TipoToken::Menos
+                    if self.actual() == Some('>') {
+                        self.avanzar();
+                        TipoToken::Flecha
+                    } else {
+                        TipoToken::Menos
+                    }
                 }
                 '*' => {
                     self.avanzar();
@@ -180,6 +185,23 @@ impl Lexer {
                     }
                 }
                 '"' => self.leer_cadena()?,
+                '.' => {
+                    // Solo forma rangos '..'' o '..='; un '.' suelto es error léxico.
+                    self.avanzar(); // primer '.'
+                    if self.actual() == Some('.') {
+                        self.avanzar(); // segundo '.'
+                        if self.actual() == Some('=') {
+                            self.avanzar(); // '='
+                            TipoToken::RangoDosCerrado
+                        } else {
+                            TipoToken::RangoDos
+                        }
+                    } else {
+                        return Err(self.error(
+                            "carácter inesperado: '.' suelto (¿quiso escribir '..' o '..='?)",
+                        ));
+                    }
+                }
                 '0'..='9' => self.leer_numero(),
                 c if Self::es_inicio_identificador(c) => self.leer_identificador(),
                 otro => {
@@ -284,6 +306,15 @@ impl Lexer {
             "no" => TipoToken::No,
             "verdadero" => TipoToken::Verdadero,
             "falso" => TipoToken::Falso,
+            "nulo" => TipoToken::Nulo,
+            "para" => TipoToken::Para,
+            "cada" => TipoToken::Cada,
+            "en" => TipoToken::En,
+            "romper" => TipoToken::Romper,
+            "continuar" => TipoToken::Continuar,
+            "mostrar_sin_salto" => TipoToken::MostrarSinSalto,
+            "intentar" => TipoToken::Intentar,
+            "rescatar" => TipoToken::Rescatar,
             _ => TipoToken::Identificador(texto),
         }
     }

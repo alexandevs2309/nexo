@@ -12,6 +12,9 @@
 //! en ningún sentido con `entero`/`decimal`/`real`; cualquier mezcla es error con ubicación.
 
 use std::fmt;
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Write};
+use std::sync::{Arc, Mutex};
 
 /// Escala fija del decimal del núcleo: 9 decimales (ADR-0005 §1.2).
 pub const ESCALA_DECIMAL: u32 = 9;
@@ -22,8 +25,7 @@ pub const FACTOR_ESCALA: i128 = 1_000_000_000;
 /// 10^19, para validación de rango del decimal.
 const DIEZ_POT_19: i128 = 10_000_000_000_000_000_000;
 
-/// Un valor de BASILISCO con su tipo (tres numéricos + `lógico` + `texto` + `arreglo` + `lista`).
-#[derive(Debug, Clone, PartialEq)]
+/// Un valor de BASILISCO con su tipo (tres numéricos + `lógico` + `texto` + `arreglo` + `lista` + `nulo` + `archivo`).
 pub enum Valor {
     Entero(i64),
     /// Decimal escalonado: `entero / 10^9`. El entero tiene hasta 19 dígitos.
@@ -37,6 +39,75 @@ pub enum Valor {
     Arreglo(Vec<Valor>),
     /// Lista dinámica: `lista<T>`.
     Lista(Vec<Valor>),
+    /// Valor nulo (ADR-0011 §3.5). Distinto de falso, 0 y "".
+    Nulo,
+    /// Archivo abierto (ADR-0013 §3.5). Encapsula el estado de E/S.
+    Archivo(Arc<Mutex<ArchivoInterno>>),
+}
+
+/// Estado interno de un archivo abierto (ADR-0013 §3.5). Opaco para el código BASILISCO.
+#[derive(Debug)]
+pub struct ArchivoInterno {
+    /// Ruta del archivo (para mensajes de error).
+    pub ruta: String,
+    /// Modo de apertura: "leer", "escribir", "agregar".
+    pub modo: String,
+    /// True si el archivo fue cerrado.
+    pub cerrado: bool,
+    /// Lector con búfer (solo en modo "leer").
+    pub lector: Option<BufReader<File>>,
+    /// Escritor con búfer (solo en modo "escribir" o "agregar").
+    pub escritor: Option<BufWriter<File>>,
+}
+
+impl Clone for Valor {
+    fn clone(&self) -> Self {
+        match self {
+            Valor::Entero(n) => Valor::Entero(*n),
+            Valor::Decimal(n) => Valor::Decimal(*n),
+            Valor::Real(n) => Valor::Real(*n),
+            Valor::Logico(b) => Valor::Logico(*b),
+            Valor::Texto(s) => Valor::Texto(s.clone()),
+            Valor::Arreglo(v) => Valor::Arreglo(v.clone()),
+            Valor::Lista(v) => Valor::Lista(v.clone()),
+            Valor::Nulo => Valor::Nulo,
+            Valor::Archivo(arc) => Valor::Archivo(Arc::clone(arc)),
+        }
+    }
+}
+
+impl std::fmt::Debug for Valor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Valor::Entero(n) => write!(f, "Entero({n})"),
+            Valor::Decimal(n) => write!(f, "Decimal({n})"),
+            Valor::Real(n) => write!(f, "Real({n})"),
+            Valor::Logico(b) => write!(f, "Logico({b})"),
+            Valor::Texto(s) => write!(f, "Texto({s:?})"),
+            Valor::Arreglo(v) => write!(f, "Arreglo({v:?})"),
+            Valor::Lista(v) => write!(f, "Lista({v:?})"),
+            Valor::Nulo => write!(f, "Nulo"),
+            Valor::Archivo(_) => write!(f, "Archivo(<opaco>)"),
+        }
+    }
+}
+
+impl PartialEq for Valor {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Valor::Entero(a), Valor::Entero(b)) => a == b,
+            (Valor::Decimal(a), Valor::Decimal(b)) => a == b,
+            (Valor::Real(a), Valor::Real(b)) => a == b,
+            (Valor::Logico(a), Valor::Logico(b)) => a == b,
+            (Valor::Texto(a), Valor::Texto(b)) => a == b,
+            (Valor::Arreglo(a), Valor::Arreglo(b)) => a == b,
+            (Valor::Lista(a), Valor::Lista(b)) => a == b,
+            (Valor::Nulo, Valor::Nulo) => true,
+            // Archivos se comparan por identidad de puntero (Arc).
+            (Valor::Archivo(a), Valor::Archivo(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 
 /// Motivos de error aritmético, alineados con `ErrorEjecucion`.
@@ -139,6 +210,8 @@ impl Valor {
             Valor::Texto(_) => "texto",
             Valor::Arreglo(_) => "arreglo",
             Valor::Lista(_) => "lista",
+            Valor::Nulo => "nulo",
+            Valor::Archivo(_) => "archivo",
         }
     }
 }
@@ -414,6 +487,8 @@ impl Valor {
             Valor::Texto(_) => false,
             Valor::Arreglo(_) => false,
             Valor::Lista(_) => false,
+            Valor::Nulo => false,
+            Valor::Archivo(_) => false,
         }
     }
 
@@ -429,6 +504,10 @@ impl Valor {
             // Arreglos y listas no tienen representación numérica.
             Valor::Arreglo(_) => f64::NAN,
             Valor::Lista(_) => f64::NAN,
+            // Nulo no tiene representación numérica (ADR-0011 §3.5).
+            Valor::Nulo => f64::NAN,
+            // Archivo no tiene representación numérica.
+            Valor::Archivo(_) => f64::NAN,
         }
     }
 }
@@ -477,6 +556,8 @@ impl fmt::Display for Valor {
                 }
                 write!(f, "]")
             }
+            Valor::Nulo => write!(f, "nulo"),
+            Valor::Archivo(_) => write!(f, "<archivo>"),
         }
     }
 }

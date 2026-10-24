@@ -16,6 +16,10 @@
 | ADR-0008 | Funciones, retorno y llamadas | Aprobado e implementado | 2026-10-21 | `adr/ADR-0008-funciones-y-retorno.md` |
 | ADR-0009 | Identidad BASILISCO y retirada progresiva de Nexo | Aprobado | 2026-10-22 | `adr/ADR-0009-identidad-basilisco.md` |
 | ADR-0010 | CLI y ejecución de archivos | Aprobado e implementado | 2026-10-22 | `adr/ADR-0010-cli-y-extension.md` |
+| ADR-0011 | Sistema de tipos gradual, parámetros tipados, retorno anotado y valor nulo | Aprobado | 2026-10-24 | `adr/ADR-0011-sistema-de-tipos-gradual.md` |
+| ADR-0012 | Iteración: `para cada`, rangos, `romper` y `continuar` | Aprobado | 2026-10-24 | `adr/ADR-0012-iteracion-para-cada-romper-continuar.md` |
+| ADR-0013 | E/S básica: entrada estándar, operaciones de texto y archivos | Aprobado | 2026-10-24 | `adr/ADR-0013-entrada-salida-basica-texto-archivos.md` |
+| ADR-0014 | Manejo de errores: `intentar`/`rescatar` | Aprobado | 2026-10-24 | `adr/ADR-0014-manejo-de-errores-intentar-rescatar.md` |
 
 ## Cómo interpretar el estado
 - **Aprobado** significa que la decisión fue aceptada explícitamente; no significa que esté implementada.

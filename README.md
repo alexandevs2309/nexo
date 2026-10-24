@@ -7,7 +7,7 @@ Preparar una base extensa para desarrollar BASILISCO como lenguaje multipropósi
 
 ## Prototipo actual (`prototipo/`)
 - **Incrementos verificados:** 1 (núcleo numérico), 2 (integración/conformidad), 3 (variables y asignaciones), 4 (control de flujo y lógicos), 5 (funciones, retorno y texto).
-- **Pruebas:** **264 pruebas en verde** (252 de lenguaje + 12 de CLI), `cargo clippy --all-targets` sin advertencias. CI en verde en el run 39872722106.
+- **Pruebas:** **268 pruebas en verde** (256 de lenguaje + 12 de CLI), `cargo clippy --all-targets -- -D warnings` sin advertencias. El conteo histórico de 264 pruebas en el README anterior correspondía a un estado previo; el conteo real verificado el 2026-10-24 es 268 (102 unit + 12 cli + 29 conformidad + 13 arreglos_listas + 39 control + 12 funciones + 13 texto + 19 control_flujo + 15 integracion + 14 variables).
 - **Ejecutar:** `cd prototipo && cargo test && cargo run -- demo`
 - **Ejecutar un archivo:** `cargo run -- run examples/funciones_basicas.bsk`
 - **Uso de la CLI:** `basilisco run archivo.bsk`; alias `bsk run archivo.bsk`.
