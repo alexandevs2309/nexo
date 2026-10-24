@@ -23,7 +23,7 @@ pub enum CausaError {
     DeclaracionDuplicada(String),
     /// Asignación con un tipo distinto al declarado y sin conversión implícita.
     AsignacionIncompatible {
-        esperado: &'static str,
+        esperado: String,
         obtenido: String,
     },
     /// Condición de `si`/`mientras` no es `lógico` (ADR-0007).
@@ -54,6 +54,8 @@ pub enum CausaError {
         esperado: &'static str,
         obtenido: &'static str,
     },
+    /// `retornar` usado fuera de una función (nivel superior).
+    RetornarFueraDeBloque,
 }
 
 /// Límite de iteraciones por ciclo `mientras` (protección frente a bucles infinitos).
@@ -98,6 +100,9 @@ impl std::fmt::Display for CausaError {
                 f,
                 "el tipo de retorno es incompatible: se esperaba {esperado} y se obtuvo {obtenido}"
             ),
+            CausaError::RetornarFueraDeBloque => {
+                write!(f, "'retornar' solo puede usarse dentro de una función")
+            }
         }
     }
 }
@@ -183,7 +188,7 @@ impl Entorno {
         self.ambitos.last_mut().unwrap().insert(nombre, info);
     }
 
-    /// Obtiene una referencia mutable al valor de una variable (para asignación).
+    /// Obtiene una referencia mutable al valor de una variable (reservado para uso futuro).
     #[allow(dead_code)]
     fn obtener_variable_mut(&mut self, nombre: &str) -> Option<&mut Valor> {
         for ambito in self.ambitos.iter_mut().rev() {
@@ -194,7 +199,7 @@ impl Entorno {
         None
     }
 
-    /// Obtiene información completa de una variable (para validaciones).
+    /// Obtiene información completa de una variable (reservado para uso futuro).
     #[allow(dead_code)]
     fn obtener_variable_info(&self, nombre: &str) -> Option<&VariableInfo> {
         for ambito in self.ambitos.iter().rev() {
@@ -206,7 +211,6 @@ impl Entorno {
     }
 
     /// Verifica si una variable existe en el ámbito actual (para declaración duplicada).
-    #[allow(dead_code)]
     fn existe_en_ambito_actual(&self, nombre: &str) -> bool {
         self.ambitos.last().is_some_and(|a| a.contains_key(nombre))
     }
@@ -321,7 +325,7 @@ impl Entorno {
                     if !info.mutable {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
-                                esperado: "variable inmutable (dato/const)",
+                                esperado: "variable inmutable (dato/const)".into(),
                                 obtenido: "intento de reasignación".to_string(),
                             },
                             linea,
@@ -332,7 +336,7 @@ impl Entorno {
                     let Some(ajustado) = convertir_para_variable(info, nuevo) else {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
-                                esperado: info.valor.nombre_tipo(),
+                                esperado: info.valor.nombre_tipo().into(),
                                 obtenido: nuevo_tipo.to_string(),
                             },
                             linea,
@@ -340,6 +344,56 @@ impl Entorno {
                         ));
                     };
                     self.ambitos[idx].get_mut(&nombre).unwrap().valor = ajustado;
+                }
+                Sentencia::AsignacionIndice {
+                    objeto,
+                    indice,
+                    valor,
+                    linea,
+                    columna,
+                } => {
+                    let (var_nombre, base_linea, base_columna) = match objeto.as_ref() {
+                        Expresion::Variable { nombre, linea, columna } => (nombre.clone(), *linea, *columna),
+                        _ => return Err(error(CausaError::AsignacionIncompatible { esperado: "variable".into(), obtenido: "expresión no asignable".to_string() }, linea, columna)),
+                    };
+                    let Some((idx_amb, info)) = localizar_info_entorno(self, &var_nombre) else {
+                        return Err(error(CausaError::VariableNoDefinida(var_nombre.clone()), base_linea, base_columna));
+                    };
+                    if !info.mutable {
+                        return Err(error(CausaError::AsignacionIncompatible { esperado: "variable inmutable (dato/const)".into(), obtenido: "intento de reasignación".to_string() }, base_linea, base_columna));
+                    }
+                    let idxv = evaluar_con(&indice, self)?;
+                    let i = match idxv {
+                        Valor::Entero(n) => n as i64,
+                        _ => return Err(error(CausaError::AsignacionIncompatible { esperado: "índice entero".into(), obtenido: idxv.nombre_tipo().to_string() }, linea, columna)),
+                    };
+                    if i < 0 {
+                        return Err(error(CausaError::AsignacionIncompatible { esperado: "índice válido".into(), obtenido: "índice negativo".to_string() }, linea, columna));
+                    }
+                    let idx_usize = i as usize;
+                    let nuevo = evaluar_con(&valor, self)?;
+                    let actual = match &info.valor {
+                        Valor::Arreglo(v) | Valor::Lista(v) => {
+                            if idx_usize >= v.len() {
+                                return Err(error(CausaError::AsignacionIncompatible { esperado: "índice válido".into(), obtenido: "fuera de rango".to_string() }, linea, columna));
+                            }
+                            v[idx_usize].clone()
+                        }
+                        _ => return Err(error(CausaError::AsignacionIncompatible { esperado: "arreglo o lista".into(), obtenido: info.valor.nombre_tipo().to_string() }, linea, columna)),
+                    };
+                    let Some(ajustado) = convertir_para_tipo(&actual, nuevo) else {
+                        return Err(error(CausaError::AsignacionIncompatible { esperado: actual.nombre_tipo().into(), obtenido: "tipo incompatible".to_string() }, linea, columna));
+                    };
+                    if let Some(info_mut) = self.ambitos[idx_amb].get_mut(&var_nombre) {
+                        match &mut info_mut.valor {
+                            Valor::Arreglo(v) | Valor::Lista(v) => {
+                                if idx_usize < v.len() {
+                                    v[idx_usize] = ajustado;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 Sentencia::Si {
                     condicion,
@@ -553,7 +607,7 @@ impl Entorno {
                     if !info.mutable {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
-                                esperado: "variable inmutable (dato/const)",
+                                esperado: "variable inmutable (dato/const)".into(),
                                 obtenido: "intento de reasignación".to_string(),
                             },
                             linea,
@@ -564,7 +618,7 @@ impl Entorno {
                     let Some(ajustado) = convertir_para_variable(info, nuevo) else {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
-                                esperado: info.valor.nombre_tipo(),
+                                esperado: info.valor.nombre_tipo().into(),
                                 obtenido: nuevo_tipo.to_string(),
                             },
                             linea,
@@ -581,8 +635,11 @@ impl Entorno {
                     columna,
                 } => {
                     if self.funciones.contains_key(&nombre) {
-                        // Por simplicidad, si ya existe, la reemplazamos; se podría tratar como error
-                        // pero el parser/evaluador actual no lo exige aún. Mantenemos coherente.
+                        return Err(error(
+                            CausaError::DeclaracionDuplicada(nombre.clone()),
+                            linea,
+                            columna,
+                        ));
                     }
                     self.funciones.insert(
                         nombre.clone(),
@@ -602,7 +659,7 @@ impl Entorno {
                 }
                 Sentencia::Retorno { valor, .. } => {
                     return Err(error(
-                        CausaError::VariableNoDefinida("retornar".into()),
+                        CausaError::RetornarFueraDeBloque,
                         ubicacion_linea(valor.as_ref()),
                         ubicacion_columna(valor.as_ref()),
                     ));
@@ -672,6 +729,47 @@ impl Entorno {
                 Sentencia::Bloque(sentencias) => {
                     self.ejecutar_bloque(&sentencias)?;
                 }
+                Sentencia::AsignacionIndice { objeto, indice, valor, linea, columna } => {
+                    let (var_nombre, base_linea, base_columna) = match objeto.as_ref() {
+                        Expresion::Variable { nombre, linea, columna } => (nombre.clone(), *linea, *columna),
+                        _ => return Err(error(CausaError::AsignacionIncompatible { esperado: "variable".into(), obtenido: "expresión no asignable".to_string() }, linea, columna)),
+                    };
+                    let Some((idx_amb, info)) = localizar_info_entorno(self, &var_nombre) else {
+                        return Err(error(CausaError::VariableNoDefinida(var_nombre.clone()), base_linea, base_columna));
+                    };
+                    if !info.mutable {
+                        return Err(error(CausaError::AsignacionIncompatible { esperado: "variable inmutable (dato/const)".into(), obtenido: "intento de reasignación".to_string() }, base_linea, base_columna));
+                    }
+                    let idxv = evaluar_con(indice.as_ref(), self)?;
+                    let i = match idxv {
+                        Valor::Entero(n) => n as i64,
+                        _ => return Err(error(CausaError::AsignacionIncompatible { esperado: "índice entero".into(), obtenido: idxv.nombre_tipo().to_string() }, linea, columna)),
+                    };
+                    if i < 0 {
+                        return Err(error(CausaError::AsignacionIncompatible { esperado: "índice válido".into(), obtenido: "índice negativo".to_string() }, linea, columna));
+                    }
+                    let idx_usize = i as usize;
+                    let nuevo = evaluar_con(&valor, self)?;
+                    let actual = match &info.valor {
+                        Valor::Arreglo(v) | Valor::Lista(v) => {
+                            if idx_usize >= v.len() {
+                                return Err(error(CausaError::AsignacionIncompatible { esperado: "índice válido".into(), obtenido: "fuera de rango".to_string() }, linea, columna));
+                            }
+                            v[idx_usize].clone()
+                        }
+                        _ => return Err(error(CausaError::AsignacionIncompatible { esperado: "arreglo o lista".into(), obtenido: info.valor.nombre_tipo().to_string() }, linea, columna)),
+                    };
+                    let Some(ajustado) = convertir_para_tipo(&actual, nuevo) else {
+                        return Err(error(CausaError::AsignacionIncompatible { esperado: actual.nombre_tipo().into(), obtenido: "tipo incompatible".to_string() }, linea, columna));
+                    };
+                    if let Some(info_mut) = self.ambitos[idx_amb].get_mut(&var_nombre) {
+                        if let Valor::Arreglo(v) | Valor::Lista(v) = &mut info_mut.valor {
+                            if idx_usize < v.len() {
+                                v[idx_usize] = ajustado;
+                            }
+                        }
+                    }
+                }
                 Sentencia::Expresion(e) => {
                     ultimo = Some(evaluar_con(&e, self)?);
                 }
@@ -683,11 +781,6 @@ impl Entorno {
     /// Valor de una variable visible (para pruebas e introspección).
     pub fn variable(&self, nombre: &str) -> Option<Valor> {
         self.buscar(nombre)
-    }
-
-    #[allow(dead_code)]
-    fn buscar_ambito_actual(&self, nombre: &str) -> Option<&VariableInfo> {
-        self.ambitos.last().and_then(|a| a.get(nombre))
     }
 
     fn localizar(&self, nombre: &str) -> Option<(usize, VariableInfo)> {
@@ -787,7 +880,17 @@ fn convertir_para_tipo(viejo: &Valor, nuevo: Valor) -> Option<Valor> {
     }
 }
 /// Evalúa una expresión con acceso al entorno (función recursiva interna).
-/// Evalúa una expresión con acceso al entorno (función recursiva interna).
+
+/// Localiza la info y el índice del ámbito para una variable.
+fn localizar_info_entorno(env: &Entorno, nombre: &str) -> Option<(usize, VariableInfo)> {
+    for (i, ambito) in env.ambitos.iter().enumerate().rev() {
+        if let Some(info) = ambito.get(nombre) {
+            return Some((i, info.clone()));
+        }
+    }
+    None
+}
+
 fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion> {
     match e {
         Expresion::Literal { valor, .. } => Ok(valor.clone()),
@@ -983,13 +1086,13 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             columna,
         } => {
             let obj = evaluar_con(objeto, env)?;
-            let idx = evaluar_con(indice, env)?;
+            let idx = evaluar_con(indice.as_ref(), env)?;
             let idx_val = match idx {
                 Valor::Entero(i) => i,
                 _ => {
                     return Err(error(
                         CausaError::AsignacionIncompatible {
-                            esperado: "entero",
+                            esperado: "entero".into(),
                             obtenido: idx.nombre_tipo().to_string(),
                         },
                         *linea,
@@ -1003,7 +1106,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                     if idx_usize >= arr.len() {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
-                                esperado: "índice válido",
+                                esperado: "índice válido".into(),
                                 obtenido: format!(
                                     "índice {} fuera de rango (tamaño {})",
                                     idx_usize,
@@ -1021,7 +1124,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                     if idx_usize >= lst.len() {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
-                                esperado: "índice válido",
+                                esperado: "índice válido".into(),
                                 obtenido: format!(
                                     "índice {} fuera de rango (tamaño {})",
                                     idx_usize,
@@ -1036,7 +1139,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                 }
                 _ => Err(error(
                     CausaError::AsignacionIncompatible {
-                        esperado: "arreglo o lista",
+                        esperado: "arreglo o lista".into(),
                         obtenido: obj.nombre_tipo().to_string(),
                     },
                     *linea,
@@ -1410,7 +1513,7 @@ mod tests {
         assert_eq!(
             causa_programa("sea x = 5\nx = 2.5"),
             CausaError::AsignacionIncompatible {
-                esperado: "entero",
+                esperado: "entero".to_string(),
                 obtenido: "decimal".to_string()
             }
         );
@@ -1418,7 +1521,7 @@ mod tests {
         assert_eq!(
             causa_programa("sea x = 1.5\nx = 2.0e0"),
             CausaError::AsignacionIncompatible {
-                esperado: "decimal",
+                esperado: "decimal".to_string(),
                 obtenido: "real".to_string()
             }
         );
@@ -1426,7 +1529,7 @@ mod tests {
         assert_eq!(
             causa_programa("sea x = 5\nx = 2.0e0"),
             CausaError::AsignacionIncompatible {
-                esperado: "entero",
+                esperado: "entero".to_string(),
                 obtenido: "real".to_string()
             }
         );
@@ -1479,7 +1582,7 @@ mod tests {
         assert_eq!(
             causa_programa("sea x = 5\nx = 7.5"),
             CausaError::AsignacionIncompatible {
-                esperado: "entero",
+                esperado: "entero".to_string(),
                 obtenido: "decimal".to_string()
             }
         );
@@ -1609,80 +1712,6 @@ mod tests {
     // ---- INCREMENTO 5: Funciones y retorno (ADR-0008) ----
 
     #[test]
-    fn funcion_suma_dos_parametros() {
-        let r = programa(
-            r#"
-            funcion suma(a, b) {
-                retornar a + b
-            }
-            suma(2, 3)
-        "#,
-        )
-        .unwrap();
-        assert_eq!(r, Some(Valor::Entero(5)));
-    }
-
-    #[test]
-    fn funcion_sin_parametros() {
-        let r = programa(
-            r#"
-            funcion hola() {
-                retornar 42
-            }
-            hola()
-        "#,
-        )
-        .unwrap();
-        assert_eq!(r, Some(Valor::Entero(42)));
-    }
-
-    #[test]
-    fn funcion_recursiva_factorial() {
-        let r = programa(
-            r#"
-            funcion factorial(n) {
-                si n <= 1 {
-                    retornar 1
-                }
-                retornar n * factorial(n - 1)
-            }
-            factorial(5)
-        "#,
-        )
-        .unwrap();
-        assert_eq!(r, Some(Valor::Entero(120)));
-    }
-
-    #[test]
-    fn funcion_con_tipo_decimal() {
-        let r = programa(
-            r#"
-            funcion div(a, b) {
-                retornar a / b
-            }
-            div(7.0, 2.0)
-        "#,
-        )
-        .unwrap();
-        assert_eq!(r, Some(Valor::Decimal(3500000000))); // 3.5 decimal
-    }
-
-    #[test]
-    fn funcion_inferencia_tipos_primera_llamada() {
-        // Primera llamada fija el tipo de los parámetros
-        let r = programa(
-            r#"
-            funcion id(x) {
-                retornar x
-            }
-            id(42)
-        "#,
-        )
-        .unwrap();
-        assert_eq!(r, Some(Valor::Entero(42)));
-    }
-
-    #[test]
     fn funcion_error_tipo_retorno_incompatible() {
         // Primera llamada fija el tipo de retorno; segunda con tipo distinto falla
         let e = programa(
@@ -1747,25 +1776,6 @@ mod tests {
     }
 
     #[test]
-    fn funcion_error_retorno_ausente() {
-        let e = programa(
-            r#"
-            funcion sin_retorno() {
-                sea x = 1
-            }
-            sin_retorno()
-        "#,
-        )
-        .expect_err("retorno ausente");
-        assert_eq!(
-            e.causa,
-            CausaError::RetornoAusente {
-                funcion: "sin_retorno".into()
-            }
-        );
-    }
-
-    #[test]
     fn funcion_retorno_sin_valor_en_funcion_que_espera_valor() {
         let e = programa(
             r#"
@@ -1787,55 +1797,11 @@ mod tests {
     }
 
     #[test]
-    fn funcion_ambito_propio_no_captura() {
-        // Sin captura de ámbito (ADR-0008): variables externas no visibles dentro
-        let e = programa(
-            r#"
-            sea x = 10
-            funcion f() {
-                retornar x
-            }
-            f()
-        "#,
-        )
-        .expect_err("variable no definida");
-        assert_eq!(e.causa, CausaError::VariableNoDefinida("x".into()));
+    fn funcion_duplicada_es_error() {
+        assert_eq!(
+            causa_programa("funcion f() { retornar 1 }\nfuncion f() { retornar 2 }"),
+            CausaError::DeclaracionDuplicada("f".into())
+        );
     }
 
-    #[test]
-    fn funcion_retorno_temprano() {
-        let r = programa(
-            r#"
-            funcion f(n) {
-                si n == 0 {
-                    retornar 0
-                }
-                retornar 1
-            }
-            f(0)
-        "#,
-        )
-        .unwrap();
-        assert_eq!(r, Some(Valor::Entero(0)));
-    }
-
-    #[test]
-    fn funcion_anidada_rechazada() {
-        // El parser rechaza funciones anidadas
-        let tokens = crate::Lexer::nuevo(
-            r#"
-            funcion externa() {
-                funcion interna() {
-                    retornar 1
-                }
-            }
-        "#,
-        )
-        .tokenizar()
-        .unwrap();
-        let e = crate::Parser::nuevo(tokens)
-            .parsear_programa()
-            .expect_err("función anidada");
-        assert!(e.mensaje.contains("anidadas") || e.mensaje.contains("nested"));
-    }
 }

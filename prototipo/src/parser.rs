@@ -90,6 +90,14 @@ pub enum Sentencia {
         columna: usize,
         valor: Expresion,
     },
+    /// `objeto[indice] = expresión` asignación por índice.
+    AsignacionIndice {
+        objeto: Box<Expresion>,
+        indice: Box<Expresion>,
+        valor: Expresion,
+        linea: usize,
+        columna: usize,
+    },
     /// `si condición { ... } (sino { ... } | sino si ... )?`
     Si {
         condicion: Expresion,
@@ -144,19 +152,15 @@ pub enum TipoAnotacion {
 }
 
 impl TipoAnotacion {
-    pub fn nombre(&self) -> &'static str {
+    pub fn nombre(&self) -> String {
         match self {
-            TipoAnotacion::Entero => "entero",
-            TipoAnotacion::Decimal => "decimal",
-            TipoAnotacion::Real => "real",
-            TipoAnotacion::Logico => "lógico",
-            TipoAnotacion::Texto => "texto",
-            TipoAnotacion::Arreglo(_t, _n) => {
-                // This is a workaround since we can't return a formatted string
-                // The caller should use a different method for display
-                "arreglo"
-            }
-            TipoAnotacion::Lista(_) => "lista",
+            TipoAnotacion::Entero => "entero".to_string(),
+            TipoAnotacion::Decimal => "decimal".to_string(),
+            TipoAnotacion::Real => "real".to_string(),
+            TipoAnotacion::Logico => "lógico".to_string(),
+            TipoAnotacion::Texto => "texto".to_string(),
+            TipoAnotacion::Arreglo(t, n) => format!("arreglo<{}, {}>", t.nombre(), n),
+            TipoAnotacion::Lista(t) => format!("lista<{}>", t.nombre()),
         }
     }
 }
@@ -261,65 +265,58 @@ impl Parser {
 
     /// Parsea una sentencia: declaración, asignación, control de flujo, bloque o expresión.
     fn sentencia(&mut self) -> Result<Sentencia, ErrorSintactico> {
-        // Declaraciones: sea | var | dato | const
-        if matches!(
-            self.actual(),
-            Some(TipoToken::Sea | TipoToken::Var | TipoToken::Dato | TipoToken::Const)
-        ) {
-            self.sentencia_declaracion()
+        if matches!(self.actual(), Some(TipoToken::Sea | TipoToken::Var | TipoToken::Dato | TipoToken::Const)) {
+            return self.sentencia_declaracion();
         } else if matches!(self.actual(), Some(TipoToken::Funcion)) {
-            let s = self.sentencia_funcion()?;
+            let st = self.sentencia_funcion()?;
             self.terminar_sentencia()?;
-            Ok(s)
+            return Ok(st);
         } else if matches!(self.actual(), Some(TipoToken::Retornar)) {
-            self.sentencia_retorno()
+            return self.sentencia_retorno();
         } else if matches!(self.actual(), Some(TipoToken::Si)) {
-            let s = self.sentencia_si()?;
+            let st = self.sentencia_si()?;
             self.terminar_sentencia()?;
-            Ok(s)
+            return Ok(st);
         } else if matches!(self.actual(), Some(TipoToken::Mientras)) {
-            let s = self.sentencia_mientras()?;
+            let st = self.sentencia_mientras()?;
             self.terminar_sentencia()?;
-            Ok(s)
+            return Ok(st);
         } else if matches!(self.actual(), Some(TipoToken::Mostrar)) {
-            self.sentencia_mostrar()
+            return self.sentencia_mostrar();
         } else if matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
             let bloque = self.bloque()?;
             self.terminar_sentencia()?;
-            Ok(Sentencia::Bloque(bloque))
+            return Ok(Sentencia::Bloque(bloque));
         } else if matches!(self.actual(), Some(TipoToken::Sino)) {
-            Err(self.error("'sino' sin un 'si' correspondiente"))
-        } else if let Some(TipoToken::Identificador(n)) = self.actual() {
-            // Asignación solo si el siguiente token es '='; si no, es una expresión.
-            if matches!(
-                self.tokens.get(self.pos + 1).map(|t| &t.tipo),
-                Some(TipoToken::Asignacion)
-            ) {
-                let t = &self.tokens[self.pos];
-                let (linea, columna) = (t.linea, t.columna);
-                self.pos += 1; // identificador
-                self.pos += 1; // '='
-                let valor = self.expresion()?;
-                self.terminar_sentencia()?;
-                Ok(Sentencia::Asignacion {
-                    nombre: n,
-                    linea,
-                    columna,
-                    valor,
-                })
-            } else {
-                let e = self.expresion()?;
-                self.terminar_sentencia()?;
-                Ok(Sentencia::Expresion(e))
-            }
-        } else {
-            let e = self.expresion()?;
-            self.terminar_sentencia()?;
-            Ok(Sentencia::Expresion(e))
+            return Err(self.error("'sino' sin un 'si' correspondiente"));
         }
+
+        if matches!(self.actual(), Some(TipoToken::Identificador(_)) | Some(TipoToken::CorcheteIzq) | Some(TipoToken::ParentesisIzq)) {
+            let pos_guardado = self.pos;
+            if let Ok(expr_cand) = self.primaria() {
+                if matches!(self.actual(), Some(TipoToken::Asignacion)) {
+                    self.pos += 1; // '='
+                    let valor = self.expresion()?;
+                    self.terminar_sentencia()?;
+                    match expr_cand {
+                        Expresion::Variable { nombre, linea, columna } => {
+                            return Ok(Sentencia::Asignacion { nombre, linea, columna, valor });
+                        }
+                        Expresion::Indice { objeto, indice, linea, columna } => {
+                            return Ok(Sentencia::AsignacionIndice { objeto, indice, valor, linea, columna });
+                        }
+                        _ => return Err(self.error("lado izquierdo de asignación inválido")),
+                    }
+                }
+            }
+            self.pos = pos_guardado;
+        }
+
+        let e = self.expresion()?;
+        self.terminar_sentencia()?;
+        Ok(Sentencia::Expresion(e))
     }
 
-    /// Parsea una declaración: sea | var | dato | const
     fn sentencia_declaracion(&mut self) -> Result<Sentencia, ErrorSintactico> {
         let (keyword, mutable, es_const) = match self.actual() {
             Some(TipoToken::Sea) => ("sea", true, false),
@@ -1313,17 +1310,6 @@ mod tests {
             assert!(
                 !e.mensaje.is_empty(),
                 "{fuente:?} debería ser error de sintaxis"
-            );
-        }
-    }
-
-    #[test]
-    fn debug_dato_tokens() {
-        let tokens = Lexer::nuevo("dato y: decimal = 3.14").tokenizar().unwrap();
-        for t in &tokens {
-            eprintln!(
-                "{:?} @ {}:{} lexema='{}'",
-                t.tipo, t.linea, t.columna, t.lexema
             );
         }
     }

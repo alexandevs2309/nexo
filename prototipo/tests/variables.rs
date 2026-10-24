@@ -79,7 +79,7 @@ fn asignacion_admite_solo_conversiones_implicitas_aprobadas() {
     assert_eq!(
         e.causa,
         CausaError::AsignacionIncompatible {
-            esperado: "decimal",
+            esperado: "decimal".to_string(),
             obtenido: "real".to_string()
         }
     );
@@ -88,7 +88,7 @@ fn asignacion_admite_solo_conversiones_implicitas_aprobadas() {
     assert_eq!(
         e.causa,
         CausaError::AsignacionIncompatible {
-            esperado: "real",
+            esperado: "real".to_string(),
             obtenido: "decimal".to_string()
         }
     );
@@ -97,7 +97,7 @@ fn asignacion_admite_solo_conversiones_implicitas_aprobadas() {
     assert_eq!(
         e.causa,
         CausaError::AsignacionIncompatible {
-            esperado: "entero",
+            esperado: "entero".to_string(),
             obtenido: "decimal".to_string()
         }
     );
@@ -147,7 +147,7 @@ fn error_asignacion_incompatible_tipeado_y_ubicado() {
     assert_eq!(
         e.causa,
         CausaError::AsignacionIncompatible {
-            esperado: "entero",
+            esperado: "entero".to_string(),
             obtenido: "decimal".to_string()
         }
     );

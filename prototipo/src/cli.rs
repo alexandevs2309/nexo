@@ -123,6 +123,7 @@ fn ejecutar_fuente(fuente: &str) -> Result<Option<Valor>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Solo para la demo; evalúa una única expresión.
 fn principal(fuente: &str) -> Result<Valor, String> {
     let tokens = Lexer::nuevo(fuente)
         .tokenizar()
