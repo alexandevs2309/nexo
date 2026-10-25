@@ -5,8 +5,9 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::fs;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::{Entorno, Lexer, Parser, Valor, evaluar};
@@ -42,6 +43,13 @@ pub fn main() -> ExitCode {
             demo();
             ExitCode::SUCCESS
         }
+        "nuevo" => {
+            if args.len() > 2 {
+                eprintln!("uso: {COMANDO} nuevo [archivo.bsk]");
+                return ExitCode::from(2);
+            }
+            crear_archivo_inicial(args.get(1).map(OsString::as_os_str))
+        }
         "run" | "ejecutar" => {
             if args.len() != 2 {
                 eprintln!("uso: {COMANDO} run <archivo.bsk|archivo.nexo>");
@@ -61,6 +69,7 @@ fn ayuda() {
     println!("{NOMBRE} — intérprete del lenguaje (prototipo)");
     println!();
     println!("Uso:");
+    println!("  {COMANDO} nuevo [archivo.bsk]   crea un programa inicial");
     println!("  {COMANDO} run <archivo.bsk>      ejecuta un programa");
     println!("  {COMANDO} run <archivo.nexo>     ejecuta un programa legado");
     println!("  {COMANDO} demo                   ejecuta una demostración");
@@ -69,6 +78,43 @@ fn ayuda() {
     println!();
     println!("Alias: {ALIAS} (mismos comandos).");
     println!("Extensiones aceptadas: .{EXT_CANONICA} (canónica), .{EXT_LEGADO} (legado).");
+}
+
+fn crear_archivo_inicial(nombre: Option<&std::ffi::OsStr>) -> ExitCode {
+    let mut ruta = nombre.map_or_else(|| PathBuf::from("hola.bsk"), PathBuf::from);
+    match ruta.extension().and_then(|extension| extension.to_str()) {
+        None | Some("") => {
+            ruta.set_extension(EXT_CANONICA);
+        }
+        Some(extension) if extension.eq_ignore_ascii_case(EXT_CANONICA) => {}
+        Some(_) => {
+            eprintln!("error: el archivo nuevo debe usar la extensión .{EXT_CANONICA}");
+            return ExitCode::from(2);
+        }
+    }
+
+    let contenido = "mostrar \"Hola, BASILISCO!\"\n";
+    let resultado = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&ruta)
+        .and_then(|mut archivo| archivo.write_all(contenido.as_bytes()));
+
+    match resultado {
+        Ok(()) => {
+            println!("Archivo creado: {}", ruta.display());
+            println!("Ejecuta tu programa con: {COMANDO} run {}", ruta.display());
+            ExitCode::SUCCESS
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            eprintln!("error: '{}' ya existe; no se modificó", ruta.display());
+            ExitCode::from(1)
+        }
+        Err(error) => {
+            eprintln!("error: no se pudo crear '{}': {error}", ruta.display());
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn ejecutar_archivo(ruta: &Path) -> ExitCode {

@@ -1,11 +1,11 @@
-# BASILISCO v0.4 — Candidata local
+# BASILISCO v0.4 — Publicado
 
 **Fecha de verificación:** 2026-10-25
-**Estado:** candidata local; no publicada ni etiquetada.
-**Versión candidata del paquete Cargo:** `0.4.0` (todavía no etiquetada ni publicada).
+**Estado:** publicado como `basilisco 0.4.0` en crates.io y como Release GitHub `v0.4.0`.
+**Commit etiquetado:** `810c40d`.
 
-Este documento describe el alcance funcional del prototipo que se está preparando
-para cerrar como v0.4. No declara que exista una distribución estable.
+Este documento describe el alcance funcional publicado de BASILISCO v0.4. No declara
+estable el lenguaje completo.
 
 ## Alcance disponible
 
@@ -38,8 +38,10 @@ cargo build --bins
 cargo test --quiet
 ```
 
-Los comandos pasan localmente en el commit `0914b4e` del 2026-10-25. `cargo test -- --list`
-enumera 304 pruebas. GitHub Actions pasó para ese commit en el run 40225683156. La aceptación CLI
+Los comandos pasaron localmente en el commit `0914b4e` del 2026-10-25. `cargo test -- --list`
+enumeró 304 pruebas. GitHub Actions pasó para ese commit en el run 40225683156; la matriz de
+instalación, compilación y pruebas de Ubuntu, macOS y Windows también pasó para la publicación.
+La aceptación CLI
 incluye un programa que combina variables, arreglo e indexación, ciclo, condición,
 función y texto; además verifica que un error informe archivo, línea, columna y causa.
 El tutorial está en `prototipo/tutorial/01-primer-programa.md`. Se corrigió además la
@@ -54,14 +56,10 @@ ausente. Estas extensiones siguen fuera de la garantía v0.4.
 
 No se incluye un sistema de paquetes, módulos avanzados, biblioteca estándar extensa,
 IDE o depurador, concurrencia ni soporte multiplataforma exhaustivo. La matriz de CI
-para Linux, macOS y Windows aún debe pasar antes de declarar soporte para esos sistemas.
+verifica runners Ubuntu, macOS y Windows; no cubre todas las versiones de esos sistemas.
 La entrada y salida general siguen siendo limitadas.
 
-## Pendiente antes de publicar
+## Pendiente para futuras versiones
 
-- Confirmar CI sobre el commit final de publicación; el run 40225683156 cubre `0914b4e`, antes de la matriz multiplataforma añadida para la candidata `0.4.0`.
-- La instalación local con Cargo pasó en Linux. La matriz nueva debe pasar install/uninstall en Linux, macOS y Windows antes de declarar soporte para esos sistemas; falta confirmar el mecanismo de instalación que se publique.
-- Completar la revisión de seguridad, dependencias y errores conocidos requerida por
-  las puertas de distribución y estabilidad.
-- Licencia seleccionada: Apache-2.0; `LICENSE`, el metadato `license = "Apache-2.0"` y ADR-0016 están añadidos en la rama de este PR. La procedencia del código y las licencias de terceros deben auditarse antes de publicar.
-- Completar la revisión de marca y publicación institucional registrada en `CAMBIOS-BASILISCO.md`.
+- Ampliar pruebas de uso con programas reales y recoger errores reportados por quienes instalen BASILISCO.
+- Revisar marca y estrategia de publicación institucional según `CAMBIOS-BASILISCO.md`.

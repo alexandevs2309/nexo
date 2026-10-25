@@ -14,6 +14,8 @@ Nombre: **BASILISCO** (ADR-0009). **Nexo** queda como nombre histórico/temporal
 
 ## Madurez
 Visión inicial; requisitos en evolución; BASILISCO Core 0.3 es una propuesta normativa inicial. El perfil `10-especificacion/perfil-de-conformidad-v0.4.md` fue aprobado por ADR-0015 como contrato acotado; no define ni declara estable el lenguaje completo. `para cada`, rangos, `romper`/`continuar`, `intentar`/`rescatar` y E/S permanecen como extensiones prototipales fuera de esa garantía.
-**Verificación (2026-10-25):** 304 pruebas enumeradas; formato, Clippy estricto, build de binarios y suite completa pasan localmente. GitHub Actions confirmó CI exitosa en `0914b4e` (run 40225683156) y en la matriz Linux, macOS y Windows de la rama de preparación v0.4. También pasó `cargo install`/`cargo uninstall` en Linux. `cargo package` verificó el paquete `0.4.0`, que aún no está etiquetado ni publicado.
+**Publicación:** BASILISCO `0.4.0` está publicado en crates.io y en el Release GitHub `v0.4.0` (commit `810c40d`). La matriz de CI para Linux, macOS y Windows pasó en la preparación de esa versión. El paquete verificado contiene la guía de instalación y un primer programa.
+
+**Versión siguiente:** `0.5.0` está en desarrollo. Su primer alcance es el comando `basilisco nuevo`, que crea un archivo inicial en la carpeta actual.
 
 **Licencia:** Apache License 2.0, aprobada por el autor el 2026-10-25. El historial Git revisado atribuye los commits a la cuenta del autor y el paquete no declara dependencias externas. Esto no constituye una revisión legal independiente.

@@ -1,13 +1,13 @@
-# BASILISCO 0.4.0
+# BASILISCO 0.5.0 (en desarrollo)
 
 Intérprete experimental de un lenguaje de programación con sintaxis orientada al español. Esta versión permite ejecutar programas pequeños desde la línea de comandos; el lenguaje sigue en desarrollo.
 
 ## Instalación
 
-Cuando BASILISCO 0.4.0 esté publicado en crates.io:
+Cuando BASILISCO 0.5.0 esté publicado en crates.io:
 
 ```sh
-cargo install basilisco --version 0.4.0
+cargo install basilisco --version 0.5.0
 ```
 
 También puedes compilarlo desde el repositorio:
@@ -20,8 +20,18 @@ cargo install --path .
 
 ## Ejecutar un programa
 
+En una carpeta vacía, crea un archivo inicial con:
+
 ```sh
-basilisco run examples/tutorial_inicio.bsk
+basilisco nuevo
+```
+
+Esto crea `hola.bsk`. También puedes indicar el nombre: `basilisco nuevo saludo` crea `saludo.bsk`. El comando no sobrescribe archivos existentes.
+
+Ejecuta el programa con:
+
+```sh
+basilisco run hola.bsk
 ```
 
 El comando `bsk` es un alias. `basilisco --help` muestra la ayuda y `basilisco --version` muestra la versión instalada.
