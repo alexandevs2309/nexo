@@ -18,7 +18,7 @@ Estimación aportada el 2026-10-25 a partir de las tareas y evidencias de este p
 una métrica formal del proyecto:
 
 - **Prototipo del MVP v0.4: 85–90 % implementado y verificado localmente.** Hay pruebas
-	para las capacidades incluidas, 302 pruebas enumeradas, formato/Clippy/build limpios y
+	para las capacidades incluidas, 304 pruebas enumeradas, formato/Clippy/build limpios y
 	un smoke test de `cargo install`/`cargo uninstall` en Linux. La especificación candidata
 	todavía requiere aprobación.
 - **Cierre como candidata publicable: 70–75 %.** Faltan aprobar formalmente el perfil de
@@ -66,6 +66,7 @@ Definir qué soporta la v0.4 y qué no, dejando un contrato operativo para todo 
 - funciones con parámetros y retorno
 - control de flujo: `si`, `sino`, `mientras`
 - texto y expresiones básicas
+- semántica `real` de ADR-0005 con valores especiales IEEE, comparaciones `NaN` y división por cero con ambos signos de cero
 - arreglos y listas simples
 - CLI con `run`, `--help` y `--version`
 - manejo de errores claro y reproducible
@@ -216,7 +217,7 @@ cargo test --quiet
 cargo test -- --list
 ```
 
-Resultado local del árbol actual: todos los comandos pasan; Clippy sin advertencias; 302 pruebas enumeradas y 0 fallos. El estado de CI remota no es verificable desde este entorno; no se presenta como aprobado.
+Resultado local del árbol actual: todos los comandos pasan; Clippy sin advertencias; 304 pruebas enumeradas y 0 fallos. El estado de CI remota no es verificable desde este entorno; no se presenta como aprobado.
 
 ## Decisión clave
 La prioridad no es “hacer más lenguaje”, sino “dejar una versión útil y terminable”. Eso es lo que marca la diferencia entre un prototipo que se queda así y una base que puede crecer con criterio.

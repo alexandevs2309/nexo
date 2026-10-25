@@ -264,6 +264,49 @@ fn s13_infinito_por_desbordamiento_de_magnitud_es_admitido() {
         panic!("esperaba real")
     };
     assert!(x.is_infinite());
+
+    let Valor::Real(negativo) = ok("-1e308 * 10") else {
+        panic!("esperaba real")
+    };
+    assert!(negativo.is_infinite() && negativo.is_sign_negative());
+    assert_eq!(ok("(1e308 * 10) == (1e308 * 10)"), Valor::Logico(true));
+}
+
+#[test]
+fn s13_nan_sigue_semantica_ieee_en_comparaciones() {
+    let nan = "(1e308 * 10) - (1e308 * 10)";
+    let Valor::Real(valor_nan) = ok(nan) else {
+        panic!("esperaba un valor real")
+    };
+    assert!(valor_nan.is_nan());
+    assert_eq!(ok(&format!("({nan}) == ({nan})")), Valor::Logico(false));
+    assert_eq!(ok(&format!("({nan}) != ({nan})")), Valor::Logico(true));
+    assert_eq!(ok(&format!("({nan}) < 0.0e0")), Valor::Logico(false));
+    assert_eq!(ok(&format!("({nan}) <= 0.0e0")), Valor::Logico(false));
+    assert_eq!(ok(&format!("({nan}) > 0.0e0")), Valor::Logico(false));
+    assert_eq!(ok(&format!("({nan}) >= 0.0e0")), Valor::Logico(false));
+    for (operador, esperado) in [
+        ("==", false),
+        ("!=", true),
+        ("<", false),
+        ("<=", false),
+        (">", false),
+        (">=", false),
+    ] {
+        let expresion = format!("({nan}) {operador} 0");
+        assert_eq!(ok(&expresion), Valor::Logico(esperado), "{expresion}");
+    }
+}
+
+#[test]
+fn s13_menos_cero_real_es_igual_a_cero_y_dividir_por_el_falla() {
+    let Valor::Real(menos_cero) = ok("-0.0e0") else {
+        panic!("esperaba un valor real")
+    };
+    assert_eq!(menos_cero.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(ok("-0.0e0 == 0.0e0"), Valor::Logico(true));
+    assert_eq!(ok("-0.0e0 != 0.0e0"), Valor::Logico(false));
+    assert_eq!(err("1.0e0 / -0.0e0"), "división entre cero");
 }
 
 #[test]

@@ -11,6 +11,7 @@ para cerrar como v0.4. No declara que exista una distribución estable.
 
 - Expresiones numéricas y lógicas, variables, anotaciones de tipo, mutabilidad y
   ámbitos.
+- Semántica IEEE de `real` para infinitos, `NaN` y `-0.0`; los predicados de inspección se difieren a la biblioteca estándar.
 - Funciones con parámetros y retorno, incluidas funciones recursivas.
 - Parámetros anotados o inferidos en la primera llamada; retornos anotados, conversiones aprobadas y `nulo` según ADR-0011.
 - Control de flujo garantizado con `si`, `sino` y `mientras`.
@@ -38,7 +39,7 @@ cargo test --quiet
 ```
 
 Los comandos pasan localmente en el árbol actual del 2026-10-25. `cargo test -- --list`
-enumera 302 pruebas. El estado de CI no pudo consultarse desde este entorno: la página
+enumera 304 pruebas. El estado de CI no pudo consultarse desde este entorno: la página
 del commit y el API de checks devolvieron 404. La aceptación CLI
 incluye un programa que combina variables, arreglo e indexación, ciclo, condición,
 función y texto; además verifica que un error informe archivo, línea, columna y causa.

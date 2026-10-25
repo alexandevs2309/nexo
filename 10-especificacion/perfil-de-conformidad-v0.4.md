@@ -40,7 +40,7 @@ Los textos usan comillas dobles, admiten Unicode y los escapes `\\`, `\"`, `\n` 
 |---|---|
 | `entero` | Entero con signo de 64 bits. División truncada hacia cero; `%` conserva el signo del dividendo. |
 | `decimal` | Punto fijo `DECIMAL(28,9)`, redondeo half-even y error por exceso de rango. |
-| `real` | Coma flotante binaria de 64 bits; la división por cero produce error. Los casos no finitos por overflow no forman parte de este perfil y requieren criterios adicionales. |
+| `real` | Coma flotante binaria de 64 bits; conserva `+inf`, `-inf`, `NaN` y `-0.0` generados por operaciones `f64`. |
 | `logico` | `verdadero` o `falso`; no se convierte a/desde números. |
 | `texto` | Secuencia UTF-8; concatenación con `+`, igualdad/desigualdad y comparación lexicográfica. |
 | `nulo` | Valor de ausencia, distinto de `falso`, `0` y `""`. Sólo `nulo == nulo` y `nulo != nulo` son comparaciones válidas. |
@@ -61,6 +61,15 @@ Las únicas conversiones implícitas son `entero → decimal` y `entero → real
 | `y`, `o`, `no` | Sólo valores `logico` | `logico`; `y`/`o` usan cortocircuito |
 
 Comparar lógicos, colecciones, `nulo` con otro tipo, o pares numéricos sin conversión aprobada produce error tipado. `nulo` no admite aritmética ni se usa como condición.
+
+Para `real`, las comparaciones siguen IEEE: `NaN == NaN` es falso, `NaN != NaN` es
+verdadero y las seis comparaciones de orden con `NaN` son falsas. `+inf` y `-inf` se
+comparan según su orden numérico. `-0.0` conserva su representación interna pero
+compara igual que `0.0`. La división por `+0.0` o `-0.0` produce error
+`DivisionPorCero`; el lenguaje no genera infinitos por división entre cero.
+
+Los predicados `es_nan`, `es_infinito`, `es_finito` y `es_cero_negativo` se aplazan a
+una futura biblioteca estándar y no forman parte de la garantía de este perfil.
 
 ## 4. Expresiones
 
@@ -159,7 +168,7 @@ La sintaxis de `intentar`/`rescatar`, `para cada`, rangos, `romper` y `continuar
 
 | Área | Evidencia ejecutable |
 |---|---|
-| Números, operadores, tipos lógicos y comparaciones | `prototipo/tests/conformidad.rs`, `prototipo/tests/conformidad_control.rs` |
+| Números, valores especiales de `real`, operadores, tipos lógicos y comparaciones | `prototipo/tests/conformidad.rs`, `prototipo/tests/conformidad_control.rs` |
 | Variables, ámbitos, tipos anotados y asignación | `prototipo/tests/variables.rs`, `prototipo/tests/control_flujo.rs` |
 | Funciones, inferencia, anotaciones y retorno | `prototipo/tests/conformidad_funciones.rs` |
 | Texto básico | `prototipo/tests/conformidad_texto.rs` |
@@ -170,6 +179,6 @@ Toda regla del perfil que no esté cubierta por una prueba positiva y otra negat
 
 ## 10. Límites y publicación
 
-Este documento no especifica módulos, paquetes, biblioteca estándar extensa, concurrencia, depuración, IDE, FFI ni soporte de plataformas. Tampoco incorpora las extensiones experimentales enumeradas en §8. La conformidad con este perfil no significa conformidad con BASILISCO Core 0.3 ni estabilidad del lenguaje completo.
+Este documento no especifica módulos, paquetes, predicados de inspección de `real`, biblioteca estándar extensa, concurrencia, depuración, IDE, FFI ni soporte de plataformas. Tampoco incorpora las extensiones experimentales enumeradas en §8. La conformidad con este perfil no significa conformidad con BASILISCO Core 0.3 ni estabilidad del lenguaje completo.
 
 Para aprobar/publicar v0.4 se requiere revisión formal del perfil, suite completa, `cargo fmt --check`, Clippy estricto, build de binarios, CI asociada al commit final, versión de paquete decidida y evidencia de instalación/plataformas declaradas. Hasta cumplir esas condiciones, BASILISCO sigue siendo un prototipo/candidata local.

@@ -45,6 +45,26 @@ Nexo nace con **tres tipos numéricos nativos**, cada uno con propósito definid
 - **`-0.0`:** igual a `0.0` en comparación; distinto internamente; `1/(-0.0)` es error por la regla de división por cero.
 - **Conversión a `entero`/`decimal`:** siempre error si el valor no es finito.
 
+#### Alcance de implementación para v0.4 (aclaración 2026-10-25)
+
+Esta aclaración no cambia la decisión aprobada sobre `real`; precisa su implementación
+en el perfil acotado v0.4:
+
+- Se conservan `+inf`, `-inf`, `NaN` y `-0.0` que surgen de operaciones `f64`.
+- Las comparaciones siguen IEEE: `NaN == NaN` es falso, `NaN != NaN` es verdadero y
+  todo orden con `NaN` es falso. Infinito se compara según su orden numérico; `-0.0`
+  compara igual que `0.0`.
+- Dividir por `+0.0` o `-0.0` produce `DivisionPorCero`; no se genera infinito mediante
+  división por cero.
+- `es_nan`, `es_infinito`, `es_finito` y `es_cero_negativo` no son parte del núcleo ni
+  de la garantía v0.4; quedan aplazados a una futura biblioteca estándar. Hasta que
+  existan, un programa BASILISCO no puede inspeccionar directamente el signo interno
+  de cero ni clasificar los valores especiales.
+
+La suite `prototipo/tests/conformidad.rs` cubre overflow a ambos signos de infinito,
+igualdad de infinito, `NaN` en igualdad/desigualdad/orden, conservación de `-0.0`, su
+igualdad numérica con `0.0` y división por cero negativo.
+
 ### 1.4 Conversiones entre tipos
 
 | Origen → destino | Regla |

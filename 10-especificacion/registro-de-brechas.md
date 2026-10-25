@@ -44,7 +44,7 @@ Una brecha no se cierra porque exista un documento. Debe tener decisión aprobad
 
 | Capacidad | Código local | Cobertura de pruebas | Norma / alcance v0.4 |
 |---|---|---|---|
-| Núcleo numérico (entero/decimal/real) | Implementado | Suite de conformidad numérica | Core 0.3 / incluido |
+| Núcleo numérico (entero/decimal/real, incluidos especiales IEEE de `real`) | Implementado | Suite de conformidad numérica: overflow a infinito, `NaN`, `-0.0` y división por cero con cero negativo | ADR-0005 / incluido |
 | Variables, asignación, tipos anotados y ámbitos | Implementado | Variables, control y tipos | Core 0.3 + ADR-0011 / incluido |
 | `si`/`sino`/`mientras`, bloques | Implementado | Conformidad y flujo de control | Core 0.3 / incluido |
 | Funciones, parámetros y retorno | Implementado; tipos anotados e inferidos verificados | Suite positiva/negativa: aridad, orden de argumentos, primera llamada (incluida recursión), conversiones implícitas aprobadas, retorno anotado, `nulo` y colecciones anotadas | ADR-0008/0011; Core 0.3 no exhaustivo / perfil v0.4 candidato |
@@ -56,6 +56,6 @@ Una brecha no se cierra porque exista un documento. Debe tener decisión aprobad
 | CLI `basilisco`/`bsk` | `run`, `demo`, ayuda, versión, extensiones y diagnóstico de ejecución | Pruebas CLI positivas/negativas y aceptación integrada | ADR-0010 / incluido |
 | Módulos, importaciones, paquetes, concurrencia, FFI | No disponible como capacidad completa | Sin suite de producto | GAP-010/014/015/016 / fuera de alcance |
 
-**Verificación local (2026-10-25):** 302 pruebas enumeradas; formato, Clippy estricto, build y suite completa pasan en el árbol actual. El estado de CI remota no pudo verificarse desde este entorno; no declara conformidad con Core 0.3 ni superación de puertas de distribución.
+**Verificación local (2026-10-25):** 304 pruebas enumeradas; formato, Clippy estricto, build y suite completa pasan en el árbol actual. La suite numérica cubre overflow a ambos signos de infinito, comparaciones de `NaN`, igualdad numérica de `-0.0` y error al dividir por cero negativo. El estado de CI remota no pudo verificarse desde este entorno; no declara conformidad con Core 0.3 ni superación de puertas de distribución.
 
 **Brechas que permanecen abiertas:** GAP-001 a GAP-009 siguen requiriendo cierre por separado en norma, pruebas y código; GAP-008 se cierra parcialmente para los casos básicos de arreglos/listas, no para iteración completa. Las extensiones marcadas prototipales necesitan los criterios de límite indicados por ADR-0012 a ADR-0014 antes de entrar en una garantía de versión.

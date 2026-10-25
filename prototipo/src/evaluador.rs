@@ -1349,22 +1349,24 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
         Expresion::Multiplicacion(a, b) => binaria(a, b, env, |x, y| x.multiplicacion(y)),
         Expresion::Division(a, b) => binaria(a, b, env, |x, y| x.division(y)),
         Expresion::Modulo(a, b) => binaria(a, b, env, |x, y| x.modulo(y)),
-        Expresion::IgualIgual(a, b) => {
-            comparar(a, b, env, true, |ord| ord == std::cmp::Ordering::Equal)
-        }
-        Expresion::Distinto(a, b) => {
-            comparar(a, b, env, true, |ord| ord != std::cmp::Ordering::Equal)
-        }
-        Expresion::Menor(a, b) => comparar(a, b, env, false, |ord| ord == std::cmp::Ordering::Less),
-        Expresion::MenorIgual(a, b) => {
-            comparar(a, b, env, false, |ord| ord != std::cmp::Ordering::Greater)
-        }
-        Expresion::Mayor(a, b) => {
-            comparar(a, b, env, false, |ord| ord == std::cmp::Ordering::Greater)
-        }
-        Expresion::MayorIgual(a, b) => {
-            comparar(a, b, env, false, |ord| ord != std::cmp::Ordering::Less)
-        }
+        Expresion::IgualIgual(a, b) => comparar(a, b, env, true, false, |ord| {
+            ord == std::cmp::Ordering::Equal
+        }),
+        Expresion::Distinto(a, b) => comparar(a, b, env, true, true, |ord| {
+            ord != std::cmp::Ordering::Equal
+        }),
+        Expresion::Menor(a, b) => comparar(a, b, env, false, false, |ord| {
+            ord == std::cmp::Ordering::Less
+        }),
+        Expresion::MenorIgual(a, b) => comparar(a, b, env, false, false, |ord| {
+            ord != std::cmp::Ordering::Greater
+        }),
+        Expresion::Mayor(a, b) => comparar(a, b, env, false, false, |ord| {
+            ord == std::cmp::Ordering::Greater
+        }),
+        Expresion::MayorIgual(a, b) => comparar(a, b, env, false, false, |ord| {
+            ord != std::cmp::Ordering::Less
+        }),
         Expresion::No(a) => {
             let v = evaluar_con(a, env)?;
             match v {
@@ -1770,6 +1772,7 @@ fn comparar(
     b: &Expresion,
     env: &mut Entorno,
     permitir_igualdad_nulo: bool,
+    resultado_nan: bool,
     pred: impl Fn(std::cmp::Ordering) -> bool,
 ) -> Result<Valor, ErrorEjecucion> {
     let va = evaluar_con(a, env)?;
@@ -1808,34 +1811,19 @@ fn comparar(
         (&Valor::Decimal(x), &Valor::Entero(y)) => {
             Ok(Valor::Logico(pred(x.cmp(&(y as i128 * FACTOR_ESCALA)))))
         }
-        (&Valor::Entero(x), &Valor::Real(y)) => Ok(Valor::Logico(pred(
-            (x as f64).partial_cmp(&y).ok_or_else(|| {
-                error(
-                    CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal),
-                    linea,
-                    columna,
-                )
-            })?,
-        ))),
-        (&Valor::Real(x), &Valor::Entero(y)) => Ok(Valor::Logico(pred(
-            x.partial_cmp(&(y as f64)).ok_or_else(|| {
-                error(
-                    CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal),
-                    linea,
-                    columna,
-                )
-            })?,
-        ))),
+        (&Valor::Entero(x), &Valor::Real(y)) => match (x as f64).partial_cmp(&y) {
+            Some(orden) => Ok(Valor::Logico(pred(orden))),
+            None => Ok(Valor::Logico(resultado_nan)),
+        },
+        (&Valor::Real(x), &Valor::Entero(y)) => match x.partial_cmp(&(y as f64)) {
+            Some(orden) => Ok(Valor::Logico(pred(orden))),
+            None => Ok(Valor::Logico(resultado_nan)),
+        },
         (&Valor::Decimal(x), &Valor::Decimal(y)) => Ok(Valor::Logico(pred(x.cmp(&y)))),
-        (&Valor::Real(x), &Valor::Real(y)) => {
-            Ok(Valor::Logico(pred(x.partial_cmp(&y).ok_or_else(|| {
-                error(
-                    CausaError::Aritmetica(MotivoAritmetico::ConversionIlegal),
-                    linea,
-                    columna,
-                )
-            })?)))
-        }
+        (&Valor::Real(x), &Valor::Real(y)) => match x.partial_cmp(&y) {
+            Some(orden) => Ok(Valor::Logico(pred(orden))),
+            None => Ok(Valor::Logico(resultado_nan)),
+        },
         (&Valor::Decimal(_), &Valor::Real(_)) | (&Valor::Real(_), &Valor::Decimal(_)) => {
             // Prohibido hasta conversión explícita (ADR-0007).
             Err(error(
