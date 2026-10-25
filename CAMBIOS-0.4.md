@@ -60,7 +60,7 @@ y salida general siguen siendo limitadas.
 
 - Decidir y aplicar la versión de paquete que corresponda a la publicación v0.4.
 - Ejecutar CI sobre el estado final y asociar la evidencia a un commit identificable.
-- Verificar instalación, desinstalación y plataformas objetivo.
+- Se verificó `cargo install` y `cargo uninstall` en un root temporal de Linux; aún falta verificar el mecanismo de instalación que se publique y la matriz de plataformas objetivo.
 - Completar la revisión de seguridad, dependencias y errores conocidos requerida por
   las puertas de distribución y estabilidad.
 - Resolver los pendientes de licencia, marca y publicación institucional registrados

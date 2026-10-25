@@ -183,7 +183,7 @@ No se añade funcionalidad nueva mientras no se cumplan estas condiciones:
 5. release candidate
 
 ## Siguiente acción inmediata
-Resolver la lista de pendientes de publicación en `CAMBIOS-0.4.md`: fijar la versión de paquete, ejecutar CI sobre un commit final y aportar evidencia de instalación/plataformas antes de declarar una distribución.
+Resolver la lista de pendientes de publicación en `CAMBIOS-0.4.md`: fijar la versión de paquete, confirmar CI sobre un commit final y aportar evidencia de instaladores/plataformas objetivo antes de declarar una distribución. La ruta local `cargo install`/`cargo uninstall` ya pasó en Linux.
 
 ## Verificación actual
 Verificación local ejecutada el 2026-10-25, después de los cambios en CLI, evaluador y documentación:

@@ -130,6 +130,10 @@ Sin anotación, los parámetros fijan sus tipos en la primera llamada exitosa; l
 
 Con parámetros anotados, cada argumento se verifica en la llamada. Con retorno anotado, el valor devuelto se verifica al regresar. La incompatibilidad produce `TipoParametroIncompatible` o `RetornoIncompatibleConAnotacion`, respectivamente. `-> nulo` admite terminar normalmente o ejecutar `retornar nulo`; ambas formas producen `nulo`. `retornar` sin expresión en otro contexto de retorno produce error.
 
+`TipoParametroIncompatible` apunta a la llamada; `RetornoIncompatibleConAnotacion`
+apunta a la sentencia `retornar` cuyo valor incumple el tipo declarado. `RetornoAusente`
+se diagnostica en la llamada que intenta usar el resultado de una función sin retorno.
+
 `mostrar` escribe la representación del valor y un salto de línea en stdout; `mostrar_sin_salto` escribe sin añadirlo. `mostrar` acepta cualquier valor del perfil.
 
 ## 7. Control de flujo
