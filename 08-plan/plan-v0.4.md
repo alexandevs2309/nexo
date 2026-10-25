@@ -12,6 +12,25 @@ La versión v0.4 se considera terminada cuando se cumplan estas condiciones:
 - la documentación de uso básico está completa y verificable.
 - la versión tiene un alcance fijo y documentado.
 
+## Estimación de avance (orientativa, no oficial)
+
+Estimación aportada el 2026-10-25 a partir de las tareas y evidencias de este plan; no es
+una métrica formal del proyecto:
+
+- **Prototipo del MVP v0.4: 85–90 % implementado y verificado localmente.** Hay pruebas
+	para las capacidades incluidas, 302 pruebas enumeradas, formato/Clippy/build limpios y
+	un smoke test de `cargo install`/`cargo uninstall` en Linux. La especificación candidata
+	todavía requiere aprobación.
+- **Cierre como candidata publicable: 70–75 %.** Faltan aprobar formalmente el perfil de
+	conformidad, decidir la versión del paquete, verificar CI del commit final y definir y
+	probar las plataformas que se respaldarán.
+- **Lenguaje completo: sin porcentaje objetivo.** Su alcance no está definido de forma
+	exhaustiva; módulos, paquetes, biblioteca estándar extensa, concurrencia y otras áreas
+	siguen siendo brechas abiertas.
+
+La formulación resumida es: *el núcleo v0.4 ya funciona; falta formalizarlo y cerrar la
+candidata*. No usar estos porcentajes como declaración oficial de completitud.
+
 ## Alcance de la v0.4
 
 ### Incluido
