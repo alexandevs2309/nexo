@@ -63,5 +63,5 @@ La entrada y salida general siguen siendo limitadas.
 - La instalación local con Cargo pasó en Linux. La matriz nueva debe pasar install/uninstall en Linux, macOS y Windows antes de declarar soporte para esos sistemas; falta confirmar el mecanismo de instalación que se publique.
 - Completar la revisión de seguridad, dependencias y errores conocidos requerida por
   las puertas de distribución y estabilidad.
-- Resolver los pendientes de licencia, marca y publicación institucional registrados
-  en `CAMBIOS-BASILISCO.md`.
+- Licencia seleccionada: Apache-2.0; `LICENSE`, el metadato `license = "Apache-2.0"` y ADR-0016 están añadidos en la rama de este PR. La procedencia del código y las licencias de terceros deben auditarse antes de publicar.
+- Completar la revisión de marca y publicación institucional registrada en `CAMBIOS-BASILISCO.md`.
