@@ -78,6 +78,25 @@ fn func_inferencia_tipos_primera_llamada() {
 }
 
 #[test]
+fn func_fija_tipo_de_parametro_inferido_en_primera_llamada() {
+    let err = run_program_err(
+        "funcion constante(valor) {\n  retornar 1\n}\nconstante(42)\nconstante(\"texto\")",
+    );
+    assert!(err.contains("parámetro 'valor'"), "error inesperado: {err}");
+
+    let r = run_program(
+        "funcion identidad(valor) {\n  retornar valor\n}\nidentidad(1.5)\nidentidad(2)",
+    )
+    .unwrap();
+    assert_eq!(r, Some(basilisco::Valor::Decimal(2_000_000_000)));
+
+    let err = run_program_err(
+        "funcion recursiva(valor) {\n  si valor == 0 {\n    retornar 1\n  }\n  retornar recursiva(\"texto\")\n}\nrecursiva(1)",
+    );
+    assert!(err.contains("parámetro 'valor'"), "error inesperado: {err}");
+}
+
+#[test]
 fn func_error_firma_pocos_argumentos() {
     let err = run_program_err(
         r#"
@@ -101,6 +120,16 @@ fn func_error_firma_muchos_argumentos() {
     "#,
     );
     assert!(err.contains("FirmaInvalida") || err.contains("argumentos"));
+}
+
+#[test]
+fn func_evalua_argumentos_antes_de_validar_aridad() {
+    let err =
+        run_program_err("funcion identidad(valor) {\n  retornar valor\n}\nidentidad(1 / 0, 2)");
+    assert!(
+        err.contains("división entre cero"),
+        "error inesperado: {err}"
+    );
 }
 
 #[test]
@@ -176,6 +205,73 @@ fn func_tipo_decimal_en_funcion() {
     )
     .unwrap();
     assert_eq!(r, Some(basilisco::Valor::Decimal(3500000000))); // 3.5
+}
+
+#[test]
+fn func_parametros_anotados_validan_y_aplican_conversiones_permitidas() {
+    let r = run_program(
+        "funcion identidad(valor: decimal) -> decimal {\n  retornar valor\n}\nidentidad(2)",
+    )
+    .unwrap();
+    assert_eq!(r, Some(basilisco::Valor::Decimal(2_000_000_000)));
+
+    let err = run_program_err(
+        "funcion identidad(valor: entero) -> entero {\n  retornar valor\n}\nidentidad(2.5)",
+    );
+    assert!(err.contains("parámetro 'valor'"), "error inesperado: {err}");
+}
+
+#[test]
+fn func_parametros_anotados_admiten_arreglos_y_listas() {
+    let arreglo = run_program(
+        "funcion primero(valores: arreglo<entero, 2>) -> entero {\n  retornar valores[0]\n}\nprimero([7, 8])",
+    )
+    .unwrap();
+    assert_eq!(arreglo, Some(basilisco::Valor::Entero(7)));
+
+    let lista = run_program(
+        "funcion primero(valores: lista<entero>) -> entero {\n  retornar valores[0]\n}\nprimero([9])",
+    )
+    .unwrap();
+    assert_eq!(lista, Some(basilisco::Valor::Entero(9)));
+
+    let err = run_program_err(
+        "funcion primero(valores: arreglo<entero, 2>) -> entero {\n  retornar valores[0]\n}\nprimero([7])",
+    );
+    assert!(
+        err.contains("parámetro 'valores'"),
+        "error inesperado: {err}"
+    );
+}
+
+#[test]
+fn func_retorno_anotado_valida_y_aplica_conversiones_permitidas() {
+    let r = run_program("funcion valor() -> decimal {\n  retornar 2\n}\nvalor()").unwrap();
+    assert_eq!(r, Some(basilisco::Valor::Decimal(2_000_000_000)));
+
+    let err = run_program_err("funcion valor() -> entero {\n  retornar 2.5\n}\nvalor()");
+    assert!(
+        err.contains("retorno de 'valor'"),
+        "error inesperado: {err}"
+    );
+}
+
+#[test]
+fn func_nulo_anotado_acepta_retorno_expreso_o_fin_normal() {
+    let retorno_expreso =
+        run_program("funcion sin_valor() -> nulo {\n  retornar nulo\n}\nsin_valor()").unwrap();
+    assert_eq!(retorno_expreso, Some(basilisco::Valor::Nulo));
+
+    let fin_normal =
+        run_program("funcion sin_valor() -> nulo {\n  sea hecho = verdadero\n}\nsin_valor()")
+            .unwrap();
+    assert_eq!(fin_normal, Some(basilisco::Valor::Nulo));
+
+    let err = run_program_err("funcion mal_tipada() -> nulo {\n  retornar 1\n}\nmal_tipada()");
+    assert!(
+        err.contains("retorno de 'mal_tipada'"),
+        "error inesperado: {err}"
+    );
 }
 
 #[test]

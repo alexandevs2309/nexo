@@ -17,7 +17,7 @@ La versión v0.4 se considera terminada cuando se cumplan estas condiciones:
 ### Incluido
 - lexer y parser estables
 - variables, ámbitos y reasignación
-- funciones y retorno
+- funciones, parámetros anotados o inferidos y retorno
 - flujo de control garantizado (`si`, `sino`, `mientras`)
 - texto y expresiones
 - listas y arreglos básicos (declaración tipada, literal, indexación y asignación)
@@ -41,7 +41,7 @@ La versión v0.4 se considera terminada cuando se cumplan estas condiciones:
 ### Objetivo
 Definir qué soporta la v0.4 y qué no, dejando un contrato operativo para todo el resto del proyecto.
 
-### MVP v0.4 — características obligatorias
+### MVP v0.4 — características obligatorias propuestas
 - sintaxis mínima estable y documentada
 - variables, ámbitos y reasignación
 - funciones con parámetros y retorno
@@ -60,6 +60,9 @@ también acepta `para cada`, rangos, `romper`, `continuar`, `intentar`/`rescatar
 operaciones de E/S, esas extensiones no forman parte de la aceptación ni se anuncian
 como conformes en esta versión. Los ADR correspondientes siguen aprobados; esta
 decisión limita únicamente el alcance de la entrega v0.4.
+
+El detalle del contrato está en `10-especificacion/perfil-de-conformidad-v0.4.md`;
+permanece como propuesta, no como norma aprobada.
 
 Antes de incorporarlas a una versión garantizada, se requieren al menos estos casos:
 
@@ -91,6 +94,7 @@ La v0.4 se considera terminada cuando:
 
 ### Evidencia
 - documento de alcance de v0.4 aprobado
+- perfil de conformidad candidato escrito y pendiente de revisión/aprobación formal
 - lista de features fuera de alcance
 - ejemplos mínimos ejecutables
 - checklist de aceptación en verde
@@ -193,7 +197,7 @@ cargo test --quiet
 cargo test -- --list
 ```
 
-Resultado: todos los comandos pasan; Clippy sin advertencias; 295 pruebas enumeradas y 0 fallos. Es evidencia local no asociada a commit ni a CI.
+Resultado: todos los comandos pasan; Clippy sin advertencias; 302 pruebas enumeradas y 0 fallos. Es evidencia del árbol local, aún no asociada a commit/CI.
 
 ## Decisión clave
 La prioridad no es “hacer más lenguaje”, sino “dejar una versión útil y terminable”. Eso es lo que marca la diferencia entre un prototipo que se queda así y una base que puede crecer con criterio.

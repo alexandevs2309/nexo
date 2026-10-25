@@ -277,6 +277,8 @@ pub struct FuncionDef {
     /// Tipo de retorno inferido en la primera llamada exitosa (ADR-0008).
     /// `None` = aún no se ha llamado o no retornó valor.
     pub tipo_retorno: Option<&'static str>,
+    /// Tipos inferidos para parámetros sin anotación, fijados en la primera llamada.
+    pub tipos_parametros_inferidos: Option<Vec<Valor>>,
 }
 
 /// Entorno de ejecución: pila de ámbitos con las variables (ADR-0006 §1.6),
@@ -334,20 +336,11 @@ impl Entorno {
         &mut self,
         sentencias: &[Sentencia],
         nombre_funcion: &str,
-    ) -> Result<Valor, ErrorEjecucion> {
+    ) -> Result<Option<Valor>, ErrorEjecucion> {
         self.ambitos.push(HashMap::new());
         let r = self.ejecutar_funcion_sentencias(sentencias, nombre_funcion);
         self.ambitos.pop();
-        match r? {
-            Some(valor) => Ok(valor),
-            None => Err(error(
-                CausaError::RetornoAusente {
-                    funcion: nombre_funcion.into(),
-                },
-                1,
-                1,
-            )),
-        }
+        r
     }
 
     fn ejecutar_funcion_sentencias(
@@ -910,6 +903,7 @@ impl Entorno {
                             linea,
                             columna,
                             tipo_retorno: None,
+                            tipos_parametros_inferidos: None,
                         },
                     );
                 }
@@ -1335,14 +1329,22 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
         Expresion::Multiplicacion(a, b) => binaria(a, b, env, |x, y| x.multiplicacion(y)),
         Expresion::Division(a, b) => binaria(a, b, env, |x, y| x.division(y)),
         Expresion::Modulo(a, b) => binaria(a, b, env, |x, y| x.modulo(y)),
-        Expresion::IgualIgual(a, b) => comparar(a, b, env, |ord| ord == std::cmp::Ordering::Equal),
-        Expresion::Distinto(a, b) => comparar(a, b, env, |ord| ord != std::cmp::Ordering::Equal),
-        Expresion::Menor(a, b) => comparar(a, b, env, |ord| ord == std::cmp::Ordering::Less),
-        Expresion::MenorIgual(a, b) => {
-            comparar(a, b, env, |ord| ord != std::cmp::Ordering::Greater)
+        Expresion::IgualIgual(a, b) => {
+            comparar(a, b, env, true, |ord| ord == std::cmp::Ordering::Equal)
         }
-        Expresion::Mayor(a, b) => comparar(a, b, env, |ord| ord == std::cmp::Ordering::Greater),
-        Expresion::MayorIgual(a, b) => comparar(a, b, env, |ord| ord != std::cmp::Ordering::Less),
+        Expresion::Distinto(a, b) => {
+            comparar(a, b, env, true, |ord| ord != std::cmp::Ordering::Equal)
+        }
+        Expresion::Menor(a, b) => comparar(a, b, env, false, |ord| ord == std::cmp::Ordering::Less),
+        Expresion::MenorIgual(a, b) => {
+            comparar(a, b, env, false, |ord| ord != std::cmp::Ordering::Greater)
+        }
+        Expresion::Mayor(a, b) => {
+            comparar(a, b, env, false, |ord| ord == std::cmp::Ordering::Greater)
+        }
+        Expresion::MayorIgual(a, b) => {
+            comparar(a, b, env, false, |ord| ord != std::cmp::Ordering::Less)
+        }
         Expresion::No(a) => {
             let v = evaluar_con(a, env)?;
             match v {
@@ -1443,38 +1445,111 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                     *columna,
                 )
             })?;
-            if argumentos.len() != fdef.parametros.len() {
+            let mut vals = Vec::new();
+            for a in argumentos {
+                vals.push(evaluar_con(a, env)?);
+            }
+            if vals.len() != fdef.parametros.len() {
                 return Err(error(
                     CausaError::FirmaInvalida {
                         funcion: nombre.clone(),
                         esperado: fdef.parametros.len(),
-                        obtenido: argumentos.len(),
+                        obtenido: vals.len(),
                     },
                     *linea,
                     *columna,
                 ));
             }
-            let mut vals = Vec::new();
-            for a in argumentos {
-                vals.push(evaluar_con(a, env)?);
+            if fdef.parametros.iter().all(|(_, tipo)| tipo.is_none()) {
+                if let Some(tipos_esperados) = &fdef.tipos_parametros_inferidos {
+                    for ((parametro, _), (esperado, obtenido)) in fdef
+                        .parametros
+                        .iter()
+                        .zip(tipos_esperados.iter().zip(vals.iter_mut()))
+                    {
+                        let tipo_obtenido = obtenido.nombre_tipo().to_string();
+                        let Some(convertido) = convertir_para_tipo(esperado, obtenido.clone())
+                        else {
+                            return Err(error(
+                                CausaError::TipoParametroIncompatible {
+                                    funcion: nombre.clone(),
+                                    parametro: parametro.clone(),
+                                    esperado: esperado.nombre_tipo().to_string(),
+                                    obtenido: tipo_obtenido,
+                                },
+                                *linea,
+                                *columna,
+                            ));
+                        };
+                        *obtenido = convertido;
+                    }
+                } else if let Some(definicion) = env.funciones.get_mut(nombre) {
+                    definicion.tipos_parametros_inferidos = Some(vals.clone());
+                }
             }
             let mut nuevo_env = Entorno {
                 ambitos: vec![HashMap::new()],
                 funciones: env.funciones.clone(),
             };
-            for ((nombre_param, _tipo_param), v) in fdef.parametros.iter().zip(vals.iter()) {
+            for ((nombre_param, tipo_param), v) in fdef.parametros.iter().zip(vals.iter()) {
+                let valor_parametro = if let Some(tipo) = tipo_param {
+                    let obtenido = v.nombre_tipo().to_string();
+                    convertir_a_tipo_anotado(v.clone(), tipo).ok_or_else(|| {
+                        error(
+                            CausaError::TipoParametroIncompatible {
+                                funcion: nombre.clone(),
+                                parametro: nombre_param.clone(),
+                                esperado: tipo.nombre(),
+                                obtenido,
+                            },
+                            *linea,
+                            *columna,
+                        )
+                    })?
+                } else {
+                    v.clone()
+                };
                 nuevo_env.insertar_variable(
                     nombre_param.clone(),
                     VariableInfo {
-                        valor: v.clone(),
-                        tipo_declarado: None, // Parámetros usan inferencia
-                        mutable: true,        // Parámetros son mutables como `var`
+                        valor: valor_parametro,
+                        tipo_declarado: tipo_param.clone(),
+                        mutable: true, // Parámetros son mutables como `var`
                         es_const: false,
                     },
                 );
             }
-            let resultado = nuevo_env.ejecutar_funcion(&fdef.cuerpo, &fdef.nombre)?;
-            // Validar/guardar tipo de retorno (ADR-0008)
+            let resultado = match nuevo_env.ejecutar_funcion(&fdef.cuerpo, &fdef.nombre)? {
+                Some(valor) => valor,
+                None if matches!(fdef.tipo_retorno_anotado, Some(TipoAnotacion::Nulo)) => {
+                    Valor::Nulo
+                }
+                None => {
+                    return Err(error(
+                        CausaError::RetornoAusente {
+                            funcion: fdef.nombre,
+                        },
+                        *linea,
+                        *columna,
+                    ));
+                }
+            };
+            if let Some(tipo_esperado) = fdef.tipo_retorno_anotado.as_ref() {
+                let obtenido = resultado.nombre_tipo().to_string();
+                return convertir_a_tipo_anotado(resultado, tipo_esperado).ok_or_else(|| {
+                    error(
+                        CausaError::RetornoIncompatibleConAnotacion {
+                            funcion: nombre.clone(),
+                            esperado: tipo_esperado.nombre(),
+                            obtenido,
+                        },
+                        *linea,
+                        *columna,
+                    )
+                });
+            }
+
+            // Validar/guardar tipo de retorno inferido (ADR-0008).
             let tipo_obtenido = resultado.nombre_tipo();
             if let Some(tipo_esperado) = fdef.tipo_retorno {
                 if tipo_obtenido != tipo_esperado {
@@ -1674,11 +1749,25 @@ fn comparar(
     a: &Expresion,
     b: &Expresion,
     env: &mut Entorno,
+    permitir_igualdad_nulo: bool,
     pred: impl Fn(std::cmp::Ordering) -> bool,
 ) -> Result<Valor, ErrorEjecucion> {
     let va = evaluar_con(a, env)?;
     let vb = evaluar_con(b, env)?;
     let (linea, columna) = ubicacion(a);
+    if matches!(va, Valor::Nulo) || matches!(vb, Valor::Nulo) {
+        if permitir_igualdad_nulo && matches!((&va, &vb), (Valor::Nulo, Valor::Nulo)) {
+            return Ok(Valor::Logico(pred(std::cmp::Ordering::Equal)));
+        }
+        return Err(error(
+            CausaError::TiposIncompatibles {
+                izquierdo: va.nombre_tipo(),
+                derecho: vb.nombre_tipo(),
+            },
+            linea,
+            columna,
+        ));
+    }
     if matches!(va, Valor::Logico(_)) || matches!(vb, Valor::Logico(_)) {
         // No se permite comparar lógicos con ==/!= arbitrarios entre numéricos aquí; tipos incompatibles
         return Err(error(
@@ -2178,10 +2267,13 @@ mod tests {
         let e = programa(
             r#"
             funcion id(x) {
-                retornar x
+                si x == 0 {
+                    retornar 1
+                }
+                retornar 3.14
             }
-            id(42)
-            id(3.14)
+            id(0)
+            id(1)
         "#,
         )
         .expect_err("tipo de retorno incompatible");

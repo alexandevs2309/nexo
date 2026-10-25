@@ -131,6 +131,29 @@ fn s12_comparar_logicos_con_numeros_es_error() {
 }
 
 #[test]
+fn s12_nulo_solo_admite_igualdad_con_nulo() {
+    assert_eq!(ok("nulo == nulo"), Valor::Logico(true));
+    assert_eq!(ok("nulo != nulo"), Valor::Logico(false));
+
+    let e = error_programa("nulo == 0");
+    assert_eq!(
+        *e.causa,
+        CausaError::TiposIncompatibles {
+            izquierdo: "nulo",
+            derecho: "entero"
+        }
+    );
+    let e = error_programa("nulo < nulo");
+    assert_eq!(
+        *e.causa,
+        CausaError::TiposIncompatibles {
+            izquierdo: "nulo",
+            derecho: "nulo"
+        }
+    );
+}
+
+#[test]
 fn s12_comparaciones_encadenadas_son_error_sintactico() {
     let e = error_sintactico("1 < 2 < 3");
     assert!(

@@ -12,6 +12,7 @@ para cerrar como v0.4. No declara que exista una distribución estable.
 - Expresiones numéricas y lógicas, variables, anotaciones de tipo, mutabilidad y
   ámbitos.
 - Funciones con parámetros y retorno, incluidas funciones recursivas.
+- Parámetros anotados o inferidos en la primera llamada; retornos anotados, conversiones aprobadas y `nulo` según ADR-0011.
 - Control de flujo garantizado con `si`, `sino` y `mientras`.
 - Texto, arreglos y listas con operaciones básicas e indexación.
 - CLI `basilisco` y alias `bsk`, con `run`, `--help` y `--version`.
@@ -22,6 +23,8 @@ para cerrar como v0.4. No declara que exista una distribución estable.
 El prototipo también contiene `para cada`, rangos, `romper`/`continuar`,
 `intentar`/`rescatar` y E/S. Son extensiones experimentales fuera de la garantía v0.4;
 no se declara conformidad para ellas. El plan v0.4 enumera sus casos límite pendientes.
+El perfil contractual candidato está en `10-especificacion/perfil-de-conformidad-v0.4.md`;
+es una propuesta para revisión, no una especificación aprobada.
 
 ## Evidencia local
 
@@ -34,7 +37,8 @@ cargo build --bins
 cargo test --quiet
 ```
 
-Los comandos pasan. `cargo test -- --list` enumera 295 pruebas. La aceptación CLI
+Los comandos pasan en el árbol local del 2026-10-25. `cargo test -- --list` enumera
+302 pruebas; esta evidencia aún no está asociada a un commit ni a CI. La aceptación CLI
 incluye un programa que combina variables, arreglo e indexación, ciclo, condición,
 función y texto; además verifica que un error informe archivo, línea, columna y causa.
 El tutorial está en `prototipo/tutorial/01-primer-programa.md`. Se corrigió además la

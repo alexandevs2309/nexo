@@ -88,3 +88,7 @@ Core 0.3 sigue siendo una propuesta normativa inicial y acotada. No declara conf
 | Módulos, paquetes, concurrencia, ABI/FFI y biblioteca estándar | No definidos | No disponibles como capacidades completas | Fuera de alcance |
 
 Para incorporar una extensión a una versión garantizada se requiere especificación normativa, criterios positivos y negativos, pruebas de límites, revisión de seguridad cuando corresponda y actualización del registro de brechas. La existencia de un ADR aprobado y código ejecutable no basta para declarar conformidad.
+
+El alcance reducido candidato para la entrega v0.4 se documenta por separado en
+[`perfil-de-conformidad-v0.4.md`](perfil-de-conformidad-v0.4.md). Ese perfil no
+actualiza ni amplía esta edición Core 0.3.
