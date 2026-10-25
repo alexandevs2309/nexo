@@ -1,18 +1,19 @@
-# BASILISCO — Base fundacional integral 0.2
+# BASILISCO — Prototipo funcional
 
-**Estado:** Prototipo funcional + base documental. El prototipo Rust en `prototipo/` implementa y verifica los incrementos 1–5 (expresiones numéricas, variables, ámbitos, control de flujo, funciones, retorno y texto) y una CLI mínima para ejecutar archivos. Los documentos de gobernanza y la especificación normativa 0.3 (`10-especificacion/`) definen el contrato hacia futuras ampliaciones. **Nexo** queda como nombre histórico/temporal; la identidad objetivo es **BASILISCO**.
+**Estado:** Prototipo funcional con documentación de uso y aceptación local para el alcance v0.4. El intérprete Rust de `prototipo/` incluye expresiones, variables y ámbitos, funciones, control de flujo, texto, arreglos y listas básicos, además de una CLI para ejecutar archivos. No es una distribución publicada: la versión Cargo sigue en `0.1.0` y v0.4 identifica el objetivo de cierre. La especificación normativa 0.3 está en `10-especificacion/`. **Nexo** queda como nombre histórico; la identidad objetivo es **BASILISCO**.
 
 ## Propósito
 Preparar una base extensa para desarrollar BASILISCO como lenguaje multipropósito, con una experiencia de programación orientada al español, rigor técnico, interoperabilidad y evolución gradual.
 
 ## Prototipo actual (`prototipo/`)
-- **Incrementos verificados:** 1 (núcleo numérico), 2 (integración/conformidad), 3 (variables y asignaciones), 4 (control de flujo y lógicos), 5 (funciones, retorno y texto).
-- **Pruebas:** **268 pruebas en verde** (256 de lenguaje + 12 de CLI), `cargo clippy --all-targets -- -D warnings` sin advertencias. El conteo histórico de 264 pruebas en el README anterior correspondía a un estado previo; el conteo real verificado el 2026-10-24 es 268 (102 unit + 12 cli + 29 conformidad + 13 arreglos_listas + 39 control + 12 funciones + 13 texto + 19 control_flujo + 15 integracion + 14 variables).
-- **Ejecutar:** `cd prototipo && cargo test && cargo run -- demo`
-- **Ejecutar un archivo:** `cargo run -- run examples/funciones_basicas.bsk`
-- **Uso de la CLI:** `basilisco run archivo.bsk`; alias `bsk run archivo.bsk`.
-- **Extensiones:** `.bsk` canónica, `.nexo` legado, `.nx` no soportada.
-- **Evidencia:** `07-validacion/casos-de-prueba-y-puertas.md`, `10-especificacion/verificacion-2026-10-22/resumen.md`, ADR-0001–ADR-0010.
+- **Validación:** `cargo test` y `cargo clippy --all-targets -- -D warnings` pasan en el estado verificado.
+- **Ejecutar las pruebas y la demo:** `cd prototipo && cargo test && cargo run -- demo`
+- **Ejecutar un archivo:** desde `prototipo/`, `cargo run -- run examples/tutorial_inicio.bsk`.
+- **CLI:** `basilisco run archivo.bsk`; `bsk` es el alias. `--help` y `--version` muestran ayuda y versión.
+- **Extensiones:** `.bsk` es canónica; `.nexo` se acepta como legado; `.nx` no está soportada.
+- **Tutorial verificable:** [prototipo/tutorial/01-primer-programa.md](prototipo/tutorial/01-primer-programa.md).
+- **Ejemplos ejecutables:** `prototipo/examples/*.bsk`. La CLI indica archivo, línea y columna en errores de ejecución.
+- **Documentación del proyecto:** gobernanza en `00-gobernanza/`, validación en `07-validacion/` y especificación en `10-especificacion/`.
 
 ## Regla fundamental
 Completo no significa fingir que todo está decidido. Las decisiones firmes se registran como aprobadas; las cuestiones abiertas incluyen opciones, criterios, riesgos, pruebas y condiciones de cierre. Ninguna tecnología queda aprobada solo por aparecer en estos documentos.
@@ -26,5 +27,5 @@ Visión y requisitos; sintaxis y gramática; semántica; tipos; memoria; funcion
 - Pendiente: requiere evidencia o decisión.
 - Exploratorio: posibilidad futura, no compromiso.
 
-## Limitación actual
-El prototipo cubre un subconjunto acotado (expresiones, variables, bloques, `si`/`sino`/`mientras`, comparaciones, lógica, funciones, retorno y texto). **Módulos, colecciones, E/S general, entrada estándar, sistema de paquetes, depuración y herramientas de IDE** no están implementados. La CLI ejecuta archivos `.bsk` y acepta `.nexo` como legado; `.nx` no está soportada (ver ADR-0009 y ADR-0010). Los ejemplos en `ejemplos/` documentan uso conceptual o del subconjunto soportado; los ejecutables están en `prototipo/examples/*.bsk`.
+## Limitaciones actuales
+El lenguaje sigue siendo un subconjunto en evolución. Arreglos y listas tienen operaciones básicas; no hay módulos avanzados, sistema de paquetes, biblioteca estándar extensa, depurador ni IDE. La entrada/salida y el soporte de plataformas también son limitados. Los documentos de diseño pueden describir capacidades futuras que todavía no existen en el prototipo. Los ejemplos ejecutables están en `prototipo/examples/*.bsk`; los de `ejemplos/` son conceptuales.

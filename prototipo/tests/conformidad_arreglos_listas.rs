@@ -35,6 +35,39 @@ fn arreglo_literal_tipado() {
     }
 }
 
+#[test]
+fn arreglo_tamano_cero_y_tamano_inicial_incorrecto_se_rechazan() {
+    let err = run_program_err("var vacio: arreglo<entero, 0> = []");
+    assert!(err.contains("mayor que 0"), "error inesperado: {err}");
+
+    let err = run_program_err("var corto: arreglo<entero, 2> = [1]");
+    assert!(err.contains("incompatible"), "error inesperado: {err}");
+}
+
+#[test]
+fn lista_vacia_tipada_es_valida() {
+    let r = run_program("var vacia: lista<entero> = []\nvacia").unwrap();
+    assert!(matches!(r, Some(basilisco::Valor::Lista(v)) if v.is_empty()));
+}
+
+#[test]
+fn colecciones_rechazan_elementos_de_tipo_incompatible_al_declararse() {
+    let err = run_program_err("var numeros: arreglo<entero, 2> = [1, verdadero]");
+    assert!(err.contains("incompatible"), "error inesperado: {err}");
+
+    let err = run_program_err("var numeros: lista<entero> = [1, verdadero]");
+    assert!(err.contains("incompatible"), "error inesperado: {err}");
+}
+
+#[test]
+fn asignacion_por_indice_requiere_indice_entero() {
+    let err = run_program_err("var a: arreglo<entero, 1> = [1]\na[verdadero] = 2");
+    assert!(err.contains("entero"), "error inesperado: {err}");
+
+    let err = run_program_err("var l: lista<entero> = [1]\nl[verdadero] = 2");
+    assert!(err.contains("entero"), "error inesperado: {err}");
+}
+
 // ============================================================= Arreglos (B-001)
 
 /// Asignación válida: el valor actualizado debe leerse correctamente.
@@ -76,6 +109,25 @@ fn arreglo_asignacion_indice_fuera_de_rango() {
         err.contains("fuera de rango") || err.contains("AsignacionIncompatible"),
         "error inesperado: {err}"
     );
+}
+
+#[test]
+fn arreglo_lectura_rechaza_indices_fuera_de_rango_y_negativos() {
+    for indice in ["2", "negativo"] {
+        let prefijo = if indice == "negativo" {
+            "var a: arreglo<entero, 2> = [1, 2]\nvar negativo: entero = 0 - 1\n"
+        } else {
+            "var a: arreglo<entero, 2> = [1, 2]\n"
+        };
+        let err = run_program_err(&format!("{prefijo}a[{indice}]"));
+        assert!(err.contains("fuera de rango"), "error inesperado: {err}");
+    }
+}
+
+#[test]
+fn indice_de_arreglo_debe_ser_entero() {
+    let err = run_program_err("var a: arreglo<entero, 1> = [1]\na[verdadero]");
+    assert!(err.contains("entero"), "error inesperado: {err}");
 }
 
 /// Rechazo: índice negativo.
@@ -142,6 +194,25 @@ fn lista_asignacion_indice_fuera_de_rango() {
         err.contains("fuera de rango") || err.contains("AsignacionIncompatible"),
         "error inesperado: {err}"
     );
+}
+
+#[test]
+fn lista_lectura_rechaza_indices_fuera_de_rango_y_negativos() {
+    for indice in ["2", "negativo"] {
+        let prefijo = if indice == "negativo" {
+            "var l: lista<entero> = [1, 2]\nvar negativo: entero = 0 - 1\n"
+        } else {
+            "var l: lista<entero> = [1, 2]\n"
+        };
+        let err = run_program_err(&format!("{prefijo}l[{indice}]"));
+        assert!(err.contains("fuera de rango"), "error inesperado: {err}");
+    }
+}
+
+#[test]
+fn indice_de_lista_debe_ser_entero() {
+    let err = run_program_err("var l: lista<entero> = [1]\nl[verdadero]");
+    assert!(err.contains("entero"), "error inesperado: {err}");
 }
 
 /// Rechazo: índice negativo en lista.

@@ -105,7 +105,7 @@ fn ejecutar_archivo(ruta: &Path) -> ExitCode {
         }
         Ok(None) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{e}");
+            eprintln!("{}: {e}", ruta.display());
             ExitCode::from(1)
         }
     }

@@ -77,7 +77,7 @@ fn asignacion_admite_solo_conversiones_implicitas_aprobadas() {
     // decimal ← real: prohibida (exige conversión explícita, aún sin sintaxis).
     let e = error("sea x = 1.5\nx = 2.0e0");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::AsignacionIncompatible {
             esperado: "decimal".to_string(),
             obtenido: "real".to_string()
@@ -86,7 +86,7 @@ fn asignacion_admite_solo_conversiones_implicitas_aprobadas() {
     // real ← decimal: prohibida.
     let e = error("sea x = 1.5e0\nx = 2.5");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::AsignacionIncompatible {
             esperado: "real".to_string(),
             obtenido: "decimal".to_string()
@@ -95,7 +95,7 @@ fn asignacion_admite_solo_conversiones_implicitas_aprobadas() {
     // entero ← decimal: prohibida (pérdida).
     let e = error("sea x = 5\nx = 2.5");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::AsignacionIncompatible {
             esperado: "entero".to_string(),
             obtenido: "decimal".to_string()
@@ -108,7 +108,7 @@ fn asignacion_admite_solo_conversiones_implicitas_aprobadas() {
 #[test]
 fn error_variable_no_definida_tipeado_y_ubicado() {
     let e = error("sea total = 1\ntotal + descuento");
-    assert_eq!(e.causa, CausaError::VariableNoDefinida("descuento".into()));
+    assert_eq!(*e.causa, CausaError::VariableNoDefinida("descuento".into()));
     assert_eq!(e.mensaje, "variable no definida: descuento");
     assert_eq!((e.linea, e.columna), (2, 9));
     assert_eq!(
@@ -122,13 +122,13 @@ fn asignacion_a_desconocido_no_declara() {
     // Restricción del incremento: nunca declaración implícita.
     let e = error("inexistente = 10");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::VariableNoDefinida("inexistente".into())
     );
     // Después del intento, el nombre sigue sin existir.
     let e = error("inexistente = 10\ninexistente");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::VariableNoDefinida("inexistente".into())
     );
 }
@@ -136,7 +136,7 @@ fn asignacion_a_desconocido_no_declara() {
 #[test]
 fn error_declaracion_duplicada_tipeada_y_ubicada() {
     let e = error("sea x = 1\nsea x = 2\nx");
-    assert_eq!(e.causa, CausaError::DeclaracionDuplicada("x".into()));
+    assert_eq!(*e.causa, CausaError::DeclaracionDuplicada("x".into()));
     assert_eq!(e.mensaje, "declaración duplicada: x");
     assert_eq!((e.linea, e.columna), (2, 5));
 }
@@ -145,7 +145,7 @@ fn error_declaracion_duplicada_tipeada_y_ubicada() {
 fn error_asignacion_incompatible_tipeado_y_ubicado() {
     let e = error("sea contador = 0\ncontador = 0.5");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::AsignacionIncompatible {
             esperado: "entero".to_string(),
             obtenido: "decimal".to_string()
@@ -164,14 +164,14 @@ fn error_asignacion_incompatible_tipeado_y_ubicado() {
 fn errores_aritmeticos_con_causa_y_ubicacion_en_programas() {
     let e = error("sea x = 10\nx / 0");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(MotivoAritmetico::DivisionPorCero)
     );
     assert_eq!((e.linea, e.columna), (2, 1));
 
     let e = error("sea grande = 9223372036854775807\ngrande + 1");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(MotivoAritmetico::DesbordamientoEntero)
     );
     assert_eq!((e.linea, e.columna), (2, 1));
@@ -188,7 +188,7 @@ fn semantica_numerica_aprobada_no_se_modifica_con_variables() {
     assert_eq!(valor("sea a = 7\nsea b = -3\na % b"), Valor::Entero(1));
     let e = error("sea cero = 0\n10 / cero");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(MotivoAritmetico::DivisionPorCero)
     );
 }
@@ -215,5 +215,5 @@ fn el_entorno_conserva_las_variables_entre_sentencias() {
 fn declaracion_duplicada_solo_falla_en_el_mismo_ambito() {
     // Con un solo ámbito (incremento 3) toda duplicidad falla; el chequeo es por ámbito.
     let e = error("sea x = 1\nsea x = 2");
-    assert!(matches!(e.causa, CausaError::DeclaracionDuplicada(_)));
+    assert!(matches!(*e.causa, CausaError::DeclaracionDuplicada(_)));
 }

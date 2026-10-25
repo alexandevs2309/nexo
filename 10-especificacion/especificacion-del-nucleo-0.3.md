@@ -57,7 +57,7 @@ La sintaxis de referencia contempla:
 - `sino si condición { ... }`
 - `mientras condición { ... }`
 
-Los bloques introducen ámbitos conforme al modelo léxico y no producen valor hacia el nivel superior; el resultado de `ejecutar_programa` es la última sentencia de expresión del nivel superior, si existe. `romper` y `continuar` no forman parte del incremento 4 documentado; no deben prometerse hasta especificarlos y probarlos. El prototipo impone un límite de 100 000 iteraciones por ciclo `mientras` y emite un error tipado si se supera. La especificación final debe decidir si ese límite es normativo, configurable o solo protección del prototipo.
+Los bloques introducen ámbitos conforme al modelo léxico y no producen valor hacia el nivel superior; el resultado de `ejecutar_programa` es la última sentencia de expresión del nivel superior, si existe. `romper`, `continuar`, `para cada` y los rangos se definieron después en ADR-0012, pero no pertenecen a la gramática normativa de Core 0.3. El límite de 100 000 iteraciones de `mientras` es una protección provisional del prototipo conforme a ADR-0012; no es un requisito normativo de Core 0.3.
 
 ## 8. Errores
 Los errores del lenguaje deben ser resultados controlados, no pánicos internos. Cada error visible debería incluir:
@@ -72,15 +72,19 @@ Los identificadores internos de error deben ser estables aunque cambie el texto 
 ## 9. Orden de evaluación
 El orden de evaluación es parte de la semántica observable. Para los operadores lógicos, el cortocircuito es obligatorio. Para llamadas, asignaciones, operadores con efectos y acceso a colecciones, el orden debe fijarse antes de incorporarlos al núcleo.
 
-## 10. Límites explícitos
-El estado actual del prototipo (base `main` `a0c1a22` más cambios locales del 2026-10-22) es: `funcion`, `retornar`, `mostrar` y los valores de texto están implementados en parser/evaluador; ADR-0008 está **aprobado e implementado**. La gramática normativa de esta edición todavía no se actualizó de forma exhaustiva para esas construcciones. Esta versión no define aún de forma exhaustiva:
-- funciones, recursión, retorno y cierres;
-- colecciones y mutabilidad de sus elementos;
-- cadenas como tipo normativo;
-- errores recuperables y propagación;
-- módulos, paquetes y resolución de dependencias;
-- concurrencia, asincronía y memoria;
-- ABI/FFI, backend nativo o bytecode;
-- biblioteca estándar y garantías de plataforma.
+## 10. Límites explícitos y relación con el prototipo
 
-Estos temas constan en el registro de brechas. No deben anunciarse como capacidades completas del lenguaje hasta cerrar especificación, implementación y pruebas.
+Core 0.3 sigue siendo una propuesta normativa inicial y acotada. No declara conformidad del prototipo. La siguiente matriz registra la diferencia observable en el prototipo local verificado el 2026-10-25; es informativa y no amplía silenciosamente la norma:
+
+| Área | Core 0.3 | Prototipo local | Estado para v0.4 |
+|---|---|---|---|
+| Números, variables, ámbitos, lógica y `si`/`sino`/`mientras` | Cubiertos por ADR-0005/0006/0007; detalle normativo pendiente de cierre | Implementados y con pruebas de conformidad | Incluidos |
+| Funciones, parámetros y retorno | No definidos exhaustivamente en esta edición | Implementados; ADR-0008/0011 y suite propia | Incluidos, con límites documentados |
+| Texto | No definido exhaustivamente como tipo y operaciones | Literal, concatenación, comparación y mostrar; suite propia | Incluido en operaciones básicas |
+| Arreglos/listas | Fuera de la norma Core 0.3 | Tipos anotados, literales, indexación y asignación con pruebas | Incluidos solo en su forma básica |
+| `para cada`, iteración de texto, rangos, `romper` y `continuar` | Fuera de la norma Core 0.3; ADR-0012 posterior | Implementación presente; casos límite de conformidad incompletos | Extensiones prototipales, fuera de la garantía v0.4 |
+| E/S de texto y archivos | Fuera de la norma Core 0.3; ADR-0013 posterior | Implementación parcial | Extensión prototipal, fuera de la garantía v0.4 |
+| `intentar`/`rescatar` | Fuera de la norma Core 0.3; ADR-0014 posterior | Implementación presente; suite de aceptación específica incompleta | Extensión prototipal, fuera de la garantía v0.4 |
+| Módulos, paquetes, concurrencia, ABI/FFI y biblioteca estándar | No definidos | No disponibles como capacidades completas | Fuera de alcance |
+
+Para incorporar una extensión a una versión garantizada se requiere especificación normativa, criterios positivos y negativos, pruebas de límites, revisión de seguridad cuando corresponda y actualización del registro de brechas. La existencia de un ADR aprobado y código ejecutable no basta para declarar conformidad.

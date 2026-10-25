@@ -13,7 +13,7 @@
 
 use std::fmt;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter};
 use std::sync::{Arc, Mutex};
 
 /// Escala fija del decimal del núcleo: 9 decimales (ADR-0005 §1.2).

@@ -1,0 +1,18 @@
+funcion resumen(total) {
+  retornar "total=" + total
+}
+
+var valores: arreglo<entero, 3> = [2, 3, 4]
+var indice: entero = 0
+var total: entero = 0
+
+mientras indice < 3 {
+  total = total + valores[indice]
+  indice = indice + 1
+}
+
+si total == 9 {
+  mostrar resumen("9")
+} sino {
+  mostrar "total incorrecto"
+}

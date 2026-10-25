@@ -10,11 +10,7 @@
 use std::collections::HashMap;
 
 use crate::parser::{Expresion, Sentencia, TipoAnotacion};
-use crate::valor::ArchivoInterno;
 use crate::valor::{FACTOR_ESCALA, MotivoAritmetico, Valor};
-use std::fs::OpenOptions;
-use std::io::{BufRead, Read, Write};
-use std::sync::{Arc, Mutex};
 
 /// Causa tipada de un error de ejecución (ADR-0005 §1.6 y ADR-0006 §1.5, ampliada ADR-0007).
 #[derive(Debug, Clone, PartialEq)]
@@ -102,6 +98,32 @@ pub enum CausaError {
 
 /// Límite de iteraciones por ciclo `mientras` (protección frente a bucles infinitos).
 pub const LIMITE_ITERACIONES: usize = 100_000;
+
+/// Nombres reservados que no pueden reutilizarse como funciones de usuario.
+pub const NOMBRES_RESERVADOS: &[&str] = &[
+    "si",
+    "sino",
+    "mientras",
+    "mostrar",
+    "mostrar_sin_salto",
+    "retornar",
+    "funcion",
+    "sea",
+    "var",
+    "dato",
+    "const",
+    "para",
+    "cada",
+    "en",
+    "romper",
+    "continuar",
+    "intentar",
+    "rescatar",
+    "leer",
+    "escribir",
+    "abrir",
+    "cerrar",
+];
 
 impl std::fmt::Display for CausaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -205,7 +227,7 @@ impl std::fmt::Display for CausaError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ErrorEjecucion {
     pub mensaje: String,
-    pub causa: CausaError,
+    pub causa: Box<CausaError>,
     pub linea: usize,
     pub columna: usize,
 }
@@ -223,7 +245,7 @@ impl std::fmt::Display for ErrorEjecucion {
 fn error(causa: CausaError, linea: usize, columna: usize) -> ErrorEjecucion {
     ErrorEjecucion {
         mensaje: causa.to_string(),
-        causa,
+        causa: Box::new(causa),
         linea,
         columna,
     }
@@ -255,13 +277,6 @@ pub struct FuncionDef {
     /// Tipo de retorno inferido en la primera llamada exitosa (ADR-0008).
     /// `None` = aún no se ha llamado o no retornó valor.
     pub tipo_retorno: Option<&'static str>,
-}
-
-#[derive(Debug, Clone)]
-enum ResultadoEjecucion {
-    Ninguno,
-    Valor(Valor),
-    Retorno(Valor),
 }
 
 /// Entorno de ejecución: pila de ámbitos con las variables (ADR-0006 §1.6),
@@ -323,14 +338,23 @@ impl Entorno {
         self.ambitos.push(HashMap::new());
         let r = self.ejecutar_funcion_sentencias(sentencias, nombre_funcion);
         self.ambitos.pop();
-        r
+        match r? {
+            Some(valor) => Ok(valor),
+            None => Err(error(
+                CausaError::RetornoAusente {
+                    funcion: nombre_funcion.into(),
+                },
+                1,
+                1,
+            )),
+        }
     }
 
     fn ejecutar_funcion_sentencias(
         &mut self,
         sentencias: &[Sentencia],
         nombre_funcion: &str,
-    ) -> Result<Valor, ErrorEjecucion> {
+    ) -> Result<Option<Valor>, ErrorEjecucion> {
         for s in sentencias {
             let s = s.clone();
             match s {
@@ -551,22 +575,15 @@ impl Entorno {
                     };
                     if es_verdadero {
                         match self.ejecutar_bloque_funcion(&rama_si, nombre_funcion) {
-                            Ok(v) => return Ok(v), // retornar ejecutado en la rama
-                            Err(e) => {
-                                // Si es RetornoAusente, la rama terminó sin retornar -> continuar
-                                if !matches!(e.causa, CausaError::RetornoAusente { .. }) {
-                                    return Err(e);
-                                }
-                            }
+                            Ok(Some(v)) => return Ok(Some(v)),
+                            Ok(None) => {}
+                            Err(e) => return Err(e),
                         }
                     } else if let Some(rama) = rama_sino {
                         match self.ejecutar_bloque_funcion(&rama, nombre_funcion) {
-                            Ok(v) => return Ok(v),
-                            Err(e) => {
-                                if !matches!(e.causa, CausaError::RetornoAusente { .. }) {
-                                    return Err(e);
-                                }
-                            }
+                            Ok(Some(v)) => return Ok(Some(v)),
+                            Ok(None) => {}
+                            Err(e) => return Err(e),
                         }
                     }
                 }
@@ -604,30 +621,31 @@ impl Entorno {
                             ));
                         }
                         match self.ejecutar_bloque_funcion(&cuerpo, nombre_funcion) {
-                            Ok(v) => return Ok(v),
-                            Err(e) => {
-                                if !matches!(e.causa, CausaError::RetornoAusente { .. }) {
-                                    return Err(e);
-                                }
-                            }
+                            Ok(Some(v)) => return Ok(Some(v)),
+                            Ok(None) => {}
+                            Err(e) => match e.causa.as_ref() {
+                                CausaError::SenalRomper => break,
+                                CausaError::SenalContinuar => {}
+                                _ => return Err(e),
+                            },
                         }
                     }
                 }
                 Sentencia::Bloque(sentencias) => {
                     match self.ejecutar_bloque_funcion(&sentencias, "") {
-                        Ok(v) => return Ok(v),
-                        Err(e) => {
-                            if !matches!(e.causa, CausaError::RetornoAusente { .. }) {
-                                return Err(e);
-                            }
-                        }
+                        Ok(Some(v)) => return Ok(Some(v)),
+                        Ok(None) => {}
+                        Err(e) => return Err(e),
                     };
                 }
                 Sentencia::Funcion { .. } => {}
                 Sentencia::Mostrar { valor, .. } => {
                     let v = evaluar_con(&valor, self)?;
-                    // Imprimir el valor en stdout
                     println!("{v}");
+                }
+                Sentencia::MostrarSinSalto { valor, .. } => {
+                    let v = evaluar_con(&valor, self)?;
+                    print!("{v}");
                 }
                 Sentencia::Retorno {
                     valor,
@@ -636,7 +654,7 @@ impl Entorno {
                     ..
                 } => {
                     if let Some(v) = valor {
-                        return evaluar_con(&v, self);
+                        return Ok(Some(evaluar_con(&v, self)?));
                     } else {
                         return Err(error(
                             CausaError::RetornoAusente {
@@ -647,25 +665,116 @@ impl Entorno {
                         ));
                     }
                 }
+                Sentencia::ParaCada {
+                    variable,
+                    iterable,
+                    cuerpo,
+                    linea,
+                    columna,
+                } => {
+                    let valores = match evaluar_con(&iterable, self)? {
+                        Valor::Arreglo(v) | Valor::Lista(v) => v,
+                        Valor::Texto(s) => s.chars().map(|c| Valor::Texto(c.to_string())).collect(),
+                        otro => {
+                            return Err(error(
+                                CausaError::IteracionSobreNoColeccion {
+                                    obtenido: otro.nombre_tipo(),
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+                    };
+
+                    for item in valores {
+                        self.ambitos.push(HashMap::new());
+                        self.insertar_variable(
+                            variable.clone(),
+                            VariableInfo {
+                                valor: item,
+                                tipo_declarado: None,
+                                mutable: false,
+                                es_const: false,
+                            },
+                        );
+                        let resultado = self.ejecutar_bloque_funcion(&cuerpo, nombre_funcion);
+                        self.ambitos.pop();
+                        match resultado {
+                            Ok(Some(v)) => return Ok(Some(v)),
+                            Ok(None) => {}
+                            Err(e) => match e.causa.as_ref() {
+                                CausaError::SenalRomper => break,
+                                CausaError::SenalContinuar => continue,
+                                _ => {
+                                    return Err(e);
+                                }
+                            },
+                        }
+                    }
+                }
+                Sentencia::Romper { linea, columna } => {
+                    return Err(error(CausaError::SenalRomper, linea, columna));
+                }
+                Sentencia::Continuar { linea, columna } => {
+                    return Err(error(CausaError::SenalContinuar, linea, columna));
+                }
+                Sentencia::IntentarRescatar {
+                    cuerpo_intentar,
+                    variable_error,
+                    cuerpo_rescatar,
+                    linea: _,
+                    columna: _,
+                } => {
+                    let resultado = self.ejecutar_bloque_funcion(&cuerpo_intentar, nombre_funcion);
+                    match resultado {
+                        Ok(Some(v)) => return Ok(Some(v)),
+                        Ok(None) => {}
+                        Err(err) => {
+                            if matches!(
+                                err.causa.as_ref(),
+                                CausaError::SenalRomper | CausaError::SenalContinuar
+                            ) {
+                                return Err(err);
+                            }
+                            if let Some(nombre) = variable_error {
+                                self.ambitos.push(HashMap::new());
+                                self.insertar_variable(
+                                    nombre.clone(),
+                                    VariableInfo {
+                                        valor: Valor::Texto(err.mensaje.clone()),
+                                        tipo_declarado: None,
+                                        mutable: true,
+                                        es_const: false,
+                                    },
+                                );
+                                let r =
+                                    self.ejecutar_bloque_funcion(&cuerpo_rescatar, nombre_funcion);
+                                self.ambitos.pop();
+                                if let Some(valor) = r? {
+                                    return Ok(Some(valor));
+                                }
+                            }
+                            // Sin variable de captura, se ejecuta el bloque de rescate sin contexto.
+                            let r = self.ejecutar_bloque_funcion(&cuerpo_rescatar, nombre_funcion);
+                            if let Some(valor) = r? {
+                                return Ok(Some(valor));
+                            }
+                        }
+                    }
+                }
                 Sentencia::Expresion(e) => {
                     let _ = evaluar_con(&e, self)?;
                 }
             }
         }
-        Err(error(
-            CausaError::RetornoAusente {
-                funcion: nombre_funcion.into(),
-            },
-            1,
-            1,
-        ))
+        Ok(None)
     }
 
     fn ejecutar_bloque_funcion(
         &mut self,
         sentencias: &[Sentencia],
         nombre_funcion: &str,
-    ) -> Result<Valor, ErrorEjecucion> {
+    ) -> Result<Option<Valor>, ErrorEjecucion> {
         self.ambitos.push(HashMap::new());
         let r = self.ejecutar_funcion_sentencias(sentencias, nombre_funcion);
         self.ambitos.pop();
@@ -808,8 +917,99 @@ impl Entorno {
                     let v = evaluar_con(&valor, self)?;
                     println!("{v}");
                 }
+                Sentencia::MostrarSinSalto { valor, .. } => {
+                    let v = evaluar_con(&valor, self)?;
+                    print!("{v}");
+                }
                 Sentencia::Retorno { linea, columna, .. } => {
                     return Err(error(CausaError::RetornarFueraDeBloque, linea, columna));
+                }
+                Sentencia::ParaCada {
+                    variable,
+                    iterable,
+                    cuerpo,
+                    linea,
+                    columna,
+                } => {
+                    let valores = match evaluar_con(&iterable, self)? {
+                        Valor::Arreglo(v) | Valor::Lista(v) => v,
+                        Valor::Texto(s) => s.chars().map(|c| Valor::Texto(c.to_string())).collect(),
+                        otro => {
+                            return Err(error(
+                                CausaError::IteracionSobreNoColeccion {
+                                    obtenido: otro.nombre_tipo(),
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+                    };
+
+                    for item in valores {
+                        self.ambitos.push(HashMap::new());
+                        self.insertar_variable(
+                            variable.clone(),
+                            VariableInfo {
+                                valor: item,
+                                tipo_declarado: None,
+                                mutable: false,
+                                es_const: false,
+                            },
+                        );
+                        let result = self.ejecutar_bloque(&cuerpo);
+                        self.ambitos.pop();
+                        match result {
+                            Ok(_) => {}
+                            Err(e) => match *e.causa {
+                                CausaError::SenalRomper => break,
+                                CausaError::SenalContinuar => continue,
+                                _ => return Err(e),
+                            },
+                        }
+                    }
+                }
+                Sentencia::Romper { linea, columna } => {
+                    return Err(error(CausaError::SenalRomper, linea, columna));
+                }
+                Sentencia::Continuar { linea, columna } => {
+                    return Err(error(CausaError::SenalContinuar, linea, columna));
+                }
+                Sentencia::IntentarRescatar {
+                    cuerpo_intentar,
+                    variable_error,
+                    cuerpo_rescatar,
+                    linea: _,
+                    columna: _,
+                } => {
+                    let result = self.ejecutar_bloque(&cuerpo_intentar);
+                    match result {
+                        Ok(_) => {}
+                        Err(err) => {
+                            if matches!(
+                                err.causa.as_ref(),
+                                CausaError::SenalRomper | CausaError::SenalContinuar
+                            ) {
+                                return Err(err);
+                            }
+                            if let Some(nombre) = variable_error {
+                                self.ambitos.push(HashMap::new());
+                                self.insertar_variable(
+                                    nombre.clone(),
+                                    VariableInfo {
+                                        valor: Valor::Texto(err.mensaje.clone()),
+                                        tipo_declarado: None,
+                                        mutable: true,
+                                        es_const: false,
+                                    },
+                                );
+                                let r = self.ejecutar_bloque(&cuerpo_rescatar);
+                                self.ambitos.pop();
+                                r?;
+                            } else {
+                                self.ejecutar_bloque(&cuerpo_rescatar)?;
+                            }
+                        }
+                    }
                 }
                 Sentencia::Si {
                     condicion,
@@ -870,7 +1070,14 @@ impl Entorno {
                                 columna,
                             ));
                         }
-                        self.ejecutar_bloque(&cuerpo)?;
+                        match self.ejecutar_bloque(&cuerpo) {
+                            Ok(()) => {}
+                            Err(e) => match e.causa.as_ref() {
+                                CausaError::SenalRomper => break,
+                                CausaError::SenalContinuar => continue,
+                                _ => return Err(e),
+                            },
+                        }
                     }
                 }
                 Sentencia::Bloque(sentencias) => {
@@ -1072,6 +1279,10 @@ fn convertir_a_tipo_anotado(valor: Valor, tipo: &TipoAnotacion) -> Option<Valor>
                 .collect::<Option<Vec<_>>>()?;
             Some(Valor::Lista(convertidos))
         }
+        TipoAnotacion::Nulo => match valor {
+            Valor::Nulo => Some(valor),
+            _ => None,
+        },
     }
 }
 
@@ -1251,9 +1462,9 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                 ambitos: vec![HashMap::new()],
                 funciones: env.funciones.clone(),
             };
-            for (p, v) in fdef.parametros.iter().zip(vals.iter()) {
+            for ((nombre_param, _tipo_param), v) in fdef.parametros.iter().zip(vals.iter()) {
                 nuevo_env.insertar_variable(
-                    p.clone(),
+                    nombre_param.clone(),
                     VariableInfo {
                         valor: v.clone(),
                         tipo_declarado: None, // Parámetros usan inferencia
@@ -1291,6 +1502,55 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             }
             // Por defecto, los literales `[...]` crean una Lista (dinámica).
             // Si se usa en contexto de arreglo con tamaño fijo, el evaluador de declaraciones lo convertirá.
+            Ok(Valor::Lista(valores))
+        }
+        Expresion::Rango {
+            inicio,
+            fin,
+            inclusivo,
+            linea,
+            columna,
+        } => {
+            let inicio_val = evaluar_con(inicio, env)?;
+            let fin_val = evaluar_con(fin, env)?;
+            let inicio_int = match inicio_val {
+                Valor::Entero(v) => v,
+                _ => {
+                    return Err(error(
+                        CausaError::RangoTipoInvalido {
+                            obtenido: inicio_val.nombre_tipo(),
+                        },
+                        *linea,
+                        *columna,
+                    ));
+                }
+            };
+            let fin_int = match fin_val {
+                Valor::Entero(v) => v,
+                _ => {
+                    return Err(error(
+                        CausaError::RangoTipoInvalido {
+                            obtenido: fin_val.nombre_tipo(),
+                        },
+                        *linea,
+                        *columna,
+                    ));
+                }
+            };
+
+            let mut valores = Vec::new();
+            let mut actual = inicio_int;
+            while if *inclusivo {
+                actual <= fin_int
+            } else {
+                actual < fin_int
+            } {
+                valores.push(Valor::Entero(actual));
+                if actual == fin_int {
+                    break;
+                }
+                actual += 1;
+            }
             Ok(Valor::Lista(valores))
         }
         Expresion::Indice {
@@ -1389,9 +1649,10 @@ fn ubicacion(e: &Expresion) -> (usize, usize) {
         | Expresion::No(a)
         | Expresion::Y(a, _)
         | Expresion::O(a, _) => ubicacion(a),
-        Expresion::Llamada { linea, columna, .. } => (*linea, *columna),
-        Expresion::ArregloLiteral { linea, columna, .. } => (*linea, *columna),
-        Expresion::Indice { linea, columna, .. } => (*linea, *columna),
+        Expresion::Llamada { linea, columna, .. }
+        | Expresion::ArregloLiteral { linea, columna, .. }
+        | Expresion::Indice { linea, columna, .. }
+        | Expresion::Rango { linea, columna, .. } => (*linea, *columna),
     }
 }
 
@@ -1663,7 +1924,7 @@ mod tests {
     }
 
     fn causa_programa(fuente: &str) -> CausaError {
-        programa(fuente)
+        *programa(fuente)
             .expect_err("se esperaba error de ejecución")
             .causa
     }
@@ -1903,7 +2164,7 @@ mod tests {
     fn los_errores_dentro_de_un_bloque_conservan_ubicacion() {
         let e = programa("si verdadero {\n  10 / 0\n}").expect_err("división por cero");
         assert_eq!(
-            e.causa,
+            *e.causa,
             CausaError::Aritmetica(MotivoAritmetico::DivisionPorCero)
         );
         assert_eq!((e.linea, e.columna), (2, 3));
@@ -1925,7 +2186,7 @@ mod tests {
         )
         .expect_err("tipo de retorno incompatible");
         assert_eq!(
-            e.causa,
+            *e.causa,
             CausaError::TipoDeRetornoIncompatible {
                 esperado: "entero",
                 obtenido: "decimal",
@@ -1945,7 +2206,7 @@ mod tests {
         )
         .expect_err("firma inválida");
         assert_eq!(
-            e.causa,
+            *e.causa,
             CausaError::FirmaInvalida {
                 funcion: "suma".into(),
                 esperado: 2,
@@ -1966,7 +2227,7 @@ mod tests {
         )
         .expect_err("firma inválida");
         assert_eq!(
-            e.causa,
+            *e.causa,
             CausaError::FirmaInvalida {
                 funcion: "hola".into(),
                 esperado: 0,
@@ -1989,7 +2250,7 @@ mod tests {
         // ADR-0008: se permite retornar sin valor, pero el tipo es "vacío"
         // En este caso, el evaluador devuelve error por no tener valor para usar
         assert_eq!(
-            e.causa,
+            *e.causa,
             CausaError::RetornoAusente {
                 funcion: "f".into()
             }

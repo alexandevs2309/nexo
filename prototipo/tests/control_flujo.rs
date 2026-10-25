@@ -93,6 +93,30 @@ fn el_ciclo_actualiza_la_misma_variable_del_ambito_externo() {
     assert_eq!(valor(p), Valor::Entero(3));
 }
 
+#[test]
+fn variable_de_iteracion_para_cada_es_inmutable() {
+    let e = error_ejecucion("para cada elemento en [1] {\n  elemento = 2\n}");
+    assert!(matches!(
+        *e.causa,
+        CausaError::AsignacionIncompatible { .. }
+    ));
+}
+
+#[test]
+fn iterador_no_escapa_de_funcion_tras_romper_o_continuar() {
+    for control in ["continuar", "romper"] {
+        let fuente = format!(
+            "funcion prueba() {{\n  para cada elemento en [1] {{\n    {control}\n  }}\n  retornar elemento\n}}\nprueba()"
+        );
+        let e = error_ejecucion(&fuente);
+        assert_eq!(
+            *e.causa,
+            CausaError::VariableNoDefinida("elemento".into()),
+            "el ámbito del iterador escapó tras {control}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------- Combinado
 
 #[test]
@@ -131,7 +155,7 @@ fn programa_con_operadores_logicos_entre_comparaciones() {
 fn condicion_no_logica_es_error_tipeado_con_ubicacion() {
     let e = error_ejecucion("si 5 {\n  1\n}");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::CondicionNoLogica { obtenido: "entero" }
     );
     assert_eq!((e.linea, e.columna), (1, 4));
@@ -141,7 +165,7 @@ fn condicion_no_logica_es_error_tipeado_con_ubicacion() {
 fn error_dentro_de_un_bloque_propaga_su_tipo_y_ubicacion() {
     let e = error_ejecucion("si verdadero {\n  10 / 0\n}");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
     assert_eq!((e.linea, e.columna), (2, 3));
@@ -151,7 +175,7 @@ fn error_dentro_de_un_bloque_propaga_su_tipo_y_ubicacion() {
 fn error_dentro_de_un_ciclo_propaga_su_tipo_y_ubicacion() {
     let e = error_ejecucion("sea i = 0\nmientras i < 3 {\n  10 / 0\n}");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
     assert_eq!((e.linea, e.columna), (3, 3));
@@ -160,7 +184,7 @@ fn error_dentro_de_un_ciclo_propaga_su_tipo_y_ubicacion() {
 #[test]
 fn un_error_dentro_de_una_rama_no_produce_valor_por_defecto() {
     let e = error_ejecucion("si verdadero {\n  10 / 0\n}\n42");
-    assert!(matches!(e.causa, CausaError::Aritmetica(_)));
+    assert!(matches!(*e.causa, CausaError::Aritmetica(_)));
 }
 
 #[test]
@@ -172,7 +196,7 @@ fn el_cortocircuito_evita_el_error_del_operando_derecho() {
     // Aquí sí se evalúa y el error aparece.
     let e = error_ejecucion("si verdadero y (10 / 0) {\n  1\n}\n7");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
 }
@@ -191,7 +215,7 @@ fn la_llave_en_otra_linea_es_error_sintactico() {
 fn la_comparacion_decimal_real_es_error_tipeado() {
     let e = error_ejecucion("si 0.1 == 0.1e0 {\n  1\n}");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::TiposIncompatibles {
             izquierdo: "decimal",
             derecho: "real"

@@ -58,13 +58,13 @@ fn s11_no_hay_conversion_implicita_entre_logico_y_numerico() {
     // `1 + verdadero` es error, no 2 ni 1 ni un valor por defecto.
     let e = error_programa("1 + verdadero");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(basilisco::MotivoAritmetico::TiposIncompatibles)
     );
     // Y tampoco al revés: `verdadero + 1`.
     let e = error_programa("verdadero + 1");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(basilisco::MotivoAritmetico::TiposIncompatibles)
     );
 }
@@ -74,12 +74,12 @@ fn s11_un_logico_no_es_verdad_numerica() {
     // El `0` no se interpreta como `falso` ni el `1` como `verdadero`.
     let e = error_programa("si 0 {\n  1\n}");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::CondicionNoLogica { obtenido: "entero" }
     );
     let e = error_programa("si 1 {\n  1\n}");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::CondicionNoLogica { obtenido: "entero" }
     );
 }
@@ -110,7 +110,7 @@ fn s12_decimal_contra_real_es_error_de_tipos() {
     // Sin conversión implícita aprobada entre `decimal` y `real` (ADR-0007 §1.2).
     let e = error_programa("0.1 == 0.1e0");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::TiposIncompatibles {
             izquierdo: "decimal",
             derecho: "real"
@@ -122,7 +122,7 @@ fn s12_decimal_contra_real_es_error_de_tipos() {
 fn s12_comparar_logicos_con_numeros_es_error() {
     let e = error_programa("verdadero == 1");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::TiposIncompatibles {
             izquierdo: "lógico",
             derecho: "entero"
@@ -167,7 +167,7 @@ fn s12_operadores_logicos_sobre_booleanos() {
 fn s12_operandos_no_logicos_son_error_tipado() {
     let e = error_programa("1 y verdadero");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::OperandoNoLogico {
             operador: "y",
             obtenido: "entero"
@@ -178,7 +178,7 @@ fn s12_operandos_no_logicos_son_error_tipado() {
     // evalúa y devuelve `verdadero` (ver §1.2 cortocircuito).
     let e = error_programa("falso o 1");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::OperandoNoLogico {
             operador: "o",
             obtenido: "entero"
@@ -187,7 +187,7 @@ fn s12_operandos_no_logicos_son_error_tipado() {
     assert_eq!(ok("verdadero o 1"), Valor::Logico(true));
     let e = error_programa("no 1");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::OperandoNoLogico {
             operador: "no",
             obtenido: "entero"
@@ -205,12 +205,12 @@ fn s12_cortocircuito_no_evalua_el_operando_derecho() {
     // el error aparece.
     let e = error_programa("verdadero y (10 / 0)");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
     let e = error_programa("falso o (10 / 0)");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
 }
@@ -223,7 +223,7 @@ fn s12_cortocircuito_no_evalua_el_derecho_con_efecto_observable() {
     assert_eq!(ok("verdadero o (no_existe)"), Valor::Logico(true));
     // Sin cortocircuito, el mismo operando sí se evalúa y el error aparece.
     let e = error_programa("verdadero y (no_existe)");
-    assert_eq!(e.causa, CausaError::VariableNoDefinida("no_existe".into()));
+    assert_eq!(*e.causa, CausaError::VariableNoDefinida("no_existe".into()));
 }
 
 // ================================================================ §1.3 precedencia
@@ -304,7 +304,7 @@ fn s14_sino_si_encadena_condiciones() {
 fn s14_condicion_no_logica_es_error_tipado() {
     let e = error_programa("si 5 {\n  1\n}");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::CondicionNoLogica { obtenido: "entero" }
     );
     // Con ubicación real: la condición `5` está en la línea 1, columna 4.
@@ -346,7 +346,7 @@ fn s15_mientras_reevalua_la_condicion_antes_de_cada_iteracion() {
 fn s15_condicion_de_mientras_no_logica_es_error_tipado() {
     let e = error_programa("mientras 1 {\n  2\n}");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::CondicionNoLogica { obtenido: "entero" }
     );
 }
@@ -358,7 +358,7 @@ fn s16_bloque_empuja_ambito_y_lo_retira_al_salir() {
     // La variable del bloque no es visible fuera.
     let fuente = "{\n  sea interna = 1\n}\ninterna";
     let e = error_programa(fuente);
-    assert_eq!(e.causa, CausaError::VariableNoDefinida("interna".into()));
+    assert_eq!(*e.causa, CausaError::VariableNoDefinida("interna".into()));
 }
 
 #[test]
@@ -404,7 +404,7 @@ fn s17_todo_error_de_ejecucion_informa_ubicacion() {
 fn s17_error_dentro_de_un_bloque_propaga_ubicacion_y_tipo() {
     let e = error_programa("si verdadero {\n  10 / 0\n}");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
     assert_eq!((e.linea, e.columna), (2, 3));
@@ -414,7 +414,7 @@ fn s17_error_dentro_de_un_bloque_propaga_ubicacion_y_tipo() {
 fn s17_error_dentro_de_un_ciclo_propaga_ubicacion_y_tipo() {
     let e = error_programa("mientras verdadero {\n  10 / 0\n}");
     assert_eq!(
-        e.causa,
+        *e.causa,
         CausaError::Aritmetica(basilisco::MotivoAritmetico::DivisionPorCero)
     );
     assert_eq!((e.linea, e.columna), (2, 3));
@@ -424,7 +424,7 @@ fn s17_error_dentro_de_un_ciclo_propaga_ubicacion_y_tipo() {
 fn s17_ningun_error_se_sustituye_por_valor_por_defecto() {
     // Un error dentro de una rama no se convierte en 0 ni en `falso`.
     let e = error_programa("si verdadero {\n  10 / 0\n}\n1");
-    assert!(matches!(e.causa, CausaError::Aritmetica(_)));
+    assert!(matches!(*e.causa, CausaError::Aritmetica(_)));
 }
 
 // ================================================================ gramática
@@ -445,7 +445,7 @@ fn g_bloque_como_sentencia_de_nivel_superior() {
     // `x` no existe fuera del bloque: el valor del programa es el del bloque, que no
     // produce valor; y `x` posterior es error de variable no definida.
     let e = error_programa(fuente);
-    assert_eq!(e.causa, CausaError::VariableNoDefinida("x".into()));
+    assert_eq!(*e.causa, CausaError::VariableNoDefinida("x".into()));
 }
 
 #[test]

@@ -113,10 +113,42 @@ fn ejecuta_ejemplo_de_funciones() {
         &["run", "examples/funciones_basicas.bsk"],
     );
     assert!(salida.status.success());
-    let stdout = texto(&salida.stdout);
-    assert!(stdout.contains('5'));
-    assert!(stdout.contains("120"));
-    assert!(stdout.contains("42"));
+    assert_eq!(texto(&salida.stdout), "5\n120\n42\n");
+}
+
+#[test]
+fn tutorial_inicio_se_ejecuta_por_cli() {
+    let salida = ejecutar(
+        env!("CARGO_BIN_EXE_bsk"),
+        &["run", "examples/tutorial_inicio.bsk"],
+    );
+    assert!(salida.status.success());
+    assert_eq!(texto(&salida.stdout), "12\n");
+}
+
+#[test]
+fn aceptacion_v04_ejecuta_el_nucleo_integrado() {
+    let salida = ejecutar(
+        env!("CARGO_BIN_EXE_bsk"),
+        &["run", "examples/aceptacion_v04.bsk"],
+    );
+    assert!(salida.status.success(), "stderr: {}", texto(&salida.stderr));
+    assert_eq!(texto(&salida.stdout).trim(), "total=9");
+}
+
+#[test]
+fn aceptacion_v04_diagnostica_errores_con_archivo_y_ubicacion() {
+    let ruta = "examples/aceptacion_error_v04.bsk";
+    let salida = ejecutar(env!("CARGO_BIN_EXE_bsk"), &["run", ruta]);
+    let stderr = texto(&salida.stderr);
+
+    assert!(!salida.status.success());
+    assert!(stderr.contains(ruta), "stderr: {stderr}");
+    assert!(
+        stderr.contains("error de ejecución [2:1]"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("división entre cero"), "stderr: {stderr}");
 }
 
 #[test]

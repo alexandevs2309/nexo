@@ -1,4 +1,4 @@
-# Registro de brechas de Nexo
+# Registro de brechas de BASILISCO
 
 Este registro es el backlog de especificación. Las prioridades son recomendaciones de ingeniería, no estimaciones de tiempo.
 
@@ -42,16 +42,20 @@ Una brecha no se cierra porque exista un documento. Debe tener decisión aprobad
 
 ## Estado actual del prototipo (sincronizado)
 
-| Capacidad | Estado | Evidencia |
-|---|---|---|
-| Núcleo numérico (entero/decimal/real) | **IMPLEMENTADO** | ADR-0005, `prototipo/tests/conformidad.rs` |
-| Variables, asignación, ámbitos | **IMPLEMENTADO** | ADR-0006, `prototipo/tests/variables.rs` |
-| `si`/`sino`/`sino si`, `mientras`, bloques | **IMPLEMENTADO** | ADR-0007, `prototipo/tests/conformidad_control.rs`, `prototipo/tests/control_flujo.rs` |
-| Funciones/parámetros/retorno/llamadas | **IMPLEMENTADO** | ADR-0008, `prototipo/tests/conformidad_funciones.rs` |
-| Cadenas como valores primarios | **IMPLEMENTADO (prototipo)** | `prototipo/tests/conformidad_texto.rs`; la especificación normativa sigue pendiente |
-| Módulos/importaciones | **PENDIENTE** | GAP-010 |
-| Colecciones | **PENDIENTE** | GAP-008 |
-| E/S | **PENDIENTE** | GAP-013 |
-| CLI completa | **PARCIAL** | `run`/`demo`/`--version`/`--help` implementados (ADR-0010); análisis, formato, pruebas e init pendientes |
+| Capacidad | Código local | Cobertura de pruebas | Norma / alcance v0.4 |
+|---|---|---|---|
+| Núcleo numérico (entero/decimal/real) | Implementado | Suite de conformidad numérica | Core 0.3 / incluido |
+| Variables, asignación, tipos anotados y ámbitos | Implementado | Variables, control y tipos | Core 0.3 + ADR-0011 / incluido |
+| `si`/`sino`/`mientras`, bloques | Implementado | Conformidad y flujo de control | Core 0.3 / incluido |
+| Funciones, parámetros y retorno | Implementado | Suite de funciones, casos positivos y negativos | ADR-0008/0011; Core 0.3 no exhaustivo / incluido v0.4 |
+| Texto básico | Implementado | Literales, concatenación, comparación y mostrar | Core 0.3 no exhaustivo / incluido v0.4 |
+| Arreglos/listas con tipos, indexación y asignación | Implementado parcialmente | Tamaño inicial, tamaño cero, tipos de elementos, lista vacía, mutabilidad, asignación/lectura de índices, índices inválidos y tipos de índice | No normados en Core 0.3 / incluido solo en forma básica |
+| `para cada`, texto iterable, rangos, `romper`/`continuar` | Implementado parcialmente; binding inmutable y ámbito limpio | Regresiones cubren rangos exclusivos/inclusivos, vacíos, negativos y límites; señales a través de rescate y scope del iterador | ADR-0012 / extensión prototipal fuera de garantía v0.4; faltan ciclo anidado, iteración vacía, texto iterable y modificación durante iteración |
+| `intentar`/`rescatar` | Implementado parcialmente; separado fin normal de retorno ausente | Suite cubre error capturado, fin normal, retorno de función, señales de ciclo no capturadas y nivel superior/función | ADR-0014 / extensión prototipal fuera de garantía v0.4; faltan más casos de anidamiento y sintaxis inválida |
+| E/S de texto y archivos | Implementado parcialmente | Conformidad y casos de errores pendientes de revisar | ADR-0013 / extensión prototipal fuera de garantía v0.4 |
+| CLI `basilisco`/`bsk` | `run`, `demo`, ayuda, versión, extensiones y diagnóstico de ejecución | Pruebas CLI positivas/negativas y aceptación integrada | ADR-0010 / incluido |
+| Módulos, importaciones, paquetes, concurrencia, FFI | No disponible como capacidad completa | Sin suite de producto | GAP-010/014/015/016 / fuera de alcance |
 
-**Total:** 264 pruebas en verde (252 de lenguaje + 12 de CLI), fmt y clippy limpios.
+**Verificación local (2026-10-25):** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build --bins` y `cargo test --quiet` pasan. La lista de pruebas enumera 295 tests. Esta evidencia es local y no está asociada a un commit/CI; no declara conformidad con Core 0.3 ni superación de puertas de distribución.
+
+**Brechas que permanecen abiertas:** GAP-001 a GAP-009 siguen requiriendo cierre por separado en norma, pruebas y código; GAP-008 se cierra parcialmente para los casos básicos de arreglos/listas, no para iteración completa. Las extensiones marcadas prototipales necesitan los criterios de límite indicados por ADR-0012 a ADR-0014 antes de entrar en una garantía de versión.
