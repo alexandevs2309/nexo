@@ -5,6 +5,7 @@ edition = "2024"
 description = "BASILISCO — intérprete del lenguaje (candidata v0.4)"
 license = "Apache-2.0"
 repository = "https://github.com/alexandevs2309/nexo"
+exclude = [".agents/**"]
 autobins = false
 default-run = "basilisco"
 

@@ -72,7 +72,7 @@ basilisco --help
 - Conflicto de `bsk` con BrowserSkill: se mitiga con alias, detección y documentación.
 - `.bsk` también está asociada a Nero/Bryce; no se depende del doble clic.
 - No hay todavía tests de instalación ni de CI en Windows/macOS/Linux.
-- No hay licencia ni metadatos de publicación.
+- Al aprobar esta decisión no había licencia ni metadatos de publicación. La licencia se resolvió después mediante ADR-0016; la publicación sigue pendiente.
 - No se admite `.nx`; si el usuario confirma archivos externos, se revisará esta decisión.
 
 ## 6. Reversión

@@ -26,6 +26,7 @@ Toda decisión importante debe documentar contexto, requisitos, opciones, criter
 | [ADR-0013](adr/ADR-0013-entrada-salida-basica-texto-archivos.md) | E/S básica: entrada estándar, operaciones de texto y archivos | **Aprobado** |
 | [ADR-0014](adr/ADR-0014-manejo-de-errores-intentar-rescatar.md) | Manejo de errores: `intentar`/`rescatar` | **Aprobado** |
 | [ADR-0015](adr/ADR-0015-aprobacion-perfil-v0.4.md) | Aprobación del perfil de conformidad BASILISCO v0.4 | **Aprobado** |
+| [ADR-0016](adr/ADR-0016-licencia-apache-2.0.md) | Licencia del código fuente | **Aprobado** |
 
 | [ADR-0016](adr/ADR-0016-licencia-apache-2.0.md) | Licencia de publicación BASILISCO: Apache-2.0 | **Aprobado para v0.4, sujeto a auditoría de procedencia** |
 
