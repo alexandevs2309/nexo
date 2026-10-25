@@ -625,7 +625,7 @@ impl Entorno {
                     }
                 }
                 Sentencia::Bloque(sentencias) => {
-                    match self.ejecutar_bloque_funcion(&sentencias, "") {
+                    match self.ejecutar_bloque_funcion(&sentencias, nombre_funcion) {
                         Ok(Some(v)) => return Ok(Some(v)),
                         Ok(None) => {}
                         Err(e) => return Err(e),
@@ -647,7 +647,27 @@ impl Entorno {
                     ..
                 } => {
                     if let Some(v) = valor {
-                        return Ok(Some(evaluar_con(&v, self)?));
+                        let mut resultado = evaluar_con(&v, self)?;
+                        if let Some(tipo_esperado) = self
+                            .funciones
+                            .get(nombre_funcion)
+                            .and_then(|f| f.tipo_retorno_anotado.as_ref())
+                        {
+                            let obtenido = resultado.nombre_tipo().to_string();
+                            resultado = convertir_a_tipo_anotado(resultado, tipo_esperado)
+                                .ok_or_else(|| {
+                                    error(
+                                        CausaError::RetornoIncompatibleConAnotacion {
+                                            funcion: nombre_funcion.into(),
+                                            esperado: tipo_esperado.nombre(),
+                                            obtenido,
+                                        },
+                                        linea,
+                                        columna,
+                                    )
+                                })?;
+                        }
+                        return Ok(Some(resultado));
                     } else {
                         return Err(error(
                             CausaError::RetornoAusente {

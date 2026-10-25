@@ -1,6 +1,6 @@
 // Tests de conformidad para funciones (Incremento 5 / ADR-0008)
 
-use basilisco::{Lexer, Parser, evaluador::Entorno};
+use basilisco::{CausaError, Entorno, ErrorEjecucion, Lexer, Parser};
 
 fn run_program(fuente: &str) -> Result<Option<basilisco::Valor>, String> {
     let tokens = Lexer::nuevo(fuente)
@@ -16,6 +16,16 @@ fn run_program(fuente: &str) -> Result<Option<basilisco::Valor>, String> {
 
 fn run_program_err(fuente: &str) -> String {
     run_program(fuente).unwrap_err()
+}
+
+fn error_ejecucion(fuente: &str) -> ErrorEjecucion {
+    let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido");
+    let sentencias = Parser::nuevo(tokens)
+        .parsear_programa()
+        .expect("sintaxis válida");
+    Entorno::nueva()
+        .ejecutar_programa(&sentencias)
+        .expect_err("se esperaba error de ejecución")
 }
 
 #[test]
@@ -254,6 +264,21 @@ fn func_retorno_anotado_valida_y_aplica_conversiones_permitidas() {
         err.contains("retorno de 'valor'"),
         "error inesperado: {err}"
     );
+
+    let e = error_ejecucion("funcion valor() -> entero {\n  retornar 2.5\n}\nvalor()");
+    assert_eq!(
+        *e.causa,
+        CausaError::RetornoIncompatibleConAnotacion {
+            funcion: "valor".into(),
+            esperado: "entero".into(),
+            obtenido: "decimal".into(),
+        }
+    );
+    assert_eq!((e.linea, e.columna), (2, 3));
+
+    let anidado =
+        run_program("funcion valor() -> decimal {\n  {\n    retornar 2\n  }\n}\nvalor()").unwrap();
+    assert_eq!(anidado, Some(basilisco::Valor::Decimal(2_000_000_000)));
 }
 
 #[test]

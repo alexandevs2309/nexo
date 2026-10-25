@@ -56,6 +56,6 @@ Una brecha no se cierra porque exista un documento. Debe tener decisión aprobad
 | CLI `basilisco`/`bsk` | `run`, `demo`, ayuda, versión, extensiones y diagnóstico de ejecución | Pruebas CLI positivas/negativas y aceptación integrada | ADR-0010 / incluido |
 | Módulos, importaciones, paquetes, concurrencia, FFI | No disponible como capacidad completa | Sin suite de producto | GAP-010/014/015/016 / fuera de alcance |
 
-**Verificación local (2026-10-25, código en `6a3f619`):** 302 pruebas enumeradas; formato, Clippy estricto, build y suite completa pasan localmente. El estado de CI remota no pudo verificarse desde este entorno; no declara conformidad con Core 0.3 ni superación de puertas de distribución.
+**Verificación local (2026-10-25):** 302 pruebas enumeradas; formato, Clippy estricto, build y suite completa pasan en el árbol actual. El estado de CI remota no pudo verificarse desde este entorno; no declara conformidad con Core 0.3 ni superación de puertas de distribución.
 
 **Brechas que permanecen abiertas:** GAP-001 a GAP-009 siguen requiriendo cierre por separado en norma, pruebas y código; GAP-008 se cierra parcialmente para los casos básicos de arreglos/listas, no para iteración completa. Las extensiones marcadas prototipales necesitan los criterios de límite indicados por ADR-0012 a ADR-0014 antes de entrar en una garantía de versión.
