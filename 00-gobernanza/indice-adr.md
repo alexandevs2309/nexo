@@ -21,6 +21,7 @@
 | ADR-0013 | E/S básica: entrada estándar, operaciones de texto y archivos | Aprobado | 2026-10-24 | `adr/ADR-0013-entrada-salida-basica-texto-archivos.md` |
 | ADR-0014 | Manejo de errores: `intentar`/`rescatar` | Aprobado | 2026-10-24 | `adr/ADR-0014-manejo-de-errores-intentar-rescatar.md` |
 | ADR-0015 | Aprobación del perfil de conformidad BASILISCO v0.4 | Aprobado | 2026-10-25 | `adr/ADR-0015-aprobacion-perfil-v0.4.md` |
+| ADR-0016 | Licencia de publicación de BASILISCO: Apache-2.0 | Aprobado para v0.4, sujeto a auditoría de procedencia | 2026-10-25 | `adr/ADR-0016-licencia-apache-2.0.md` |
 
 ## Cómo interpretar el estado
 - **Aprobado** significa que la decisión fue aceptada explícitamente; no significa que esté implementada.
