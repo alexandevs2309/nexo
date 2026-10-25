@@ -47,7 +47,7 @@ Una brecha no se cierra porque exista un documento. Debe tener decisión aprobad
 | Núcleo numérico (entero/decimal/real) | Implementado | Suite de conformidad numérica | Core 0.3 / incluido |
 | Variables, asignación, tipos anotados y ámbitos | Implementado | Variables, control y tipos | Core 0.3 + ADR-0011 / incluido |
 | `si`/`sino`/`mientras`, bloques | Implementado | Conformidad y flujo de control | Core 0.3 / incluido |
-| Funciones, parámetros y retorno | Implementado; tipos anotados e inferidos verificados | Suite positiva/negativa: aridad, orden de argumentos, primera llamada (incluida recursión), widening aprobado, retorno anotado, `nulo` y colecciones anotadas | ADR-0008/0011; Core 0.3 no exhaustivo / perfil v0.4 candidato |
+| Funciones, parámetros y retorno | Implementado; tipos anotados e inferidos verificados | Suite positiva/negativa: aridad, orden de argumentos, primera llamada (incluida recursión), conversiones implícitas aprobadas, retorno anotado, `nulo` y colecciones anotadas | ADR-0008/0011; Core 0.3 no exhaustivo / perfil v0.4 candidato |
 | Texto básico | Implementado | Literales, concatenación, comparación y mostrar | Core 0.3 no exhaustivo / incluido v0.4 |
 | Arreglos/listas con tipos, indexación y asignación | Implementado parcialmente | Tamaño inicial, tamaño cero, tipos de elementos, lista vacía, mutabilidad, asignación/lectura de índices, índices inválidos y tipos de índice | No normados en Core 0.3 / incluido solo en forma básica |
 | `para cada`, texto iterable, rangos, `romper`/`continuar` | Implementado parcialmente; binding inmutable y ámbito limpio | Regresiones cubren rangos exclusivos/inclusivos, vacíos, negativos y límites; señales a través de rescate y scope del iterador | ADR-0012 / extensión prototipal fuera de garantía v0.4; faltan ciclo anidado, iteración vacía, texto iterable y modificación durante iteración |
@@ -56,6 +56,6 @@ Una brecha no se cierra porque exista un documento. Debe tener decisión aprobad
 | CLI `basilisco`/`bsk` | `run`, `demo`, ayuda, versión, extensiones y diagnóstico de ejecución | Pruebas CLI positivas/negativas y aceptación integrada | ADR-0010 / incluido |
 | Módulos, importaciones, paquetes, concurrencia, FFI | No disponible como capacidad completa | Sin suite de producto | GAP-010/014/015/016 / fuera de alcance |
 
-**Verificación local (2026-10-25):** 302 pruebas enumeradas; `cargo fmt --check`, Clippy estricto, `cargo build --bins` y `cargo test --quiet` pasan en el árbol local. Aún sin commit/CI para estos cambios; no declara conformidad con Core 0.3 ni superación de puertas de distribución.
+**Verificación local (2026-10-25, código en `6a3f619`):** 302 pruebas enumeradas; formato, Clippy estricto, build y suite completa pasan localmente. El estado de CI remota no pudo verificarse desde este entorno; no declara conformidad con Core 0.3 ni superación de puertas de distribución.
 
 **Brechas que permanecen abiertas:** GAP-001 a GAP-009 siguen requiriendo cierre por separado en norma, pruebas y código; GAP-008 se cierra parcialmente para los casos básicos de arreglos/listas, no para iteración completa. Las extensiones marcadas prototipales necesitan los criterios de límite indicados por ADR-0012 a ADR-0014 antes de entrar en una garantía de versión.

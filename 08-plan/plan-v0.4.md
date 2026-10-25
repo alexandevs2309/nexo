@@ -197,7 +197,7 @@ cargo test --quiet
 cargo test -- --list
 ```
 
-Resultado: todos los comandos pasan; Clippy sin advertencias; 302 pruebas enumeradas y 0 fallos. Es evidencia del árbol local, aún no asociada a commit/CI.
+Resultado local en `6a3f619`: todos los comandos pasan; Clippy sin advertencias; 302 pruebas enumeradas y 0 fallos. El estado de CI remota no es verificable desde este entorno; no se presenta como aprobado.
 
 ## Decisión clave
 La prioridad no es “hacer más lenguaje”, sino “dejar una versión útil y terminable”. Eso es lo que marca la diferencia entre un prototipo que se queda así y una base que puede crecer con criterio.

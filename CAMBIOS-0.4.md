@@ -37,8 +37,9 @@ cargo build --bins
 cargo test --quiet
 ```
 
-Los comandos pasan en el árbol local del 2026-10-25. `cargo test -- --list` enumera
-302 pruebas; esta evidencia aún no está asociada a un commit ni a CI. La aceptación CLI
+Los comandos pasan localmente en el commit `6a3f619` del 2026-10-25. `cargo test -- --list`
+enumera 302 pruebas. El estado de CI no pudo consultarse desde este entorno: la página
+del commit y el API de checks devolvieron 404. La aceptación CLI
 incluye un programa que combina variables, arreglo e indexación, ciclo, condición,
 función y texto; además verifica que un error informe archivo, línea, columna y causa.
 El tutorial está en `prototipo/tutorial/01-primer-programa.md`. Se corrigió además la
