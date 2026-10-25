@@ -18,18 +18,19 @@ Estimación aportada el 2026-10-25 a partir de las tareas y evidencias de este p
 una métrica formal del proyecto:
 
 - **Prototipo del MVP v0.4: 85–90 % implementado y verificado localmente.** Hay pruebas
-	para las capacidades incluidas, 304 pruebas enumeradas, formato/Clippy/build limpios y
-	un smoke test de `cargo install`/`cargo uninstall` en Linux. La especificación candidata
-	todavía requiere aprobación.
-- **Cierre como candidata publicable: 70–75 %.** Faltan aprobar formalmente el perfil de
-	conformidad, decidir la versión del paquete, verificar CI del commit final y definir y
-	probar las plataformas que se respaldarán.
+	para las capacidades incluidas, 304 pruebas enumeradas, formato/Clippy/build limpios,
+	CI exitosa para `0914b4e` y smoke test de instalación/desinstalación en Linux. El perfil
+	acotado quedó aprobado por ADR-0015.
+- **Cierre como candidata publicable:** la estimación anterior de 70–75 % precede a la
+	aprobación y al CI confirmado, por lo que ya no es la estimación vigente. El perfil está
+	aprobado, la versión candidata es `0.4.0` y CI pasó en `0914b4e`. Falta ejecutar la
+	nueva matriz multiplataforma y verificar el mecanismo de instalación que se distribuirá.
 - **Lenguaje completo: sin porcentaje objetivo.** Su alcance no está definido de forma
 	exhaustiva; módulos, paquetes, biblioteca estándar extensa, concurrencia y otras áreas
 	siguen siendo brechas abiertas.
 
-La formulación resumida es: *el núcleo v0.4 ya funciona; falta formalizarlo y cerrar la
-candidata*. No usar estos porcentajes como declaración oficial de completitud.
+La formulación resumida es: *el núcleo v0.4 está aprobado y verificado localmente; falta
+preparar la distribución*. No usar estos porcentajes como declaración oficial de completitud.
 
 ## Alcance de la v0.4
 
@@ -60,7 +61,7 @@ candidata*. No usar estos porcentajes como declaración oficial de completitud.
 ### Objetivo
 Definir qué soporta la v0.4 y qué no, dejando un contrato operativo para todo el resto del proyecto.
 
-### MVP v0.4 — características obligatorias propuestas
+### MVP v0.4 — características obligatorias aprobadas por ADR-0015
 - sintaxis mínima estable y documentada
 - variables, ámbitos y reasignación
 - funciones con parámetros y retorno
@@ -82,7 +83,8 @@ como conformes en esta versión. Los ADR correspondientes siguen aprobados; esta
 decisión limita únicamente el alcance de la entrega v0.4.
 
 El detalle del contrato está en `10-especificacion/perfil-de-conformidad-v0.4.md`;
-permanece como propuesta, no como norma aprobada.
+está aprobado como perfil acotado mediante ADR-0015. No declara estable el lenguaje
+completo ni autoriza su publicación.
 
 Antes de incorporarlas a una versión garantizada, se requieren al menos estos casos:
 
@@ -114,7 +116,7 @@ La v0.4 se considera terminada cuando:
 
 ### Evidencia
 - documento de alcance de v0.4 aprobado
-- perfil de conformidad candidato escrito y pendiente de revisión/aprobación formal
+- perfil de conformidad acotado aprobado formalmente por ADR-0015; CI confirmada para el commit revisado
 - lista de features fuera de alcance
 - ejemplos mínimos ejecutables
 - checklist de aceptación en verde
@@ -203,7 +205,7 @@ No se añade funcionalidad nueva mientras no se cumplan estas condiciones:
 5. release candidate
 
 ## Siguiente acción inmediata
-Resolver la lista de pendientes de publicación en `CAMBIOS-0.4.md`: fijar la versión de paquete, confirmar CI sobre un commit final y aportar evidencia de instaladores/plataformas objetivo antes de declarar una distribución. La ruta local `cargo install`/`cargo uninstall` ya pasó en Linux.
+Resolver la lista de pendientes de publicación en `CAMBIOS-0.4.md`: ejecutar CI multiplataforma e instalar/desinstalar en cada sistema objetivo antes de declarar una distribución. La versión candidata es `0.4.0`; CI pasó en `0914b4e` (run 40225683156), y `cargo install`/`cargo uninstall` local pasó en Linux.
 
 ## Verificación actual
 Verificación local ejecutada el 2026-10-25, después de los cambios en CLI, evaluador y documentación:
@@ -217,7 +219,7 @@ cargo test --quiet
 cargo test -- --list
 ```
 
-Resultado local del árbol actual: todos los comandos pasan; Clippy sin advertencias; 304 pruebas enumeradas y 0 fallos. El estado de CI remota no es verificable desde este entorno; no se presenta como aprobado.
+Resultado local en `0914b4e`: todos los comandos pasan; Clippy sin advertencias; 304 pruebas enumeradas y 0 fallos. CI se confirmó en GitHub Actions, run 40225683156.
 
 ## Decisión clave
 La prioridad no es “hacer más lenguaje”, sino “dejar una versión útil y terminable”. Eso es lo que marca la diferencia entre un prototipo que se queda así y una base que puede crecer con criterio.

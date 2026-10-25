@@ -2,7 +2,7 @@
 
 **Fecha de verificación:** 2026-10-25
 **Estado:** candidata local; no publicada ni etiquetada.
-**Versión del paquete Cargo:** `0.1.0`.
+**Versión candidata del paquete Cargo:** `0.4.0` (todavía no etiquetada ni publicada).
 
 Este documento describe el alcance funcional del prototipo que se está preparando
 para cerrar como v0.4. No declara que exista una distribución estable.
@@ -24,8 +24,8 @@ para cerrar como v0.4. No declara que exista una distribución estable.
 El prototipo también contiene `para cada`, rangos, `romper`/`continuar`,
 `intentar`/`rescatar` y E/S. Son extensiones experimentales fuera de la garantía v0.4;
 no se declara conformidad para ellas. El plan v0.4 enumera sus casos límite pendientes.
-El perfil contractual candidato está en `10-especificacion/perfil-de-conformidad-v0.4.md`;
-es una propuesta para revisión, no una especificación aprobada.
+El perfil contractual acotado está en `10-especificacion/perfil-de-conformidad-v0.4.md`;
+fue aprobado por ADR-0015 y no declara estable el lenguaje completo.
 
 ## Evidencia local
 
@@ -38,9 +38,8 @@ cargo build --bins
 cargo test --quiet
 ```
 
-Los comandos pasan localmente en el árbol actual del 2026-10-25. `cargo test -- --list`
-enumera 304 pruebas. El estado de CI no pudo consultarse desde este entorno: la página
-del commit y el API de checks devolvieron 404. La aceptación CLI
+Los comandos pasan localmente en el commit `0914b4e` del 2026-10-25. `cargo test -- --list`
+enumera 304 pruebas. GitHub Actions pasó para ese commit en el run 40225683156. La aceptación CLI
 incluye un programa que combina variables, arreglo e indexación, ciclo, condición,
 función y texto; además verifica que un error informe archivo, línea, columna y causa.
 El tutorial está en `prototipo/tutorial/01-primer-programa.md`. Se corrigió además la
@@ -54,14 +53,14 @@ ausente. Estas extensiones siguen fuera de la garantía v0.4.
 ## Fuera de alcance
 
 No se incluye un sistema de paquetes, módulos avanzados, biblioteca estándar extensa,
-IDE o depurador, concurrencia, ni soporte de distribución multiplataforma. La entrada
-y salida general siguen siendo limitadas.
+IDE o depurador, concurrencia ni soporte multiplataforma exhaustivo. La matriz de CI
+para Linux, macOS y Windows aún debe pasar antes de declarar soporte para esos sistemas.
+La entrada y salida general siguen siendo limitadas.
 
 ## Pendiente antes de publicar
 
-- Decidir y aplicar la versión de paquete que corresponda a la publicación v0.4.
-- Ejecutar CI sobre el estado final y asociar la evidencia a un commit identificable.
-- Se verificó `cargo install` y `cargo uninstall` en un root temporal de Linux; aún falta verificar el mecanismo de instalación que se publique y la matriz de plataformas objetivo.
+- Confirmar CI sobre el commit final de publicación; el run 40225683156 cubre `0914b4e`, antes de la matriz multiplataforma añadida para la candidata `0.4.0`.
+- La instalación local con Cargo pasó en Linux. La matriz nueva debe pasar install/uninstall en Linux, macOS y Windows antes de declarar soporte para esos sistemas; falta confirmar el mecanismo de instalación que se publique.
 - Completar la revisión de seguridad, dependencias y errores conocidos requerida por
   las puertas de distribución y estabilidad.
 - Resolver los pendientes de licencia, marca y publicación institucional registrados

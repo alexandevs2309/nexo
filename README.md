@@ -1,6 +1,6 @@
 # BASILISCO — Prototipo funcional
 
-**Estado:** Prototipo funcional con documentación de uso y aceptación local para el alcance v0.4. El intérprete Rust de `prototipo/` incluye expresiones, variables y ámbitos, funciones, control de flujo, texto, arreglos y listas básicos, además de una CLI para ejecutar archivos. No es una distribución publicada: la versión Cargo sigue en `0.1.0` y v0.4 identifica el objetivo de cierre. La especificación normativa 0.3 está en `10-especificacion/`. **Nexo** queda como nombre histórico; la identidad objetivo es **BASILISCO**.
+**Estado:** Prototipo funcional con documentación de uso y aceptación local para el alcance v0.4. El intérprete Rust de `prototipo/` incluye expresiones, variables y ámbitos, funciones, control de flujo, texto, arreglos y listas básicos, además de una CLI para ejecutar archivos. No es una distribución publicada: la versión candidata del paquete Cargo es `0.4.0`, aún sin etiqueta ni publicación. La especificación normativa 0.3 está en `10-especificacion/`. **Nexo** queda como nombre histórico; la identidad objetivo es **BASILISCO**.
 
 ## Propósito
 Preparar una base extensa para desarrollar BASILISCO como lenguaje multipropósito, con una experiencia de programación orientada al español, rigor técnico, interoperabilidad y evolución gradual.
@@ -13,14 +13,14 @@ Preparar una base extensa para desarrollar BASILISCO como lenguaje multipropósi
 - **Extensiones:** `.bsk` es canónica; `.nexo` se acepta como legado; `.nx` no está soportada.
 - **Tutorial verificable:** [prototipo/tutorial/01-primer-programa.md](prototipo/tutorial/01-primer-programa.md).
 - **Ejemplos ejecutables:** `prototipo/examples/*.bsk`. La CLI indica archivo, línea y columna en errores de ejecución.
-- **Perfil de lenguaje candidato:** [perfil de conformidad v0.4](10-especificacion/perfil-de-conformidad-v0.4.md). Es una propuesta para revisión; no es una especificación aprobada ni declara una versión estable.
+- **Perfil v0.4:** [perfil de conformidad](10-especificacion/perfil-de-conformidad-v0.4.md) aprobado como contrato acotado por ADR-0015. No declara estable el lenguaje completo ni autoriza su publicación.
 - **Documentación del proyecto:** gobernanza en `00-gobernanza/`, validación en `07-validacion/` y especificación en `10-especificacion/`.
 
 ## Regla fundamental
 Completo no significa fingir que todo está decidido. Las decisiones firmes se registran como aprobadas; las cuestiones abiertas incluyen opciones, criterios, riesgos, pruebas y condiciones de cierre. Ninguna tecnología queda aprobada solo por aparecer en estos documentos.
 
 ## Cobertura
-Visión y requisitos; sintaxis y gramática; semántica; tipos; memoria; funciones y módulos; errores; concurrencia; entrada/salida; versiones; modelos de ejecución; plataformas; seguridad; calidad; CLI; paquetes; IDE; interoperabilidad; documentación; pruebas; riesgos y hoja de ruta. **Especificaciones:** BASILISCO Core 0.3 es una propuesta inicial; el perfil v0.4 es una candidata acotada pendiente de revisión/aprobación.
+Visión y requisitos; sintaxis y gramática; semántica; tipos; memoria; funciones y módulos; errores; concurrencia; entrada/salida; versiones; modelos de ejecución; plataformas; seguridad; calidad; CLI; paquetes; IDE; interoperabilidad; documentación; pruebas; riesgos y hoja de ruta. **Especificaciones:** BASILISCO Core 0.3 sigue siendo una propuesta inicial; el perfil v0.4 está aprobado para un subconjunto y no define el lenguaje completo.
 
 ## Estados
 - Aprobado: decisión explícitamente aceptada.
