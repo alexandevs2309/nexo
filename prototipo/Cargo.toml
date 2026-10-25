@@ -1,8 +1,11 @@
 [package]
 name = "basilisco"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
-description = "BASILISCO — intérprete del lenguaje (prototipo)"
+description = "BASILISCO — intérprete del lenguaje (candidata v0.4)"
+license = "Apache-2.0"
+repository = "https://github.com/alexandevs2309/nexo"
+exclude = [".agents/**"]
 autobins = false
 default-run = "basilisco"
 

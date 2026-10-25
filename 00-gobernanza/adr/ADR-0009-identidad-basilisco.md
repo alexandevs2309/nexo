@@ -38,7 +38,7 @@ La decisión del proyecto es que **Nexo quede como identidad temporal/histórica
 - El crate `nexo` de crates.io ya está ocupado; no se reutiliza.
 - El comando `bsk` colisiona operacionalmente con BrowserSkill; el alias debe documentarse y detectar conflictos.
 - `.bsk` no es exclusiva; se documenta el conflicto con Nero/Bryce y se prioriza `basilisco run`.
-- La licencia y los metadatos de publicación siguen pendientes antes de distribuir.
+- La licencia se aprobó después mediante ADR-0016. Los metadatos restantes y la publicación siguen pendientes antes de distribuir.
 
 ## 4. Criterios de aceptación
 

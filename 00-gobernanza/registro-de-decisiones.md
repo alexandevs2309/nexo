@@ -25,6 +25,10 @@ Toda decisión importante debe documentar contexto, requisitos, opciones, criter
 | [ADR-0012](adr/ADR-0012-iteracion-para-cada-romper-continuar.md) | Iteración: `para cada`, rangos, `romper` y `continuar` | **Aprobado** |
 | [ADR-0013](adr/ADR-0013-entrada-salida-basica-texto-archivos.md) | E/S básica: entrada estándar, operaciones de texto y archivos | **Aprobado** |
 | [ADR-0014](adr/ADR-0014-manejo-de-errores-intentar-rescatar.md) | Manejo de errores: `intentar`/`rescatar` | **Aprobado** |
+| [ADR-0015](adr/ADR-0015-aprobacion-perfil-v0.4.md) | Aprobación del perfil de conformidad BASILISCO v0.4 | **Aprobado** |
+| [ADR-0016](adr/ADR-0016-licencia-apache-2.0.md) | Licencia del código fuente | **Aprobado** |
+
+| [ADR-0016](adr/ADR-0016-licencia-apache-2.0.md) | Licencia de publicación BASILISCO: Apache-2.0 | **Aprobado para v0.4, sujeto a auditoría de procedencia** |
 
 ## ADR previstas
 Modelo de ejecución; sistema de tipos; memoria; errores; concurrencia; módulos y paquetes; interoperabilidad; compatibilidad; licencia y gobernanza; codificación; IR y optimización; pruebas de conformidad.
@@ -34,3 +38,5 @@ Modelo de ejecución; sistema de tipos; memoria; errores; concurrencia; módulos
 |---|---|---|---|
 | 2026-10-20 | ADR-0004 §5 | "decimal de doble precisión" → "flotante binario de doble precisión IEEE 754 (`f64`)" | Documental; aclara la representación ya usada en el código. No altera ninguna decisión aprobada del ADR-0004. Evidencia: `0.1 + 0.2` = `0.30000000000000004`; `9007199254740993 + 1` = `9007199254740992.0`. Sistema numérico normativo → ADR-0005 (propuesto, sin aprobar). |
 | 2026-10-21 | ADR-0007 §5, §6, §7 | §5: los cuatro puntos de confirmación pasan a aceptados (ADR aprobado). §6 (antes "Aceptación: Pendiente") → notas de implementación no normativas (guard de iteraciones, nombre real de la causa `TiposIncompatibles`, `sino` en la línea siguiente, comparación entre lógicos, ámbito por iteración) + §7 de aceptación. | Enmienda documental posterior a la aprobación. No altera ninguna decisión aprobada: el cortocircuito aprobado implica que el operando derecho solo se valida si se evalúa, y así queda precisado. Evidencia: `prototipo/tests/conformidad_control.rs`, `prototipo/tests/control_flujo.rs`. |
+| 2026-10-25 | ADR-0015 | Se aprueba el perfil acotado de conformidad BASILISCO v0.4. No amplía Core 0.3 ni declara estable/publicado el lenguaje completo. | Decisión del responsable tras revisión técnica favorable. Evidencia CI: commit `0914b4e`, run 40225683156; suite local de 304 pruebas. |
+| 2026-10-25 | Licencia de publicación v0.4 | Se selecciona Apache License 2.0 para el código de BASILISCO, sujeta a confirmar titularidad/procedencia de todo el código y compatibilidad de dependencias antes de publicar. | Decisión de publicación documentada en el PR #1; `LICENSE` y `license = \"Apache-2.0\"` en Cargo.toml. |

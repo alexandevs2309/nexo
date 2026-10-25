@@ -1,7 +1,7 @@
 # Cambios de identidad y CLI — BASILISCO
 
 **Fecha:** 2026-10-22  
-**Estado:** aplicado, commiteado y publicado en `main`; CI en verde. Publicación/licencia pendiente.
+**Estado:** identidad y CLI integradas en `main`; la licencia y la publicación de BASILISCO v0.4 se preparan en el PR #1. La release aún no está publicada.
 
 - Commit: `ec3b1f2e20657d9286a99491eda93ebb5db4d746`.
 - Push: `origin/main` (`a0c1a22..ec3b1f2`).
@@ -62,7 +62,8 @@ bsk run tests/fixtures/legado.nx   # error esperado, código 2
 
 ## Pendientes
 
-- Licencia y metadatos de publicación.
+- La licencia elegida para la candidata v0.4 es Apache-2.0; véase `00-gobernanza/adr/ADR-0016-licencia-apache-2.0.md`. Confirmar procedencia del código y licencias de terceros antes de publicar.
+- Actualizar esta nota para reflejar los controles de plataforma y metadatos de publicación del PR #1.
 - Verificación macOS/Linux (el CI actual es Ubuntu).
 - Búsqueda formal de marca, dominios y registros.
 - Detección de conflicto de `bsk` con BrowserSkill en instalación.

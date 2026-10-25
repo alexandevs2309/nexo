@@ -1,6 +1,6 @@
-# Perfil de conformidad BASILISCO v0.4 (candidata)
+# Perfil de conformidad BASILISCO v0.4
 
-**Estado:** propuesta técnica para revisión; no aprobada ni declaración de estabilidad.
+**Estado:** aprobado el 2026-10-25 como perfil acotado; no declara estabilidad ni publicación.
 **Relación:** complementa, no reemplaza, BASILISCO Core 0.3 ni los ADR aprobados.
 **Propósito:** fijar el subconjunto que una implementación puede anunciar como garantizado en v0.4.
 
@@ -9,15 +9,14 @@ Este perfil no define todas las capacidades del prototipo ni del lenguaje futuro
 ## 1. Conformidad
 
 Una implementación conforme con este perfil debe:
-
 - aceptar toda construcción válida definida aquí y producir el resultado o error especificado;
 - rechazar los usos inválidos indicados sin pánico ni valor por defecto;
 - informar errores léxicos, sintácticos y de ejecución con ubicación cuando exista;
 - pasar las suites de aceptación identificadas en §9;
 - publicar versión, commit, plataforma y comando de reproducción.
 
-El prototipo local aún no se declara conforme: esta propuesta necesita revisión/aprobación, y la evidencia de pruebas debe ligarse a un commit y CI antes de publicar una versión.
-
+La aprobación formal del perfil quedó registrada en ADR-0015. No declara por sí sola
+que una implementación sea conforme ni que el lenguaje completo sea estable.
 ## 2. Fuente y léxico
 
 El código fuente es UTF-8. Se ignora un BOM inicial. Los finales `LF` y `CRLF` separan sentencias; un `CR` aislado es error. Espacios y tabuladores se ignoran entre tokens. `#` inicia un comentario que continúa hasta el fin de línea.
@@ -181,4 +180,4 @@ Toda regla del perfil que no esté cubierta por una prueba positiva y otra negat
 
 Este documento no especifica módulos, paquetes, predicados de inspección de `real`, biblioteca estándar extensa, concurrencia, depuración, IDE, FFI ni soporte de plataformas. Tampoco incorpora las extensiones experimentales enumeradas en §8. La conformidad con este perfil no significa conformidad con BASILISCO Core 0.3 ni estabilidad del lenguaje completo.
 
-Para aprobar/publicar v0.4 se requiere revisión formal del perfil, suite completa, `cargo fmt --check`, Clippy estricto, build de binarios, CI asociada al commit final, versión de paquete decidida y evidencia de instalación/plataformas declaradas. Hasta cumplir esas condiciones, BASILISCO sigue siendo un prototipo/candidata local.
+La aprobación formal del perfil quedó registrada en ADR-0015. La versión candidata del paquete es `0.4.0`; para publicar aún se requiere CI exitosa de la matriz de plataformas y evidencia del mecanismo de instalación que se distribuya. El perfil aprobado no convierte BASILISCO en una distribución estable.

@@ -44,8 +44,9 @@ Una implementación solo puede declararse conforme con `Nexo Core 0.3` cuando:
 - publica versión, commit, plataforma y comando de reproducción;
 - informa explícitamente cualquier capacidad opcional no soportada.
 
-## Perfil candidato v0.4
-`perfil-de-conformidad-v0.4.md` propone una superficie reducida y rastreable para
-la versión v0.4. Su estado es **PROPUESTO**: no modifica Core 0.3, no tiene aprobación
-formal y no permite declarar conformidad hasta que se apruebe y se identifique la
-suite obligatoria con commit, plataforma y comando de reproducción.
+## Perfil v0.4
+`perfil-de-conformidad-v0.4.md` fija una superficie reducida y rastreable para la
+versión v0.4. Su estado es **APROBADO** por ADR-0015 (2026-10-25), con CI exitosa
+para el commit `0914b4e` (run 40225683156). No modifica Core 0.3 ni declara estable
+el lenguaje completo. La conformidad se limita al perfil, la suite, el commit y la
+plataforma reportados; no implica autorización de publicación.

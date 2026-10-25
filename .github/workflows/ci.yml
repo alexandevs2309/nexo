@@ -6,15 +6,28 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - name: Instalar Rust (estable)
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Registrar plataforma y toolchain
+        run: |
+          rustc -Vv
+          cargo -V
+          echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH"
       - name: Comprobar formato
         run: cargo fmt --check
         working-directory: prototipo
@@ -26,4 +39,24 @@ jobs:
         working-directory: prototipo
       - name: Ejecutar pruebas
         run: cargo test --verbose
+        working-directory: prototipo
+      - name: Instalar y ejecutar los binarios (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          install_root="$RUNNER_TEMP/basilisco-install"
+          cargo install --path . --root "$install_root" --force
+          "$install_root/bin/basilisco" --version
+          "$install_root/bin/bsk" --version
+          cargo uninstall --root "$install_root" basilisco
+        working-directory: prototipo
+      - name: Instalar y ejecutar los binarios (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installRoot = Join-Path $env:RUNNER_TEMP 'basilisco-install'
+          cargo install --path . --root $installRoot --force
+          & (Join-Path $installRoot 'bin/basilisco.exe') --version
+          & (Join-Path $installRoot 'bin/bsk.exe') --version
+          cargo uninstall --root $installRoot basilisco
         working-directory: prototipo
