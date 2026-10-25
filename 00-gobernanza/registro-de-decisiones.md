@@ -27,6 +27,8 @@ Toda decisión importante debe documentar contexto, requisitos, opciones, criter
 | [ADR-0014](adr/ADR-0014-manejo-de-errores-intentar-rescatar.md) | Manejo de errores: `intentar`/`rescatar` | **Aprobado** |
 | [ADR-0015](adr/ADR-0015-aprobacion-perfil-v0.4.md) | Aprobación del perfil de conformidad BASILISCO v0.4 | **Aprobado** |
 
+| [ADR-0016](adr/ADR-0016-licencia-apache-2.0.md) | Licencia de publicación BASILISCO: Apache-2.0 | **Aprobado para v0.4, sujeto a auditoría de procedencia** |
+
 ## ADR previstas
 Modelo de ejecución; sistema de tipos; memoria; errores; concurrencia; módulos y paquetes; interoperabilidad; compatibilidad; licencia y gobernanza; codificación; IR y optimización; pruebas de conformidad.
 
