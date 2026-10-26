@@ -7,10 +7,14 @@
 //! - Decimal: redondeo half-even, exceso de precisión redondea, exceso de rango = error.
 //! - Conversiones: solo implícitas sin pérdida (`entero→decimal`, `entero→real`).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
+use crate::cargador::{CargadorModulos, SimbodoExportado};
 use crate::parser::{Expresion, Sentencia, TipoAnotacion};
 use crate::valor::{FACTOR_ESCALA, MotivoAritmetico, Valor};
+use std::path::PathBuf;
 
 /// Causa tipada de un error de ejecución (ADR-0005 §1.6 y ADR-0006 §1.5, ampliada ADR-0007).
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +98,24 @@ pub enum CausaError {
     ConversionTextoInvalida { valor: String, esperado: String },
     /// Separador vacío en `dividir` (ADR-0013 §3.7).
     SeparadorVacio,
+    /// Módulo no encontrado (ADR-0017 D12).
+    ModuloNoEncontrado { ruta: String },
+    /// Ciclo de importación detectado (ADR-0017 D12).
+    CicloDeImportacion { cadena: Vec<String> },
+    /// Símbodo privado (ADR-0017 D12).
+    SimbodoPrivado { nombre: String, modulo: String },
+    /// Símbodo no exportado (ADR-0017 D12).
+    SimbodoNoExportado { nombre: String, modulo: String },
+    /// Importación duplicada (ADR-0017 D12).
+    ImportacionDuplicada { nombre: String, modulo: String },
+    /// Ruta no permitida (fuera de la raíz del proyecto o absoluta) (ADR-0017 D12).
+    RutaNoPermitida { ruta: String },
+    /// Extensión no soportada en importación (ADR-0017 D12).
+    ExtensionNoSoportada { extension: String },
+    /// Importaciones no disponibles (sin cargador configurado) (ADR-0017 D12).
+    ImportacionesNoDisponibles,
+    /// Sentencia no permitida en el nivel superior de un módulo (ADR-0017 D4).
+    SentenciaNoPermitidaEnModulo { sentencia: String },
 }
 
 /// Límite de iteraciones por ciclo `mientras` (protección frente a bucles infinitos).
@@ -220,6 +242,38 @@ impl std::fmt::Display for CausaError {
                 write!(f, "no se puede convertir \"{valor}\" a {esperado}")
             }
             CausaError::SeparadorVacio => write!(f, "el separador no puede ser vacío"),
+            CausaError::ModuloNoEncontrado { ruta } => write!(f, "módulo no encontrado: {ruta}"),
+            CausaError::CicloDeImportacion { cadena } => {
+                write!(f, "ciclo de importación: {}", cadena.join(" -> "))
+            }
+            CausaError::SimbodoPrivado { nombre, modulo } => {
+                write!(
+                    f,
+                    "el símbodo '{nombre}' no es público en el módulo '{modulo}'"
+                )
+            }
+            CausaError::SimbodoNoExportado { nombre, modulo } => {
+                write!(f, "el símbodo '{nombre}' no existe en el módulo '{modulo}'")
+            }
+            CausaError::ImportacionDuplicada { nombre, modulo } => {
+                write!(
+                    f,
+                    "importación duplicada: '{nombre}' ya existe (módulo '{modulo}')"
+                )
+            }
+            CausaError::RutaNoPermitida { ruta } => write!(f, "ruta no permitida: {ruta}"),
+            CausaError::ExtensionNoSoportada { extension } => {
+                write!(f, "extensión no soportada: {extension}")
+            }
+            CausaError::ImportacionesNoDisponibles => {
+                write!(f, "importaciones no disponibles en este contexto")
+            }
+            CausaError::SentenciaNoPermitidaEnModulo { sentencia } => {
+                write!(
+                    f,
+                    "sentencia no permitida en el nivel superior de un módulo: {sentencia}"
+                )
+            }
         }
     }
 }
@@ -230,15 +284,24 @@ pub struct ErrorEjecucion {
     pub causa: Box<CausaError>,
     pub linea: usize,
     pub columna: usize,
+    /// Archivo de origen, si está disponible (ADR-0017 D5).
+    pub archivo: Option<String>,
 }
 
 impl std::fmt::Display for ErrorEjecucion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "error de ejecución [{}:{}]: {}",
-            self.linea, self.columna, self.mensaje
-        )
+        match &self.archivo {
+            Some(archivo) => write!(
+                f,
+                "error de ejecución [{}:{}:{}]: {}",
+                archivo, self.linea, self.columna, self.mensaje
+            ),
+            None => write!(
+                f,
+                "error de ejecución [{}:{}]: {}",
+                self.linea, self.columna, self.mensaje
+            ),
+        }
     }
 }
 
@@ -248,6 +311,7 @@ fn error(causa: CausaError, linea: usize, columna: usize) -> ErrorEjecucion {
         causa: Box::new(causa),
         linea,
         columna,
+        archivo: None,
     }
 }
 
@@ -283,10 +347,14 @@ pub struct FuncionDef {
 
 /// Entorno de ejecución: pila de ámbitos con las variables (ADR-0006 §1.6),
 /// más un mapa global de funciones (ADR-0008).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Entorno {
     ambitos: Vec<HashMap<String, VariableInfo>>,
     funciones: HashMap<String, FuncionDef>,
+    /// Cargador de módulos compartido (ADR-0017, Fase 3).
+    pub cargador: Option<Rc<RefCell<CargadorModulos>>>,
+    /// Archivo de origen asociado a este entorno (para diagnósticos).
+    pub archivo: Option<String>,
 }
 
 impl Entorno {
@@ -294,6 +362,18 @@ impl Entorno {
         Entorno {
             ambitos: vec![HashMap::new()],
             funciones: HashMap::new(),
+            cargador: None,
+            archivo: None,
+        }
+    }
+
+    /// Crea un entorno con un cargador de módulos compartido.
+    pub fn con_cargador(cargador: Rc<RefCell<CargadorModulos>>, archivo: Option<String>) -> Self {
+        Entorno {
+            ambitos: vec![HashMap::new()],
+            funciones: HashMap::new(),
+            cargador: Some(cargador),
+            archivo,
         }
     }
 
@@ -359,6 +439,7 @@ impl Entorno {
                     ref tipo_anotacion,
                     mutable,
                     es_const,
+                    publico: _,
                 } => {
                     if self.existe_en_ambito_actual(&nombre) {
                         return Err(error(
@@ -775,6 +856,13 @@ impl Entorno {
                         }
                     }
                 }
+                Sentencia::Usar { linea, columna, .. } => {
+                    return Err(error(
+                        CausaError::ImportacionesNoDisponibles,
+                        linea,
+                        columna,
+                    ));
+                }
                 Sentencia::Expresion(e) => {
                     let _ = evaluar_con(&e, self)?;
                 }
@@ -810,6 +898,7 @@ impl Entorno {
                     ref tipo_anotacion,
                     mutable,
                     es_const,
+                    publico: _,
                 } => {
                     if self.existe_en_ambito_actual(&nombre) {
                         return Err(error(
@@ -895,6 +984,7 @@ impl Entorno {
                     cuerpo,
                     linea,
                     columna,
+                    publico: _,
                 } => {
                     // Verificar nombre reservado de builtin (ADR-0013 §3.1)
                     if NOMBRES_RESERVADOS.contains(&nombre.as_str()) {
@@ -1206,6 +1296,98 @@ impl Entorno {
                         v[idx_usize] = ajustado;
                     }
                 }
+                Sentencia::Usar {
+                    ruta,
+                    alias,
+                    nombres,
+                    linea,
+                    columna,
+                } => {
+                    let cargador = self.cargador.clone().ok_or_else(|| {
+                        error(CausaError::ImportacionesNoDisponibles, linea, columna)
+                    })?;
+                    let importador = self.archivo.as_ref().map(PathBuf::from);
+                    let modulo = CargadorModulos::cargar(&cargador, &ruta, importador.as_deref())?;
+
+                    if let Some(alias) = alias {
+                        if self.existe_en_ambito_actual(&alias)
+                            || self.funciones.contains_key(&alias)
+                        {
+                            return Err(error(
+                                CausaError::ImportacionDuplicada {
+                                    nombre: alias.clone(),
+                                    modulo: modulo.ruta.display().to_string(),
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+                        self.insertar_variable(
+                            alias.clone(),
+                            VariableInfo {
+                                valor: Valor::Modulo(modulo.clone()),
+                                tipo_declarado: None,
+                                mutable: false,
+                                es_const: false,
+                            },
+                        );
+                    }
+
+                    if let Some(nombres) = nombres {
+                        for nombre in nombres {
+                            if self.existe_en_ambito_actual(&nombre)
+                                || self.funciones.contains_key(&nombre)
+                            {
+                                return Err(error(
+                                    CausaError::ImportacionDuplicada {
+                                        nombre: nombre.clone(),
+                                        modulo: modulo.ruta.display().to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                ));
+                            }
+                            if let Some(exportado) = modulo.exportaciones.get(&nombre) {
+                                match exportado {
+                                    SimbodoExportado::Variable(v) => {
+                                        self.insertar_variable(
+                                            nombre.clone(),
+                                            VariableInfo {
+                                                valor: v.clone(),
+                                                tipo_declarado: None,
+                                                mutable: false,
+                                                es_const: false,
+                                            },
+                                        );
+                                    }
+                                    SimbodoExportado::Funcion(f) => {
+                                        self.funciones.insert(nombre.clone(), f.clone());
+                                    }
+                                }
+                            } else if modulo.entorno.borrow().variable(&nombre).is_some()
+                                || modulo.entorno.borrow().funcion(&nombre).is_some()
+                            {
+                                return Err(error(
+                                    CausaError::SimbodoPrivado {
+                                        nombre: nombre.clone(),
+                                        modulo: modulo.ruta.display().to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                ));
+                            } else {
+                                return Err(error(
+                                    CausaError::SimbodoNoExportado {
+                                        nombre: nombre.clone(),
+                                        modulo: modulo.ruta.display().to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                ));
+                            }
+                        }
+                    }
+                }
                 Sentencia::Expresion(e) => {
                     ultimo = Some(evaluar_con(&e, self)?);
                 }
@@ -1217,6 +1399,11 @@ impl Entorno {
     /// Valor de una variable visible (para pruebas e introspección).
     pub fn variable(&self, nombre: &str) -> Option<Valor> {
         self.buscar(nombre)
+    }
+
+    /// Definición de una función registrada (para el cargador de módulos, ADR-0017).
+    pub fn funcion(&self, nombre: &str) -> Option<FuncionDef> {
+        self.funciones.get(nombre).cloned()
     }
 
     fn localizar(&self, nombre: &str) -> Option<(usize, VariableInfo)> {
@@ -1512,6 +1699,8 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             let mut nuevo_env = Entorno {
                 ambitos: vec![HashMap::new()],
                 funciones: env.funciones.clone(),
+                cargador: env.cargador.clone(),
+                archivo: env.archivo.clone(),
             };
             for ((nombre_param, tipo_param), v) in fdef.parametros.iter().zip(vals.iter()) {
                 let valor_parametro = if let Some(tipo) = tipo_param {
@@ -1718,6 +1907,216 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                 )),
             }
         }
+        Expresion::Acceso {
+            objeto,
+            miembro,
+            linea,
+            columna,
+        } => {
+            let obj = evaluar_con(objeto, env)?;
+            match obj {
+                Valor::Modulo(m) => {
+                    if let Some(exportado) = m.exportaciones.get(miembro) {
+                        match exportado {
+                            SimbodoExportado::Variable(v) => Ok(v.clone()),
+                            SimbodoExportado::Funcion(_f) => {
+                                // Return a callable function reference.
+                                // For now, we store it as a function in the env? No, we can't.
+                                // Instead, we need a way to call it. Let me think...
+                                // Actually, functions are called by name lookup in env.funciones.
+                                // A module function accessed via alias.func() needs to be callable.
+                                // The simplest: register it as a variable? No, functions aren't variables.
+                                //
+                                // For Fase 3, let me handle this: if the member is a function,
+                                // we need to return something callable. But Valor doesn't have
+                                // a "Funcion" variant.
+                                //
+                                // Hmm, this is a problem. Let me think about how functions are called.
+                                // In evaluar_con, Llamada looks up env.funciones by name.
+                                // For alias.func(), the expression is Acceso(Acceso(alias, func), Llamada).
+                                // Wait, no: alias.func() is Llamada { nombre: "func", ... }? No.
+                                // Actually, `alias.func()` parses as Llamada { nombre: ??? }.
+                                // Let me check: how does the parser handle `alias.func()`?
+                                // primaria() parses `alias` as Variable, then sees `.`, parses `func` as Acceso.
+                                // Then the caller `()` makes it... a Llamada? No, Llamada is `identificador(...)`.
+                                // `alias.func()` is `(alias.func)()` which is not a Llamada — it's an application of an expression.
+                                //
+                                // Wait, let me check the parser. primaria() returns an expression. Then the
+                                // caller checks if it's followed by `(`. Let me look at how calls are parsed.
+                                Err(error(
+                                    CausaError::ImportacionesNoDisponibles,
+                                    *linea,
+                                    *columna,
+                                ))
+                            }
+                        }
+                    } else if m.entorno.borrow().variable(miembro).is_some()
+                        || m.entorno.borrow().funcion(miembro).is_some()
+                    {
+                        Err(error(
+                            CausaError::SimbodoPrivado {
+                                nombre: miembro.clone(),
+                                modulo: m.ruta.display().to_string(),
+                            },
+                            *linea,
+                            *columna,
+                        ))
+                    } else {
+                        Err(error(
+                            CausaError::SimbodoNoExportado {
+                                nombre: miembro.clone(),
+                                modulo: m.ruta.display().to_string(),
+                            },
+                            *linea,
+                            *columna,
+                        ))
+                    }
+                }
+                _ => Err(error(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "modulo".into(),
+                        obtenido: obj.nombre_tipo().to_string(),
+                    },
+                    *linea,
+                    *columna,
+                )),
+            }
+        }
+        Expresion::LlamadaIndirecta {
+            callee,
+            argumentos,
+            linea,
+            columna,
+        } => {
+            // Evaluate callee: should be Acceso → Modulo.
+            let (modulo, miembro) = match callee.as_ref() {
+                Expresion::Acceso {
+                    objeto, miembro, ..
+                } => {
+                    let obj = evaluar_con(objeto, env)?;
+                    match obj {
+                        Valor::Modulo(m) => (m, miembro.clone()),
+                        _ => {
+                            return Err(error(
+                                CausaError::AsignacionIncompatible {
+                                    esperado: "modulo".into(),
+                                    obtenido: obj.nombre_tipo().to_string(),
+                                },
+                                *linea,
+                                *columna,
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(error(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "acceso a miembro".into(),
+                            obtenido: "expresión".into(),
+                        },
+                        *linea,
+                        *columna,
+                    ));
+                }
+            };
+
+            // Look up function in module.
+            let fdef =
+                if let Some(SimbodoExportado::Funcion(f)) = modulo.exportaciones.get(&miembro) {
+                    f.clone()
+                } else if modulo.entorno.borrow().funcion(&miembro).is_some() {
+                    return Err(error(
+                        CausaError::SimbodoPrivado {
+                            nombre: miembro.clone(),
+                            modulo: modulo.ruta.display().to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    ));
+                } else {
+                    return Err(error(
+                        CausaError::SimbodoNoExportado {
+                            nombre: miembro.clone(),
+                            modulo: modulo.ruta.display().to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    ));
+                };
+
+            // Evaluate arguments.
+            let mut vals = Vec::new();
+            for a in argumentos {
+                vals.push(evaluar_con(a, env)?);
+            }
+
+            if vals.len() != fdef.parametros.len() {
+                return Err(error(
+                    CausaError::FirmaInvalida {
+                        funcion: miembro.clone(),
+                        esperado: fdef.parametros.len(),
+                        obtenido: vals.len(),
+                    },
+                    *linea,
+                    *columna,
+                ));
+            }
+
+            // Type checking for typed params.
+            if fdef.parametros.iter().all(|(_, tipo)| tipo.is_none()) {
+                // Untyped: skip type inference persistence (simplified for Fase 3).
+            } else {
+                for ((nombre_param, tipo), (v,)) in
+                    fdef.parametros.iter().zip(vals.iter().map(|v| (v,)))
+                {
+                    if let Some(tipo) = tipo
+                        && convertir_a_tipo_anotado(v.clone(), tipo).is_none()
+                    {
+                        return Err(error(
+                            CausaError::TipoParametroIncompatible {
+                                funcion: miembro.clone(),
+                                parametro: nombre_param.clone(),
+                                esperado: tipo.nombre(),
+                                obtenido: v.nombre_tipo().to_string(),
+                            },
+                            *linea,
+                            *columna,
+                        ));
+                    }
+                }
+            }
+
+            // Execute function body in module's entorno.
+            let mut mod_env = modulo.entorno.borrow().clone();
+            // Register the function in the module env (already there).
+            // Insert parameters.
+            mod_env.ambitos.push(HashMap::new());
+            for ((nombre_param, _), v) in fdef.parametros.iter().zip(vals.iter()) {
+                mod_env.insertar_variable(
+                    nombre_param.clone(),
+                    VariableInfo {
+                        valor: v.clone(),
+                        tipo_declarado: None,
+                        mutable: true,
+                        es_const: false,
+                    },
+                );
+            }
+
+            // Execute body.
+            let result = mod_env.ejecutar_funcion_sentencias(&fdef.cuerpo, &miembro);
+            mod_env.ambitos.pop();
+
+            match result {
+                Ok(Some(v)) => Ok(v),
+                Ok(None) => Err(error(
+                    CausaError::RetornoAusente { funcion: miembro },
+                    *linea,
+                    *columna,
+                )),
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
@@ -1749,6 +2148,8 @@ fn ubicacion(e: &Expresion) -> (usize, usize) {
         Expresion::Llamada { linea, columna, .. }
         | Expresion::ArregloLiteral { linea, columna, .. }
         | Expresion::Indice { linea, columna, .. }
+        | Expresion::Acceso { linea, columna, .. }
+        | Expresion::LlamadaIndirecta { linea, columna, .. }
         | Expresion::Rango { linea, columna, .. } => (*linea, *columna),
     }
 }

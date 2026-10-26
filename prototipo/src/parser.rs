@@ -65,6 +65,20 @@ pub enum Expresion {
         linea: usize,
         columna: usize,
     },
+    /// Acceso a miembro `objeto.miembro` (ADR-0017 D1/D8). Integración en Fase 3.
+    Acceso {
+        objeto: Box<Expresion>,
+        miembro: String,
+        linea: usize,
+        columna: usize,
+    },
+    /// Llamada indirecta `objeto.miembro(args)` (ADR-0017 D8). Integración en Fase 3.
+    LlamadaIndirecta {
+        callee: Box<Expresion>,
+        argumentos: Vec<Expresion>,
+        linea: usize,
+        columna: usize,
+    },
     /// Rango `inicio..fin` o `inicio..=fin` (ADR-0012 §3.3).
     /// Solo válido como iterable en `para cada`; no se almacena en variable.
     Rango {
@@ -91,6 +105,8 @@ pub enum Sentencia {
         mutable: bool,
         /// true = constante de compilación (`const`).
         es_const: bool,
+        /// true = declaración pública (ADR-0017 D2). Fase 2: solo sintaxis; integración en Fase 3.
+        publico: bool,
     },
     /// `nombre = expresión` sobre una variable existente.
     Asignacion {
@@ -136,6 +152,8 @@ pub enum Sentencia {
         cuerpo: Vec<Sentencia>,
         linea: usize,
         columna: usize,
+        /// true = función pública (ADR-0017 D2). Fase 2: solo sintaxis; integración en Fase 3.
+        publico: bool,
     },
     /// Retorno de función (ADR-0008).
     Retorno {
@@ -172,6 +190,14 @@ pub enum Sentencia {
         cuerpo_intentar: Vec<Sentencia>,
         variable_error: Option<String>,
         cuerpo_rescatar: Vec<Sentencia>,
+        linea: usize,
+        columna: usize,
+    },
+    /// `usar "ruta" como alias` | `usar "ruta" { nombres }` (ADR-0017 D1). Fase 2: solo sintaxis.
+    Usar {
+        ruta: String,
+        alias: Option<String>,
+        nombres: Option<Vec<String>>,
         linea: usize,
         columna: usize,
     },
@@ -235,6 +261,8 @@ pub struct ErrorSintactico {
     pub mensaje: String,
     pub linea: usize,
     pub columna: usize,
+    /// Archivo de origen, si está disponible (ADR-0017 D5).
+    pub archivo: Option<String>,
 }
 
 /// Clasifica un literal numérico según ADR-0005 §1.5 (decisión 15):
@@ -253,11 +281,18 @@ pub(crate) fn clasificar_literal(lex: &str) -> Result<Valor, MotivoAritmetico> {
 
 impl std::fmt::Display for ErrorSintactico {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "error sintáctico [{}:{}]: {}",
-            self.linea, self.columna, self.mensaje
-        )
+        match &self.archivo {
+            Some(archivo) => write!(
+                f,
+                "error sintáctico [{}:{}:{}]: {}",
+                archivo, self.linea, self.columna, self.mensaje
+            ),
+            None => write!(
+                f,
+                "error sintáctico [{}:{}]: {}",
+                self.linea, self.columna, self.mensaje
+            ),
+        }
     }
 }
 
@@ -270,16 +305,26 @@ pub struct Parser {
     en_funcion: bool,
     /// Profundidad de ciclos anidados (para detectar `romper`/`continuar` fuera de ciclo).
     en_ciclo: usize,
+    /// Profundidad de bloques anidados (0 = nivel superior). Para validar `publico`.
+    profundidad_bloque: usize,
+    /// Archivo de origen, si está disponible (ADR-0017 D5).
+    archivo: Option<String>,
 }
 
 impl Parser {
     pub fn nuevo(tokens: Vec<Token>) -> Self {
+        Self::con_archivo(tokens, None)
+    }
+
+    pub fn con_archivo(tokens: Vec<Token>, archivo: Option<String>) -> Self {
         Parser {
             tokens,
             pos: 0,
             en_grupo: 0,
             en_funcion: false,
             en_ciclo: 0,
+            profundidad_bloque: 0,
+            archivo,
         }
     }
 
@@ -309,13 +354,39 @@ impl Parser {
 
     /// Parsea una sentencia: declaración, asignación, control de flujo, bloque o expresión.
     fn sentencia(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        // Modificador `publico` (ADR-0017 D2): solo en nivel superior.
+        let publico = if matches!(self.actual(), Some(TipoToken::Publico)) {
+            if self.profundidad_bloque > 0 {
+                return Err(self.error("'publico' solo tiene sentido en el nivel superior"));
+            }
+            self.pos += 1; // consume 'publico'
+            true
+        } else {
+            false
+        };
+
+        if publico
+            && !matches!(
+                self.actual(),
+                Some(
+                    TipoToken::Sea
+                        | TipoToken::Var
+                        | TipoToken::Dato
+                        | TipoToken::Const
+                        | TipoToken::Funcion
+                )
+            )
+        {
+            return Err(self.error("'publico' solo puede preceder a una declaración o función"));
+        }
+
         if matches!(
             self.actual(),
             Some(TipoToken::Sea | TipoToken::Var | TipoToken::Dato | TipoToken::Const)
         ) {
-            return self.sentencia_declaracion();
+            return self.sentencia_declaracion(publico);
         } else if matches!(self.actual(), Some(TipoToken::Funcion)) {
-            let st = self.sentencia_funcion()?;
+            let st = self.sentencia_funcion(publico)?;
             self.terminar_sentencia()?;
             return Ok(st);
         } else if matches!(self.actual(), Some(TipoToken::Retornar)) {
@@ -356,6 +427,10 @@ impl Parser {
             return Ok(Sentencia::Continuar { linea, columna });
         } else if matches!(self.actual(), Some(TipoToken::Intentar)) {
             let st = self.sentencia_intentar_rescatar()?;
+            self.terminar_sentencia()?;
+            return Ok(st);
+        } else if matches!(self.actual(), Some(TipoToken::Usar)) {
+            let st = self.sentencia_usar()?;
             self.terminar_sentencia()?;
             return Ok(st);
         } else if matches!(self.actual(), Some(TipoToken::Rescatar)) {
@@ -419,7 +494,7 @@ impl Parser {
         Ok(Sentencia::Expresion(e))
     }
 
-    fn sentencia_declaracion(&mut self) -> Result<Sentencia, ErrorSintactico> {
+    fn sentencia_declaracion(&mut self, publico: bool) -> Result<Sentencia, ErrorSintactico> {
         let (keyword, mutable, es_const) = match self.actual() {
             Some(TipoToken::Sea) => ("sea", true, false),
             Some(TipoToken::Var) => ("var", true, false),
@@ -460,6 +535,7 @@ impl Parser {
             tipo_anotacion,
             mutable,
             es_const,
+            publico,
         })
     }
 
@@ -560,6 +636,7 @@ impl Parser {
         // '{' debe estar en la misma línea que el encabezado (regla ADR-0007).
         self.pos += 1; // '{'
         self.omitir_finales_de_linea();
+        self.profundidad_bloque += 1;
         let mut sentencias = Vec::new();
         loop {
             self.omitir_finales_de_linea();
@@ -568,14 +645,16 @@ impl Parser {
                 break;
             }
             if matches!(self.actual(), Some(TipoToken::Fin) | None) {
+                self.profundidad_bloque -= 1;
                 return Err(self.error("falta '}' para cerrar el bloque"));
             }
             sentencias.push(self.sentencia()?);
         }
+        self.profundidad_bloque -= 1;
         Ok(sentencias)
     }
 
-    fn sentencia_funcion(&mut self) -> Result<Sentencia, ErrorSintactico> {
+    fn sentencia_funcion(&mut self, publico: bool) -> Result<Sentencia, ErrorSintactico> {
         if self.en_funcion {
             return Err(self.error("funciones anidadas no están permitidas (ADR-0008)"));
         }
@@ -664,7 +743,86 @@ impl Parser {
             cuerpo,
             linea,
             columna,
+            publico,
         })
+    }
+
+    fn sentencia_usar(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'usar'
+
+        // Ruta (cadena)
+        let ruta = match self.actual() {
+            Some(TipoToken::Cadena(s)) => {
+                let r = s.clone();
+                self.pos += 1;
+                r
+            }
+            _ => {
+                return Err(self.error("se esperaba una cadena con la ruta del módulo tras 'usar'"));
+            }
+        };
+
+        // Forma 1: `usar "ruta" como alias`
+        if matches!(self.actual(), Some(TipoToken::Como)) {
+            self.pos += 1; // 'como'
+            let alias = match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    let a = n.clone();
+                    self.pos += 1;
+                    a
+                }
+                _ => return Err(self.error("se esperaba un nombre de alias tras 'como'")),
+            };
+            return Ok(Sentencia::Usar {
+                ruta,
+                alias: Some(alias),
+                nombres: None,
+                linea,
+                columna,
+            });
+        }
+
+        // Forma 2: `usar "ruta" { nombre1, nombre2 }`
+        if matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+            self.pos += 1; // '{'
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                return Err(self.error("la lista de importación no puede estar vacía"));
+            }
+            let mut nombres = Vec::new();
+            loop {
+                self.omitir_finales_de_linea();
+                match self.actual() {
+                    Some(TipoToken::Identificador(n)) => {
+                        nombres.push(n.clone());
+                        self.pos += 1;
+                    }
+                    _ => return Err(self.error("se esperaba un nombre en la lista de importación")),
+                }
+                self.omitir_finales_de_linea();
+                if matches!(self.actual(), Some(TipoToken::Coma)) {
+                    self.pos += 1;
+                    self.omitir_finales_de_linea();
+                    continue;
+                }
+                if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                    self.pos += 1; // '}'
+                    break;
+                }
+                return Err(self.error("se esperaba ',' o '}' en la lista de importación"));
+            }
+            return Ok(Sentencia::Usar {
+                ruta,
+                alias: None,
+                nombres: Some(nombres),
+                linea,
+                columna,
+            });
+        }
+
+        Err(self.error("se esperaba 'como <alias>' o '{ nombres }' tras la ruta"))
     }
 
     fn sentencia_retorno(&mut self) -> Result<Sentencia, ErrorSintactico> {
@@ -948,11 +1106,13 @@ impl Parser {
                 mensaje: mensaje.into(),
                 linea: t.linea,
                 columna: t.columna,
+                archivo: self.archivo.clone(),
             },
             None => ErrorSintactico {
                 mensaje: mensaje.into(),
                 linea: self.tokens.last().map_or(1, |t| t.linea),
                 columna: self.tokens.last().map_or(1, |t| t.columna + 1),
+                archivo: self.archivo.clone(),
             },
         }
     }
@@ -1114,6 +1274,7 @@ impl Parser {
                     mensaje: format!("literal numérico inválido {lex:?}: {m}"),
                     linea: t.linea,
                     columna: t.columna,
+                    archivo: self.archivo.clone(),
                 })?;
                 self.pos += 1;
                 Ok(Expresion::Literal {
@@ -1129,6 +1290,7 @@ impl Parser {
                     mensaje: format!("literal numérico inválido {:?}: {m}", t.lexema),
                     linea: t.linea,
                     columna: t.columna,
+                    archivo: self.archivo.clone(),
                 })?;
                 self.pos += 1;
                 Ok(Expresion::Literal {
@@ -1295,6 +1457,64 @@ impl Parser {
                 columna,
             };
         }
+        // Acceso a miembro: `objeto.miembro` (ADR-0017 D8). Integración en Fase 3.
+        while matches!(self.actual(), Some(TipoToken::Punto)) {
+            let t_punto = &self.tokens[self.pos];
+            let (linea, columna) = (t_punto.linea, t_punto.columna);
+            self.pos += 1; // '.'
+            let miembro = match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    let m = n.clone();
+                    self.pos += 1;
+                    m
+                }
+                _ => return Err(self.error("se esperaba un nombre tras '.'")),
+            };
+            expr = Expresion::Acceso {
+                objeto: Box::new(expr),
+                miembro,
+                linea,
+                columna,
+            };
+        }
+        // Llamada indirecta (postfix): `expr(...)` donde expr es un acceso a miembro.
+        // Solo se permite cuando expr es un Acceso (alias.func(args)).
+        while matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
+            let t = &self.tokens[self.pos];
+            let (linea, columna) = (t.linea, t.columna);
+            // Solo permitir si expr es un Acceso.
+            if !matches!(expr, Expresion::Acceso { .. }) {
+                return Err(self.error("llamada indirecta solo válida sobre acceso a miembro"));
+            }
+            self.pos += 1; // '('
+            self.omitir_finales_de_linea();
+            let mut args = Vec::new();
+            if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                self.pos += 1;
+            } else {
+                loop {
+                    let a = self.expresion()?;
+                    args.push(a);
+                    self.omitir_finales_de_linea();
+                    if matches!(self.actual(), Some(TipoToken::Coma)) {
+                        self.pos += 1;
+                        self.omitir_finales_de_linea();
+                        continue;
+                    }
+                    if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                        self.pos += 1;
+                        break;
+                    }
+                    return Err(self.error("se esperaba ',' o ')'"));
+                }
+            }
+            expr = Expresion::LlamadaIndirecta {
+                callee: Box::new(expr),
+                argumentos: args,
+                linea,
+                columna,
+            };
+        }
         Ok(expr)
     }
 }
@@ -1307,6 +1527,8 @@ fn ubicacion_expr(e: &Expresion) -> (usize, usize) {
         | Expresion::Llamada { linea, columna, .. }
         | Expresion::ArregloLiteral { linea, columna, .. }
         | Expresion::Indice { linea, columna, .. }
+        | Expresion::Acceso { linea, columna, .. }
+        | Expresion::LlamadaIndirecta { linea, columna, .. }
         | Expresion::Rango { linea, columna, .. } => (*linea, *columna),
         Expresion::Suma(a, _)
         | Expresion::Resta(a, _)

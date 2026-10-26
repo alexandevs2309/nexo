@@ -13,17 +13,25 @@ pub struct Lexer {
     pos: usize,
     linea: usize,
     columna: usize,
+    /// Archivo de origen, si está disponible (ADR-0017 D5).
+    archivo: Option<String>,
 }
 
 impl Lexer {
     /// Crea un lexer sobre `fuente`. El BOM UTF-8 inicial se ignora si está presente.
     pub fn nuevo(fuente: &str) -> Self {
+        Self::con_archivo(fuente, None)
+    }
+
+    /// Crea un lexer sobre `fuente` asociado a un archivo de origen.
+    pub fn con_archivo(fuente: &str, archivo: Option<String>) -> Self {
         let sin_bom = fuente.strip_prefix('\u{feff}').unwrap_or(fuente);
         Lexer {
             entrada: sin_bom.chars().collect(),
             pos: 0,
             linea: 1,
             columna: 1,
+            archivo,
         }
     }
 
@@ -52,6 +60,7 @@ impl Lexer {
             mensaje: mensaje.into(),
             linea: self.linea,
             columna: self.columna,
+            archivo: self.archivo.clone(),
         }
     }
 
@@ -186,7 +195,6 @@ impl Lexer {
                 }
                 '"' => self.leer_cadena()?,
                 '.' => {
-                    // Solo forma rangos '..'' o '..='; un '.' suelto es error léxico.
                     self.avanzar(); // primer '.'
                     if self.actual() == Some('.') {
                         self.avanzar(); // segundo '.'
@@ -196,6 +204,13 @@ impl Lexer {
                         } else {
                             TipoToken::RangoDos
                         }
+                    } else if self
+                        .actual()
+                        .map(|c| c.is_ascii_alphabetic() || c == '_')
+                        .unwrap_or(false)
+                    {
+                        // Acceso a miembro: `objeto.miembro` (ADR-0017 D8).
+                        TipoToken::Punto
                     } else {
                         return Err(self.error(
                             "carácter inesperado: '.' suelto (¿quiso escribir '..' o '..='?)",
@@ -315,6 +330,9 @@ impl Lexer {
             "mostrar_sin_salto" => TipoToken::MostrarSinSalto,
             "intentar" => TipoToken::Intentar,
             "rescatar" => TipoToken::Rescatar,
+            "usar" => TipoToken::Usar,
+            "como" => TipoToken::Como,
+            "publico" => TipoToken::Publico,
             _ => TipoToken::Identificador(texto),
         }
     }

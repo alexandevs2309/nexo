@@ -14,6 +14,7 @@
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 /// Escala fija del decimal del núcleo: 9 decimales (ADR-0005 §1.2).
@@ -43,6 +44,8 @@ pub enum Valor {
     Nulo,
     /// Archivo abierto (ADR-0013 §3.5). Encapsula el estado de E/S.
     Archivo(Arc<Mutex<ArchivoInterno>>),
+    /// Módulo cargado (ADR-0017). Referencia opaca al módulo.
+    Modulo(Rc<crate::cargador::ModuloCargado>),
 }
 
 /// Estado interno de un archivo abierto (ADR-0013 §3.5). Opaco para el código BASILISCO.
@@ -72,6 +75,7 @@ impl Clone for Valor {
             Valor::Lista(v) => Valor::Lista(v.clone()),
             Valor::Nulo => Valor::Nulo,
             Valor::Archivo(arc) => Valor::Archivo(Arc::clone(arc)),
+            Valor::Modulo(rc) => Valor::Modulo(Rc::clone(rc)),
         }
     }
 }
@@ -88,6 +92,7 @@ impl std::fmt::Debug for Valor {
             Valor::Lista(v) => write!(f, "Lista({v:?})"),
             Valor::Nulo => write!(f, "Nulo"),
             Valor::Archivo(_) => write!(f, "Archivo(<opaco>)"),
+            Valor::Modulo(m) => write!(f, "Modulo({})", m.ruta.display()),
         }
     }
 }
@@ -105,6 +110,7 @@ impl PartialEq for Valor {
             (Valor::Nulo, Valor::Nulo) => true,
             // Archivos se comparan por identidad de puntero (Arc).
             (Valor::Archivo(a), Valor::Archivo(b)) => Arc::ptr_eq(a, b),
+            (Valor::Modulo(a), Valor::Modulo(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -212,6 +218,7 @@ impl Valor {
             Valor::Lista(_) => "lista",
             Valor::Nulo => "nulo",
             Valor::Archivo(_) => "archivo",
+            Valor::Modulo(_) => "modulo",
         }
     }
 }
@@ -489,6 +496,7 @@ impl Valor {
             Valor::Lista(_) => false,
             Valor::Nulo => false,
             Valor::Archivo(_) => false,
+            Valor::Modulo(_) => false,
         }
     }
 
@@ -508,6 +516,8 @@ impl Valor {
             Valor::Nulo => f64::NAN,
             // Archivo no tiene representación numérica.
             Valor::Archivo(_) => f64::NAN,
+            // Módulo no tiene representación numérica.
+            Valor::Modulo(_) => f64::NAN,
         }
     }
 }
@@ -558,6 +568,7 @@ impl fmt::Display for Valor {
             }
             Valor::Nulo => write!(f, "nulo"),
             Valor::Archivo(_) => write!(f, "<archivo>"),
+            Valor::Modulo(m) => write!(f, "<modulo: {}>", m.ruta.display()),
         }
     }
 }

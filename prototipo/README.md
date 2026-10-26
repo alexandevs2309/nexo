@@ -1,6 +1,6 @@
 # BASILISCO 0.5.0 (en desarrollo)
 
-Intérprete experimental de un lenguaje de programación con sintaxis orientada al español. Esta versión permite ejecutar programas pequeños desde la línea de comandos; el lenguaje sigue en desarrollo.
+Intérprete de un lenguaje de programación con sintaxis orientada al español. Esta versión permite ejecutar programas y proyectos desde la línea de comandos, con soporte para módulos, importaciones y manifiestos de proyecto.
 
 ## Instalación
 
