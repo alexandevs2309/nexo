@@ -10,7 +10,7 @@ Separar:
 
 No añadir al núcleo una función solo porque sea útil en una plataforma.
 
-## Alcance exacto del núcleo v0.5 (implementado y verificado)
+## Alcance actual del prototipo v0.5 (implementación observada; no equivale a conformidad completa)
 - Léxico: identificadores ASCII, literales numéricos, texto con escapes básicos, comentarios `#`.
 - Tipos: `entero`, `decimal`, `real`, `logico`, `texto`, `nulo`, `arreglo`, `lista`, `archivo`.
 - Expresiones: aritmética, comparación, lógicos, concatenación de texto, indexación, rangos.
@@ -18,8 +18,11 @@ No añadir al núcleo una función solo porque sea útil en una plataforma.
 - Funciones integradas: operaciones de texto y E/S de archivos/stdin.
 - CLI: `nuevo`, `run`/`ejecutar`, `analizar`, `formatear`, `inicializar`, `probar`, `instalar`, `paquetes`, `demo`, ayuda, versión.
 - Paquetes locales: manifiesto `basilisco.toml`, resolución en `paquetes/` y `vendor/`, bloqueo `basilisco.lock`.
+- Análisis: `analizar` comprueba léxico y sintaxis. No hay un pase semántico estático general; los errores semánticos se detectan principalmente al evaluar.
+- Modelo de ejecución: intérprete del AST. No hay una IR ni una VM implementadas en este repositorio.
+- Concurrencia: primitivas `iniciar_tarea`/`esperar_tarea`; sin canales, cancelación ni sincronización de usuario.
 
 ## Fuera del núcleo v0.5
 - Paquetes remotos, firmas e integridad; dependencias transitivas y rangos semver.
-- Concurrencia con cancelación, canales y sincronización; FFI; biblioteca estándar extensa; depurador/IDE.
+- Análisis semántico estático general; IR/VM; backends nativos o WASM; FFI; biblioteca estándar extensa; depurador/IDE.
 - Visibilidad de módulos más fina que `exportar` y resolución de rutas relativa al archivo importador.

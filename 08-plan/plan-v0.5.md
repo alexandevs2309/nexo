@@ -4,17 +4,24 @@
 
 ## Objetivo
 
-Hacer que una persona pueda empezar un programa BASILISCO desde una carpeta vacía, sin crear el primer archivo a mano.
+Consolidar una candidata utilizable para proyectos pequeños: instalación y creación de proyectos, ejecución de programas, módulos y dependencias locales, con comportamiento documentado y reproducible. v0.5 no promete un lenguaje completo ni backends multiplataforma.
 
-## Alcance inicial
+## Ya implementado en el prototipo
 
-- `basilisco nuevo` crea `hola.bsk` en la carpeta actual.
-- `basilisco nuevo nombre` crea `nombre.bsk`; si se indica `.bsk`, la conserva.
-- No sobrescribir archivos existentes ni aceptar otras extensiones.
-- El archivo generado debe poder ejecutarse con `basilisco run archivo.bsk`.
-- Mantener el mismo comportamiento con el alias `bsk`.
-- Actualizar la guía de instalación y validar el flujo en Linux, macOS y Windows.
+- Creación de archivos y proyectos con la CLI `basilisco`/`bsk`.
+- Ejecución interpretada de archivos y proyectos.
+- Módulos locales, alias y exportaciones públicas.
+- Resolución local de dependencias y generación/lectura de `basilisco.lock`.
+- Comandos `analizar`, `formatear`, `probar`, `instalar` y `paquetes`.
 
-## Fuera de este incremento
+## Trabajo necesario para cerrar la candidata
 
-Generación de directorios completos, módulos e importaciones, gestor de paquetes, depurador e IDE. Se priorizarán después de recibir evidencia de uso de la primera distribución.
+- Alinear README, especificación normativa, alcance del núcleo y registro de brechas con el comportamiento real.
+- Definir el alcance garantizado de v0.5 y cubrirlo con pruebas positivas, negativas y de límites.
+- Comprobar instalación y flujos de CLI en Linux, macOS y Windows; la presencia de una ruta de código no demuestra soporte de plataforma.
+- Dejar claro que `analizar` solo valida léxico y sintaxis y que la semántica se valida principalmente durante ejecución.
+- Documentar explícitamente las limitaciones del gestor local, concurrencia, módulos y biblioteca estándar.
+
+## Fuera de alcance de v0.5
+
+Análisis semántico estático general, VM/IR, descarga de paquetes, dependencias transitivas, verificación de integridad, FFI, backends nativos/WASM, biblioteca estándar extensa, depurador e IDE. El árbol actual no contiene una VM ni una IR implementadas.
