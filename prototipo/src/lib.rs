@@ -4,12 +4,14 @@
 //! Contratos de decisión: ADR-0003 (léxico), ADR-0004 (precedencia).
 //! Identidad y CLI: ADR-0009 y ADR-0010.
 
+pub mod cargador;
 pub mod cli;
 pub mod evaluador;
 pub mod formateador;
 pub mod lexer;
 pub mod paquetes;
 pub mod parser;
+pub mod proyecto;
 pub mod token;
 pub mod valor;
 

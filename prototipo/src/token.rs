@@ -52,6 +52,8 @@ pub enum TipoToken {
     CorcheteIzq,
     /// Corchete derecho `]`
     CorcheteDer,
+    /// Punto `.` para acceso a miembro (ADR-0017 D8).
+    Punto,
     /// Dos puntos `:` para anotaciones de tipo.
     DosPuntos,
     /// Flecha `->` para anotación de tipo de retorno (ADR-0011).
@@ -80,10 +82,14 @@ pub enum TipoToken {
     Rescatar,
     /// Palabra clave `importar` (módulos básicos).
     Importar,
-    /// Palabra clave `como` (alias de importación).
-    Como,
     /// Palabra clave `exportar` (módulos avanzados: visibilidad).
     Exportar,
+    /// Palabra clave `usar` (ADR-0017 D1).
+    Usar,
+    /// Palabra clave `como` (ADR-0017 D1).
+    Como,
+    /// Palabra clave `publico` (ADR-0017 D2).
+    Publico,
     /// Fin de línea (LF o CRLF). El parser decide contextualmente si termina sentencia.
     FinDeLinea,
     Fin,
@@ -103,14 +109,23 @@ pub struct ErrorLexico {
     pub mensaje: String,
     pub linea: usize,
     pub columna: usize,
+    /// Archivo de origen, si está disponible (ADR-0017 D5).
+    pub archivo: Option<String>,
 }
 
 impl std::fmt::Display for ErrorLexico {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "error léxico [{}:{}]: {}",
-            self.linea, self.columna, self.mensaje
-        )
+        match &self.archivo {
+            Some(archivo) => write!(
+                f,
+                "error léxico [{}:{}:{}]: {}",
+                archivo, self.linea, self.columna, self.mensaje
+            ),
+            None => write!(
+                f,
+                "error léxico [{}:{}]: {}",
+                self.linea, self.columna, self.mensaje
+            ),
+        }
     }
 }

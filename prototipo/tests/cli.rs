@@ -31,7 +31,7 @@ fn ayuda_muestra_run() {
     let salida = ejecutar(env!("CARGO_BIN_EXE_bsk"), &["--help"]);
     assert!(salida.status.success());
     let stdout = texto(&salida.stdout);
-    assert!(stdout.contains("run <archivo.bsk>"));
+    assert!(stdout.contains("run [<archivo.bsk>]"));
     assert!(stdout.contains(".nexo"));
 }
 
@@ -145,7 +145,7 @@ fn aceptacion_v04_diagnostica_errores_con_archivo_y_ubicacion() {
     assert!(!salida.status.success());
     assert!(stderr.contains(ruta), "stderr: {stderr}");
     assert!(
-        stderr.contains("error de ejecución [E1001] [2:1]"),
+        stderr.contains("E1001") && stderr.contains("examples/aceptacion_error_v04.bsk:2:1"),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("división entre cero"), "stderr: {stderr}");
