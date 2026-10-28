@@ -37,6 +37,54 @@ primaria        = ENTERO | DECIMAL | REAL | "verdadero" | "falso"
                 | IDENTIFICADOR | "(" , expresion , ")" ;
 ```
 
+## Gramática ampliada (v0.5, alineada con el parser real)
+```ebnf
+programa        = { fin_de_linea } , { sentencia , { fin_de_linea } } ;
+sentencia       = declaracion | asignacion | asignacion_indice | condicional
+                | bucle_mientras | bucle_para_cada | bloque | funcion | retorno
+                | mostrar | mostrar_sin_salto | intentar_rescatar | importar
+                | romper | continuar | expresion ;
+declaracion     = ("sea" , IDENTIFICADOR , [ ":" , tipo ] , "=" , expresion)
+                | ("var" | "dato" | "const") , IDENTIFICADOR , ":" , tipo , "=" , expresion ;
+asignacion      = IDENTIFICADOR , "=" , expresion ;
+asignacion_indice = expresion , "[" , expresion , "]" , "=" , expresion ;
+condicional     = "si" , expresion , bloque , [ "sino" , ( condicional | bloque ) ] ;
+bucle_mientras  = "mientras" , expresion , bloque ;
+bucle_para_cada = "para" , "cada" , IDENTIFICADOR , "en" , expresion_iterable , bloque ;
+expresion_iterable = expresion | rango ;
+rango           = expresion , ( ".." | "..=" ) , expresion ;
+bloque          = "{" , { fin_de_linea } , [ sentencia , { fin_de_linea , sentencia } ] , { fin_de_linea } , "}" ;
+funcion         = "funcion" , IDENTIFICADOR , "(" , [ parametros ] , ")" , [ "->" , tipo ] , bloque ;
+parametros      = parametro , { "," , parametro } ;
+parametro       = IDENTIFICADOR , [ ":" , tipo ] ;
+retorno         = "retornar" , [ expresion ] ;
+mostrar         = "mostrar" , expresion ;
+mostrar_sin_salto = "mostrar_sin_salto" , expresion ;
+intentar_rescatar = "intentar" , bloque , "rescatar" , [ IDENTIFICADOR ] , bloque ;
+importar        = "importar" , CADENA ;
+romper          = "romper" ;
+continuar       = "continuar" ;
+
+tipo            = "entero" | "decimal" | "real" | "logico" | "texto" | "nulo"
+                | "arreglo" , "<" , tipo , "," , ENTERO , ">"
+                | "lista" , "<" , tipo , ">" ;
+
+expresion       = expresion_o ;
+expresion_o     = expresion_y , { "o" , expresion_y } ;
+expresion_y     = expresion_no , { "y" , expresion_no } ;
+expresion_no    = "no" , expresion_no | comparacion ;
+comparacion     = expresion_suma , [ comparador , expresion_suma ] ;
+comparador      = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+expresion_suma  = expresion_producto , { ( "+" | "-" ) , expresion_producto } ;
+expresion_producto = primaria , { ( "*" | "/" | "%" ) , primaria } ;
+primaria        = ENTERO | DECIMAL | REAL | "verdadero" | "falso" | "nulo"
+                | CADENA | IDENTIFICADOR | llamada | indexacion
+                | "(" , expresion , ")" | arreglo_literal | rango ;
+llamada         = IDENTIFICADOR , "(" , [ expresion , { "," , expresion } ] , ")" ;
+indexacion      = expresion , "[" , expresion , "]" ;
+arreglo_literal = "[" , [ expresion , { "," , expresion } ] , "]" ;
+```
+
 ## Precedencia normativa de referencia
 De mayor a menor, según ADR-0007:
 1. Paréntesis.

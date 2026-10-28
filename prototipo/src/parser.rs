@@ -175,6 +175,19 @@ pub enum Sentencia {
         linea: usize,
         columna: usize,
     },
+    /// `importar "ruta" [ como alias ]` (módulos básicos/avanzados).
+    Importar {
+        ruta: String,
+        alias: Option<String>,
+        linea: usize,
+        columna: usize,
+    },
+    /// `exportar sentencia` (módulos avanzados: visibilidad).
+    Exportar {
+        sentencia: Box<Sentencia>,
+        linea: usize,
+        columna: usize,
+    },
 }
 
 /// Anotación de tipo en declaraciones (var/dato/const).
@@ -354,6 +367,13 @@ impl Parser {
             self.pos += 1;
             self.terminar_sentencia()?;
             return Ok(Sentencia::Continuar { linea, columna });
+        } else if matches!(self.actual(), Some(TipoToken::Importar)) {
+            let st = self.sentencia_importar()?;
+            self.terminar_sentencia()?;
+            return Ok(st);
+        } else if matches!(self.actual(), Some(TipoToken::Exportar)) {
+            let st = self.sentencia_exportar()?;
+            return Ok(st);
         } else if matches!(self.actual(), Some(TipoToken::Intentar)) {
             let st = self.sentencia_intentar_rescatar()?;
             self.terminar_sentencia()?;
@@ -830,6 +850,51 @@ impl Parser {
             cuerpo_intentar,
             variable_error,
             cuerpo_rescatar,
+            linea,
+            columna,
+        })
+    }
+
+    fn sentencia_importar(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'importar'
+        let ruta = match self.actual() {
+            Some(TipoToken::Cadena(s)) => {
+                let r = s.clone();
+                self.pos += 1;
+                r
+            }
+            _ => return Err(self.error("se esperaba una cadena con la ruta del módulo")),
+        };
+        let alias = if matches!(self.actual(), Some(TipoToken::Como)) {
+            self.pos += 1; // 'como'
+            match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    let a = n.clone();
+                    self.pos += 1;
+                    Some(a)
+                }
+                _ => return Err(self.error("se esperaba un nombre de alias tras 'como'")),
+            }
+        } else {
+            None
+        };
+        Ok(Sentencia::Importar {
+            ruta,
+            alias,
+            linea,
+            columna,
+        })
+    }
+
+    fn sentencia_exportar(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'exportar'
+        let inner = self.sentencia()?;
+        Ok(Sentencia::Exportar {
+            sentencia: Box::new(inner),
             linea,
             columna,
         })

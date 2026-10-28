@@ -124,7 +124,7 @@ fn display_del_error_incluye_ubicacion_y_motivo() {
     let e = error_ejecucion("5 + 10 / 0");
     assert_eq!(
         e.to_string(),
-        "error de ejecución [1:5]: división entre cero"
+        "error de ejecución [E1001] [1:5]: división entre cero"
     );
 }
 

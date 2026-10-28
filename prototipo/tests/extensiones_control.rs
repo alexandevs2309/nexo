@@ -15,6 +15,14 @@ fn valor(fuente: &str) -> Valor {
 }
 
 #[test]
+fn rango_materializado_supera_limite_controlado() {
+    let fuente = "para cada n en 1..=100001 {\n  n\n}\n0";
+    let resultado = ejecutar(fuente);
+    assert!(resultado.is_err(), "debe rechazar rango excesivo");
+    assert!(format!("{:?}", resultado.unwrap_err()).contains("LimiteIteraciones"));
+}
+
+#[test]
 fn rango_exclusivo_no_incluye_el_extremo_final() {
     let fuente = "sea suma = 0\npara cada n en 1..3 {\n  suma = suma + n\n}\nsuma";
     assert_eq!(valor(fuente), Valor::Entero(3));

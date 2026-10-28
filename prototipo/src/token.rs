@@ -78,6 +78,12 @@ pub enum TipoToken {
     Intentar,
     /// Palabra clave `rescatar` (ADR-0014 §3.1).
     Rescatar,
+    /// Palabra clave `importar` (módulos básicos).
+    Importar,
+    /// Palabra clave `como` (alias de importación).
+    Como,
+    /// Palabra clave `exportar` (módulos avanzados: visibilidad).
+    Exportar,
     /// Fin de línea (LF o CRLF). El parser decide contextualmente si termina sentencia.
     FinDeLinea,
     Fin,

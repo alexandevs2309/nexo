@@ -6,7 +6,9 @@
 
 pub mod cli;
 pub mod evaluador;
+pub mod formateador;
 pub mod lexer;
+pub mod paquetes;
 pub mod parser;
 pub mod token;
 pub mod valor;

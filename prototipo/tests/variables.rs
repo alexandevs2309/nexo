@@ -113,7 +113,7 @@ fn error_variable_no_definida_tipeado_y_ubicado() {
     assert_eq!((e.linea, e.columna), (2, 9));
     assert_eq!(
         e.to_string(),
-        "error de ejecución [2:9]: variable no definida: descuento"
+        "error de ejecución [E1002] [2:9]: variable no definida: descuento"
     );
 }
 
