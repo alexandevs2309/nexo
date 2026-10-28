@@ -80,6 +80,10 @@ pub enum TipoToken {
     Intentar,
     /// Palabra clave `rescatar` (ADR-0014 §3.1).
     Rescatar,
+    /// Palabra clave `importar` (módulos básicos).
+    Importar,
+    /// Palabra clave `exportar` (módulos avanzados: visibilidad).
+    Exportar,
     /// Palabra clave `usar` (ADR-0017 D1).
     Usar,
     /// Palabra clave `como` (ADR-0017 D1).

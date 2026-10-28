@@ -7,14 +7,18 @@
 //! - Decimal: redondeo half-even, exceso de precisión redondea, exceso de rango = error.
 //! - Conversiones: solo implícitas sin pérdida (`entero→decimal`, `entero→real`).
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
+use std::collections::{HashMap, HashSet};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::thread;
 
 use crate::cargador::{CargadorModulos, SimbodoExportado};
 use crate::parser::{Expresion, Sentencia, TipoAnotacion};
 use crate::valor::{FACTOR_ESCALA, MotivoAritmetico, Valor};
-use std::path::PathBuf;
+use crate::{Lexer, Parser};
+use std::fs;
 
 /// Causa tipada de un error de ejecución (ADR-0005 §1.6 y ADR-0006 §1.5, ampliada ADR-0007).
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +31,8 @@ pub enum CausaError {
     DeclaracionDuplicada(String),
     /// Asignación con un tipo distinto al declarado y sin conversión implícita.
     AsignacionIncompatible { esperado: String, obtenido: String },
+    /// Reasignación de una variable inmutable (`dato`/`const`).
+    ReasignacionInmutable { nombre: String },
     /// Condición de `si`/`mientras` no es `lógico` (ADR-0007).
     CondicionNoLogica { obtenido: &'static str },
     /// Operando de `no`/`y`/`o` no es `lógico` (ADR-0007).
@@ -121,6 +127,13 @@ pub enum CausaError {
 /// Límite de iteraciones por ciclo `mientras` (protección frente a bucles infinitos).
 pub const LIMITE_ITERACIONES: usize = 100_000;
 
+static IMPORTANDO: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+static CACHE_MODULOS: LazyLock<Mutex<HashMap<PathBuf, Entorno>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[allow(clippy::type_complexity)]
+static TAREAS: LazyLock<Mutex<Vec<Option<thread::JoinHandle<Result<Valor, String>>>>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
 /// Nombres reservados que no pueden reutilizarse como funciones de usuario.
 pub const NOMBRES_RESERVADOS: &[&str] = &[
     "si",
@@ -142,10 +155,86 @@ pub const NOMBRES_RESERVADOS: &[&str] = &[
     "intentar",
     "rescatar",
     "leer",
-    "escribir",
+    "leer_entero",
+    "leer_decimal",
+    "leer_real",
+    "longitud",
+    "contiene",
+    "empieza_con",
+    "termina_con",
+    "es_vacio",
+    "mayusculas",
+    "minusculas",
+    "recortar",
+    "reemplazar",
+    "subcadena",
+    "dividir",
+    "unir",
+    "a_entero",
+    "a_decimal",
+    "a_real",
+    "texto",
     "abrir",
+    "leer_linea",
+    "leer_todo",
+    "escribir",
+    "escribir_linea",
     "cerrar",
+    "fin_de_archivo",
+    "abs",
+    "max",
+    "min",
+    "raiz",
+    "potencia",
+    "iniciar_tarea",
+    "esperar_tarea",
 ];
+
+impl CausaError {
+    /// Código estable para catálogo de errores (GAP-004).
+    pub fn codigo(&self) -> &'static str {
+        match self {
+            CausaError::Aritmetica(_) => "E1001",
+            CausaError::VariableNoDefinida(_) => "E1002",
+            CausaError::DeclaracionDuplicada(_) => "E1003",
+            CausaError::AsignacionIncompatible { .. } => "E1004",
+            CausaError::ReasignacionInmutable { .. } => "E1029",
+            CausaError::CondicionNoLogica { .. } => "E1005",
+            CausaError::OperandoNoLogico { .. } => "E1006",
+            CausaError::TiposIncompatibles { .. } => "E1007",
+            CausaError::LimiteIteraciones { .. } => "E1008",
+            CausaError::FirmaInvalida { .. } => "E1009",
+            CausaError::RetornoAusente { .. } => "E1010",
+            CausaError::TipoDeRetornoIncompatible { .. } => "E1011",
+            CausaError::RetornarFueraDeBloque => "E1012",
+            CausaError::TipoParametroIncompatible { .. } => "E1013",
+            CausaError::RetornoIncompatibleConAnotacion { .. } => "E1014",
+            CausaError::SenalRomper => "E1015",
+            CausaError::SenalContinuar => "E1016",
+            CausaError::IteracionSobreNoColeccion { .. } => "E1017",
+            CausaError::RangoTipoInvalido { .. } => "E1018",
+            CausaError::ModificacionDuranteIteracion { .. } => "E1019",
+            CausaError::NombreReservado { .. } => "E1020",
+            CausaError::EntradaInvalida { .. } => "E1021",
+            CausaError::ArchivoNoEncontrado { .. } => "E1022",
+            CausaError::PermisosDenegados { .. } => "E1023",
+            CausaError::ErrorDeArchivo { .. } => "E1024",
+            CausaError::ArchivoYaCerrado => "E1025",
+            CausaError::IndiceTextoFueraDeRango { .. } => "E1026",
+            CausaError::ConversionTextoInvalida { .. } => "E1027",
+            CausaError::SeparadorVacio => "E1028",
+            CausaError::ModuloNoEncontrado { .. } => "E1030",
+            CausaError::CicloDeImportacion { .. } => "E1031",
+            CausaError::SimbodoPrivado { .. } => "E1032",
+            CausaError::SimbodoNoExportado { .. } => "E1033",
+            CausaError::ImportacionDuplicada { .. } => "E1034",
+            CausaError::ExtensionNoSoportada { .. } => "E1035",
+            CausaError::RutaNoPermitida { .. } => "E1036",
+            CausaError::SentenciaNoPermitidaEnModulo { .. } => "E1037",
+            CausaError::ImportacionesNoDisponibles => "E1038",
+        }
+    }
+}
 
 impl std::fmt::Display for CausaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -157,6 +246,9 @@ impl std::fmt::Display for CausaError {
                 f,
                 "asignación incompatible: se esperaba {esperado} y se obtuvo {obtenido}"
             ),
+            CausaError::ReasignacionInmutable { nombre } => {
+                write!(f, "no se puede reasignar la variable inmutable '{nombre}'")
+            }
             CausaError::CondicionNoLogica { obtenido } => {
                 write!(f, "la condición debe ser lógica, se obtuvo {obtenido}")
             }
@@ -293,13 +385,13 @@ impl std::fmt::Display for ErrorEjecucion {
         match &self.archivo {
             Some(archivo) => write!(
                 f,
-                "error de ejecución [{}:{}:{}]: {}",
-                archivo, self.linea, self.columna, self.mensaje
+                "error de ejecución [{}] [{}:{}:{}]: {}",
+                self.causa.codigo(), archivo, self.linea, self.columna, self.mensaje
             ),
             None => write!(
                 f,
-                "error de ejecución [{}:{}]: {}",
-                self.linea, self.columna, self.mensaje
+                "error de ejecución [{}] [{}:{}]: {}",
+                self.causa.codigo(), self.linea, self.columna, self.mensaje
             ),
         }
     }
@@ -351,8 +443,10 @@ pub struct FuncionDef {
 pub struct Entorno {
     ambitos: Vec<HashMap<String, VariableInfo>>,
     funciones: HashMap<String, FuncionDef>,
+    /// Nombres exportados por el módulo en ejecución.
+    exportaciones: HashSet<String>,
     /// Cargador de módulos compartido (ADR-0017, Fase 3).
-    pub cargador: Option<Rc<RefCell<CargadorModulos>>>,
+    pub cargador: Option<Arc<Mutex<CargadorModulos>>>,
     /// Archivo de origen asociado a este entorno (para diagnósticos).
     pub archivo: Option<String>,
 }
@@ -362,16 +456,18 @@ impl Entorno {
         Entorno {
             ambitos: vec![HashMap::new()],
             funciones: HashMap::new(),
+            exportaciones: HashSet::new(),
             cargador: None,
             archivo: None,
         }
     }
 
     /// Crea un entorno con un cargador de módulos compartido.
-    pub fn con_cargador(cargador: Rc<RefCell<CargadorModulos>>, archivo: Option<String>) -> Self {
+    pub fn con_cargador(cargador: Arc<Mutex<CargadorModulos>>, archivo: Option<String>) -> Self {
         Entorno {
             ambitos: vec![HashMap::new()],
             funciones: HashMap::new(),
+            exportaciones: HashSet::new(),
             cargador: Some(cargador),
             archivo,
         }
@@ -441,6 +537,15 @@ impl Entorno {
                     es_const,
                     publico: _,
                 } => {
+                    if NOMBRES_RESERVADOS.contains(&nombre.as_str()) {
+                        return Err(error(
+                            CausaError::NombreReservado {
+                                nombre: nombre.clone(),
+                            },
+                            linea,
+                            columna,
+                        ));
+                    }
                     if self.existe_en_ambito_actual(&nombre) {
                         return Err(error(
                             CausaError::DeclaracionDuplicada(nombre.clone()),
@@ -497,9 +602,8 @@ impl Entorno {
                     // Verificar mutabilidad
                     if !info.mutable {
                         return Err(error(
-                            CausaError::AsignacionIncompatible {
-                                esperado: "variable inmutable (dato/const)".into(),
-                                obtenido: "intento de reasignación".to_string(),
+                            CausaError::ReasignacionInmutable {
+                                nombre: nombre.clone(),
                             },
                             linea,
                             columna,
@@ -713,6 +817,123 @@ impl Entorno {
                     };
                 }
                 Sentencia::Funcion { .. } => {}
+                Sentencia::Importar {
+                    ruta,
+                    alias,
+                    linea,
+                    columna,
+                } => {
+                    let ruta_path = resolver_modulo(&ruta);
+                    let modulo = {
+                        let cache = CACHE_MODULOS.lock().unwrap();
+                        if let Some(m) = cache.get(&ruta_path) {
+                            m.clone()
+                        } else {
+                            drop(cache);
+                            {
+                                let mut guard = IMPORTANDO.lock().unwrap();
+                                if !guard.insert(ruta_path.clone()) {
+                                    return Err(error(
+                                        CausaError::ErrorDeArchivo {
+                                            ruta: ruta.clone(),
+                                            detalle: "ciclo de importación".to_string(),
+                                        },
+                                        linea,
+                                        columna,
+                                    ));
+                                }
+                            }
+                            let fuente = match fs::read_to_string(&ruta_path) {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    IMPORTANDO.lock().unwrap().remove(&ruta_path);
+                                    return Err(error(
+                                        CausaError::ErrorDeArchivo {
+                                            ruta: ruta.clone(),
+                                            detalle: e.to_string(),
+                                        },
+                                        linea,
+                                        columna,
+                                    ));
+                                }
+                            };
+                            let tokens = match Lexer::nuevo(&fuente).tokenizar() {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    IMPORTANDO.lock().unwrap().remove(&ruta_path);
+                                    return Err(error(
+                                        CausaError::ErrorDeArchivo {
+                                            ruta: ruta.clone(),
+                                            detalle: e.to_string(),
+                                        },
+                                        linea,
+                                        columna,
+                                    ));
+                                }
+                            };
+                            let sentencias = match Parser::nuevo(tokens).parsear_programa() {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    IMPORTANDO.lock().unwrap().remove(&ruta_path);
+                                    return Err(error(
+                                        CausaError::ErrorDeArchivo {
+                                            ruta: ruta.clone(),
+                                            detalle: e.to_string(),
+                                        },
+                                        linea,
+                                        columna,
+                                    ));
+                                }
+                            };
+                            let mut env_mod = Entorno::nueva();
+                            let resultado = env_mod.ejecutar_sentencias(&sentencias);
+                            IMPORTANDO.lock().unwrap().remove(&ruta_path);
+                            resultado?;
+                            let mut cache = CACHE_MODULOS.lock().unwrap();
+                            cache.insert(ruta_path.clone(), env_mod.clone());
+                            env_mod
+                        }
+                    };
+                    let exportar_todo = modulo.exportaciones.is_empty();
+                    for (nombre, func) in &modulo.funciones {
+                        if exportar_todo || modulo.exportaciones.contains(nombre) {
+                            let destino = if let Some(alias) = &alias {
+                                format!("{}_{}", alias, nombre)
+                            } else {
+                                nombre.clone()
+                            };
+                            self.funciones.insert(destino, func.clone());
+                        }
+                    }
+                    if let Some(ambito) = modulo.ambitos.first() {
+                        for (nombre, info) in ambito {
+                            if exportar_todo || modulo.exportaciones.contains(nombre) {
+                                let destino = if let Some(alias) = &alias {
+                                    format!("{}_{}", alias, nombre)
+                                } else {
+                                    nombre.clone()
+                                };
+                                self.ambitos[0].insert(destino, info.clone());
+                            }
+                        }
+                    }
+                }
+
+                Sentencia::Exportar { sentencia, .. } => {
+                    let nombre_exportado = match &*sentencia {
+                        Sentencia::Declaracion { nombre, .. } => Some(nombre.clone()),
+                        Sentencia::Funcion { nombre, .. } => Some(nombre.clone()),
+                        _ => None,
+                    };
+                    let resultado =
+                        self.ejecutar_funcion_sentencias(&[*sentencia.clone()], nombre_funcion);
+                    if let Some(nombre) = nombre_exportado {
+                        self.exportaciones.insert(nombre);
+                    }
+                    if let Some(v) = resultado? {
+                        return Ok(Some(v));
+                    }
+                }
                 Sentencia::Mostrar { valor, .. } => {
                     let v = evaluar_con(&valor, self)?;
                     println!("{v}");
@@ -766,6 +987,24 @@ impl Entorno {
                     linea,
                     columna,
                 } => {
+                    let variable_iterable = match iterable {
+                        Expresion::Variable { ref nombre, .. } => Some(nombre.clone()),
+                        _ => None,
+                    };
+                    let snapshot_iterable = if let Some(nombre) = &variable_iterable {
+                        evaluar_con(
+                            &Expresion::Variable {
+                                nombre: nombre.clone(),
+                                linea,
+                                columna,
+                            },
+                            self,
+                        )
+                        .ok()
+                    } else {
+                        None
+                    };
+
                     let valores = match evaluar_con(&iterable, self)? {
                         Valor::Arreglo(v) | Valor::Lista(v) => v,
                         Valor::Texto(s) => s.chars().map(|c| Valor::Texto(c.to_string())).collect(),
@@ -792,6 +1031,29 @@ impl Entorno {
                             },
                         );
                         let resultado = self.ejecutar_bloque_funcion(&cuerpo, nombre_funcion);
+
+                        if let (Some(nombre), Some(snapshot)) =
+                            (&variable_iterable, &snapshot_iterable)
+                            && let Ok(actual) = evaluar_con(
+                                &Expresion::Variable {
+                                    nombre: nombre.clone(),
+                                    linea,
+                                    columna,
+                                },
+                                self,
+                            )
+                            && actual != *snapshot
+                        {
+                            self.ambitos.pop();
+                            return Err(error(
+                                CausaError::ModificacionDuranteIteracion {
+                                    variable: nombre.clone(),
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+
                         self.ambitos.pop();
                         match resultado {
                             Ok(Some(v)) => return Ok(Some(v)),
@@ -847,11 +1109,13 @@ impl Entorno {
                                 if let Some(valor) = r? {
                                     return Ok(Some(valor));
                                 }
-                            }
-                            // Sin variable de captura, se ejecuta el bloque de rescate sin contexto.
-                            let r = self.ejecutar_bloque_funcion(&cuerpo_rescatar, nombre_funcion);
-                            if let Some(valor) = r? {
-                                return Ok(Some(valor));
+                            } else {
+                                // Sin variable de captura, se ejecuta el bloque de rescate sin contexto.
+                                let r =
+                                    self.ejecutar_bloque_funcion(&cuerpo_rescatar, nombre_funcion);
+                                if let Some(valor) = r? {
+                                    return Ok(Some(valor));
+                                }
                             }
                         }
                     }
@@ -900,6 +1164,15 @@ impl Entorno {
                     es_const,
                     publico: _,
                 } => {
+                    if NOMBRES_RESERVADOS.contains(&nombre.as_str()) {
+                        return Err(error(
+                            CausaError::NombreReservado {
+                                nombre: nombre.clone(),
+                            },
+                            linea,
+                            columna,
+                        ));
+                    }
                     if self.existe_en_ambito_actual(&nombre) {
                         return Err(error(
                             CausaError::DeclaracionDuplicada(nombre.clone()),
@@ -956,9 +1229,8 @@ impl Entorno {
                     // Verificar mutabilidad
                     if !info.mutable {
                         return Err(error(
-                            CausaError::AsignacionIncompatible {
-                                esperado: "variable inmutable (dato/const)".into(),
-                                obtenido: "intento de reasignación".to_string(),
+                            CausaError::ReasignacionInmutable {
+                                nombre: nombre.clone(),
                             },
                             linea,
                             columna,
@@ -1017,6 +1289,120 @@ impl Entorno {
                         },
                     );
                 }
+                Sentencia::Importar {
+                    ruta,
+                    alias,
+                    linea,
+                    columna,
+                } => {
+                    let ruta_path = resolver_modulo(&ruta);
+                    let modulo = {
+                        let cache = CACHE_MODULOS.lock().unwrap();
+                        if let Some(m) = cache.get(&ruta_path) {
+                            m.clone()
+                        } else {
+                            drop(cache);
+                            {
+                                let mut guard = IMPORTANDO.lock().unwrap();
+                                if !guard.insert(ruta_path.clone()) {
+                                    return Err(error(
+                                        CausaError::ErrorDeArchivo {
+                                            ruta: ruta.clone(),
+                                            detalle: "ciclo de importación".to_string(),
+                                        },
+                                        linea,
+                                        columna,
+                                    ));
+                                }
+                            }
+                            let fuente = match fs::read_to_string(&ruta_path) {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    IMPORTANDO.lock().unwrap().remove(&ruta_path);
+                                    return Err(error(
+                                        CausaError::ErrorDeArchivo {
+                                            ruta: ruta.clone(),
+                                            detalle: e.to_string(),
+                                        },
+                                        linea,
+                                        columna,
+                                    ));
+                                }
+                            };
+                            let tokens = match Lexer::nuevo(&fuente).tokenizar() {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    IMPORTANDO.lock().unwrap().remove(&ruta_path);
+                                    return Err(error(
+                                        CausaError::ErrorDeArchivo {
+                                            ruta: ruta.clone(),
+                                            detalle: e.to_string(),
+                                        },
+                                        linea,
+                                        columna,
+                                    ));
+                                }
+                            };
+                            let sentencias = match Parser::nuevo(tokens).parsear_programa() {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    IMPORTANDO.lock().unwrap().remove(&ruta_path);
+                                    return Err(error(
+                                        CausaError::ErrorDeArchivo {
+                                            ruta: ruta.clone(),
+                                            detalle: e.to_string(),
+                                        },
+                                        linea,
+                                        columna,
+                                    ));
+                                }
+                            };
+                            let mut env_mod = Entorno::nueva();
+                            let resultado = env_mod.ejecutar_sentencias(&sentencias);
+                            IMPORTANDO.lock().unwrap().remove(&ruta_path);
+                            resultado?;
+                            let mut cache = CACHE_MODULOS.lock().unwrap();
+                            cache.insert(ruta_path.clone(), env_mod.clone());
+                            env_mod
+                        }
+                    };
+                    let exportar_todo = modulo.exportaciones.is_empty();
+                    for (nombre, func) in &modulo.funciones {
+                        if exportar_todo || modulo.exportaciones.contains(nombre) {
+                            let destino = if let Some(alias) = &alias {
+                                format!("{}_{}", alias, nombre)
+                            } else {
+                                nombre.clone()
+                            };
+                            self.funciones.insert(destino, func.clone());
+                        }
+                    }
+                    if let Some(ambito) = modulo.ambitos.first() {
+                        for (nombre, info) in ambito {
+                            if exportar_todo || modulo.exportaciones.contains(nombre) {
+                                let destino = if let Some(alias) = &alias {
+                                    format!("{}_{}", alias, nombre)
+                                } else {
+                                    nombre.clone()
+                                };
+                                self.ambitos[0].insert(destino, info.clone());
+                            }
+                        }
+                    }
+                }
+
+                Sentencia::Exportar { sentencia, .. } => {
+                    let nombre_exportado = match &*sentencia {
+                        Sentencia::Declaracion { nombre, .. } => Some(nombre.clone()),
+                        Sentencia::Funcion { nombre, .. } => Some(nombre.clone()),
+                        _ => None,
+                    };
+                    let resultado = self.ejecutar_sentencias(&[*sentencia.clone()]);
+                    if let Some(nombre) = nombre_exportado {
+                        self.exportaciones.insert(nombre);
+                    }
+                    resultado?;
+                }
                 Sentencia::Mostrar { valor, .. } => {
                     let v = evaluar_con(&valor, self)?;
                     println!("{v}");
@@ -1035,6 +1421,24 @@ impl Entorno {
                     linea,
                     columna,
                 } => {
+                    let variable_iterable = match iterable {
+                        Expresion::Variable { ref nombre, .. } => Some(nombre.clone()),
+                        _ => None,
+                    };
+                    let snapshot_iterable = if let Some(nombre) = &variable_iterable {
+                        evaluar_con(
+                            &Expresion::Variable {
+                                nombre: nombre.clone(),
+                                linea,
+                                columna,
+                            },
+                            self,
+                        )
+                        .ok()
+                    } else {
+                        None
+                    };
+
                     let valores = match evaluar_con(&iterable, self)? {
                         Valor::Arreglo(v) | Valor::Lista(v) => v,
                         Valor::Texto(s) => s.chars().map(|c| Valor::Texto(c.to_string())).collect(),
@@ -1061,6 +1465,29 @@ impl Entorno {
                             },
                         );
                         let result = self.ejecutar_bloque(&cuerpo);
+
+                        if let (Some(nombre), Some(snapshot)) =
+                            (&variable_iterable, &snapshot_iterable)
+                            && let Ok(actual) = evaluar_con(
+                                &Expresion::Variable {
+                                    nombre: nombre.clone(),
+                                    linea,
+                                    columna,
+                                },
+                                self,
+                            )
+                            && actual != *snapshot
+                        {
+                            self.ambitos.pop();
+                            return Err(error(
+                                CausaError::ModificacionDuranteIteracion {
+                                    variable: nombre.clone(),
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+
                         self.ambitos.pop();
                         match result {
                             Ok(_) => {}
@@ -1364,8 +1791,8 @@ impl Entorno {
                                         self.funciones.insert(nombre.clone(), f.clone());
                                     }
                                 }
-                            } else if modulo.entorno.borrow().variable(&nombre).is_some()
-                                || modulo.entorno.borrow().funcion(&nombre).is_some()
+                            } else if modulo.entorno.lock().unwrap().variable(&nombre).is_some()
+                                || modulo.entorno.lock().unwrap().funcion(&nombre).is_some()
                             {
                                 return Err(error(
                                     CausaError::SimbodoPrivado {
@@ -1647,6 +2074,14 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             linea,
             columna,
         } => {
+            if es_builtin(nombre) {
+                let mut vals = Vec::new();
+                for a in argumentos {
+                    vals.push(evaluar_con(a, env)?);
+                }
+                return evaluar_builtin(nombre, &vals, *linea, *columna, env);
+            }
+
             let fdef = env.funciones.get(nombre).cloned().ok_or_else(|| {
                 error(
                     CausaError::VariableNoDefinida(nombre.clone()),
@@ -1699,6 +2134,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             let mut nuevo_env = Entorno {
                 ambitos: vec![HashMap::new()],
                 funciones: env.funciones.clone(),
+                exportaciones: HashSet::new(),
                 cargador: env.cargador.clone(),
                 archivo: env.archivo.clone(),
             };
@@ -1824,7 +2260,23 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                 }
             };
 
-            let mut valores = Vec::new();
+            let cardinalidad = if inicio_int > fin_int {
+                0usize
+            } else {
+                let diferencia = (fin_int - inicio_int) as usize;
+                diferencia.saturating_add(usize::from(*inclusivo))
+            };
+            if cardinalidad > LIMITE_ITERACIONES {
+                return Err(error(
+                    CausaError::LimiteIteraciones {
+                        limite: LIMITE_ITERACIONES,
+                    },
+                    *linea,
+                    *columna,
+                ));
+            }
+
+            let mut valores = Vec::with_capacity(cardinalidad);
             let mut actual = inicio_int;
             while if *inclusivo {
                 actual <= fin_int
@@ -1950,8 +2402,8 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                                 ))
                             }
                         }
-                    } else if m.entorno.borrow().variable(miembro).is_some()
-                        || m.entorno.borrow().funcion(miembro).is_some()
+                    } else if m.entorno.lock().unwrap().variable(miembro).is_some()
+                        || m.entorno.lock().unwrap().funcion(miembro).is_some()
                     {
                         Err(error(
                             CausaError::SimbodoPrivado {
@@ -2024,7 +2476,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             let fdef =
                 if let Some(SimbodoExportado::Funcion(f)) = modulo.exportaciones.get(&miembro) {
                     f.clone()
-                } else if modulo.entorno.borrow().funcion(&miembro).is_some() {
+                } else if modulo.entorno.lock().unwrap().funcion(&miembro).is_some() {
                     return Err(error(
                         CausaError::SimbodoPrivado {
                             nombre: miembro.clone(),
@@ -2087,7 +2539,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             }
 
             // Execute function body in module's entorno.
-            let mut mod_env = modulo.entorno.borrow().clone();
+            let mut mod_env = modulo.entorno.lock().unwrap().clone();
             // Register the function in the module env (already there).
             // Insert parameters.
             mod_env.ambitos.push(HashMap::new());
@@ -2248,6 +2700,1303 @@ fn comparar(
             columna,
         )),
     }
+}
+
+fn es_builtin(nombre: &str) -> bool {
+    matches!(
+        nombre,
+        "leer"
+            | "leer_entero"
+            | "leer_decimal"
+            | "leer_real"
+            | "longitud"
+            | "contiene"
+            | "empieza_con"
+            | "termina_con"
+            | "es_vacio"
+            | "mayusculas"
+            | "minusculas"
+            | "recortar"
+            | "reemplazar"
+            | "subcadena"
+            | "dividir"
+            | "unir"
+            | "a_entero"
+            | "a_decimal"
+            | "a_real"
+            | "texto"
+            | "abrir"
+            | "leer_linea"
+            | "leer_todo"
+            | "escribir"
+            | "escribir_linea"
+            | "cerrar"
+            | "fin_de_archivo"
+            | "abs"
+            | "max"
+            | "min"
+            | "raiz"
+            | "potencia"
+            | "iniciar_tarea"
+            | "esperar_tarea"
+    )
+}
+
+fn err_builtin(causa: CausaError, linea: usize, columna: usize) -> ErrorEjecucion {
+    error(causa, linea, columna)
+}
+
+fn evaluar_builtin(
+    nombre: &str,
+    args: &[Valor],
+    linea: usize,
+    columna: usize,
+    entorno: &Entorno,
+) -> Result<Valor, ErrorEjecucion> {
+    match nombre {
+        "leer" => {
+            if !args.is_empty() {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 0,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let mut entrada = String::new();
+            match io::stdin().lock().read_line(&mut entrada) {
+                Ok(0) => Ok(Valor::Texto(String::new())),
+                Ok(_) => {
+                    if entrada.ends_with('\n') {
+                        entrada.pop();
+                    }
+                    if entrada.ends_with('\r') {
+                        entrada.pop();
+                    }
+                    Ok(Valor::Texto(entrada))
+                }
+                Err(e) => Err(err_builtin(
+                    CausaError::ErrorDeArchivo {
+                        ruta: "<stdin>".to_string(),
+                        detalle: e.to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "leer_entero" => {
+            if !args.is_empty() {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 0,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let mut entrada = String::new();
+            io::stdin().lock().read_line(&mut entrada).map_err(|e| {
+                err_builtin(
+                    CausaError::ErrorDeArchivo {
+                        ruta: "<stdin>".to_string(),
+                        detalle: e.to_string(),
+                    },
+                    linea,
+                    columna,
+                )
+            })?;
+            if entrada.ends_with('\n') {
+                entrada.pop();
+            }
+            if entrada.ends_with('\r') {
+                entrada.pop();
+            }
+            let texto = entrada.trim();
+            match texto.parse::<i64>() {
+                Ok(v) => Ok(Valor::Entero(v)),
+                Err(_) => Err(err_builtin(
+                    CausaError::EntradaInvalida {
+                        esperado: "entero".to_string(),
+                        obtenido: entrada,
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "leer_decimal" => {
+            if !args.is_empty() {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 0,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let mut entrada = String::new();
+            io::stdin().lock().read_line(&mut entrada).map_err(|e| {
+                err_builtin(
+                    CausaError::ErrorDeArchivo {
+                        ruta: "<stdin>".to_string(),
+                        detalle: e.to_string(),
+                    },
+                    linea,
+                    columna,
+                )
+            })?;
+            if entrada.ends_with('\n') {
+                entrada.pop();
+            }
+            if entrada.ends_with('\r') {
+                entrada.pop();
+            }
+            let texto = entrada.trim();
+            match Valor::decimal_desde_lexema(texto) {
+                Ok(v) => Ok(v),
+                Err(_) => Err(err_builtin(
+                    CausaError::EntradaInvalida {
+                        esperado: "decimal".to_string(),
+                        obtenido: entrada,
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "leer_real" => {
+            if !args.is_empty() {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 0,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let mut entrada = String::new();
+            io::stdin().lock().read_line(&mut entrada).map_err(|e| {
+                err_builtin(
+                    CausaError::ErrorDeArchivo {
+                        ruta: "<stdin>".to_string(),
+                        detalle: e.to_string(),
+                    },
+                    linea,
+                    columna,
+                )
+            })?;
+            if entrada.ends_with('\n') {
+                entrada.pop();
+            }
+            if entrada.ends_with('\r') {
+                entrada.pop();
+            }
+            let texto = entrada.trim();
+            match texto.parse::<f64>() {
+                Ok(v) => Ok(Valor::Real(v)),
+                Err(_) => Err(err_builtin(
+                    CausaError::EntradaInvalida {
+                        esperado: "real".to_string(),
+                        obtenido: entrada,
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "longitud" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Texto(t) => Ok(Valor::Entero(t.chars().count() as i64)),
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "contiene" => binario_texto_logico(args, nombre, linea, columna, |t, sub| t.contains(sub)),
+        "empieza_con" => {
+            binario_texto_logico(args, nombre, linea, columna, |t, sub| t.starts_with(sub))
+        }
+        "termina_con" => {
+            binario_texto_logico(args, nombre, linea, columna, |t, sub| t.ends_with(sub))
+        }
+        "es_vacio" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Texto(t) => Ok(Valor::Logico(t.is_empty())),
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "mayusculas" => unario_texto(args, nombre, linea, columna, |t| t.to_uppercase()),
+        "minusculas" => unario_texto(args, nombre, linea, columna, |t| t.to_lowercase()),
+        "recortar" => unario_texto(args, nombre, linea, columna, |t| t.trim().to_string()),
+        "reemplazar" => {
+            if args.len() != 3 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 3,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1], &args[2]) {
+                (Valor::Texto(t), Valor::Texto(buscar), Valor::Texto(nuevo)) => {
+                    Ok(Valor::Texto(t.replace(buscar, nuevo)))
+                }
+                _ => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto".to_string(),
+                        obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "subcadena" => {
+            if args.len() != 3 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 3,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1], &args[2]) {
+                (Valor::Texto(t), Valor::Entero(inicio), Valor::Entero(fin)) => {
+                    let chars: Vec<char> = t.chars().collect();
+                    if *inicio < 0 || *fin < 0 || *inicio > *fin || *fin as usize > chars.len() {
+                        let indice = if *inicio < 0 {
+                            *inicio
+                        } else if *fin < 0 {
+                            *fin
+                        } else if *inicio > *fin {
+                            *inicio
+                        } else {
+                            *fin
+                        };
+                        return Err(err_builtin(
+                            CausaError::IndiceTextoFueraDeRango {
+                                indice,
+                                longitud: chars.len(),
+                            },
+                            linea,
+                            columna,
+                        ));
+                    }
+                    let s: String = chars[*inicio as usize..*fin as usize].iter().collect();
+                    Ok(Valor::Texto(s))
+                }
+                _ => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto, entero, entero".to_string(),
+                        obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "dividir" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Valor::Texto(t), Valor::Texto(sep)) => {
+                    if sep.is_empty() {
+                        return Err(err_builtin(CausaError::SeparadorVacio, linea, columna));
+                    }
+                    let partes: Vec<Valor> =
+                        t.split(sep).map(|p| Valor::Texto(p.to_string())).collect();
+                    Ok(Valor::Lista(partes))
+                }
+                _ => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto, texto".to_string(),
+                        obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "unir" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Valor::Lista(items), Valor::Texto(sep)) => {
+                    let mut partes = Vec::new();
+                    for item in items {
+                        match item {
+                            Valor::Texto(s) => partes.push(s.clone()),
+                            otro => {
+                                return Err(err_builtin(
+                                    CausaError::ConversionTextoInvalida {
+                                        valor: otro.to_string(),
+                                        esperado: "texto".to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                ));
+                            }
+                        }
+                    }
+                    Ok(Valor::Texto(partes.join(sep)))
+                }
+                _ => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "lista<texto>, texto".to_string(),
+                        obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "a_entero" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Texto(t) => match t.trim().parse::<i64>() {
+                    Ok(v) => Ok(Valor::Entero(v)),
+                    Err(_) => Err(err_builtin(
+                        CausaError::ConversionTextoInvalida {
+                            valor: t.clone(),
+                            esperado: "entero".to_string(),
+                        },
+                        linea,
+                        columna,
+                    )),
+                },
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "a_decimal" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Texto(t) => match Valor::decimal_desde_lexema(t.trim()) {
+                    Ok(v) => Ok(v),
+                    Err(_) => Err(err_builtin(
+                        CausaError::ConversionTextoInvalida {
+                            valor: t.clone(),
+                            esperado: "decimal".to_string(),
+                        },
+                        linea,
+                        columna,
+                    )),
+                },
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "a_real" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Texto(t) => match t.trim().parse::<f64>() {
+                    Ok(v) => Ok(Valor::Real(v)),
+                    Err(_) => Err(err_builtin(
+                        CausaError::ConversionTextoInvalida {
+                            valor: t.clone(),
+                            esperado: "real".to_string(),
+                        },
+                        linea,
+                        columna,
+                    )),
+                },
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "texto" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            Ok(Valor::Texto(args[0].to_string()))
+        }
+        "abrir" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Valor::Texto(ruta), Valor::Texto(modo)) => {
+                    let file_result = match modo.as_str() {
+                        "leer" => File::open(ruta),
+                        "escribir" => OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .truncate(true)
+                            .open(ruta),
+                        "agregar" => OpenOptions::new().append(true).create(true).open(ruta),
+                        _ => {
+                            return Err(err_builtin(
+                                CausaError::ErrorDeArchivo {
+                                    ruta: ruta.clone(),
+                                    detalle: format!("modo inválido: {modo}"),
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+                    };
+                    let archivo = match file_result {
+                        Ok(f) => f,
+                        Err(e) => {
+                            if e.kind() == io::ErrorKind::NotFound {
+                                return Err(err_builtin(
+                                    CausaError::ArchivoNoEncontrado { ruta: ruta.clone() },
+                                    linea,
+                                    columna,
+                                ));
+                            }
+                            if e.kind() == io::ErrorKind::PermissionDenied {
+                                return Err(err_builtin(
+                                    CausaError::PermisosDenegados { ruta: ruta.clone() },
+                                    linea,
+                                    columna,
+                                ));
+                            }
+                            return Err(err_builtin(
+                                CausaError::ErrorDeArchivo {
+                                    ruta: ruta.clone(),
+                                    detalle: e.to_string(),
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+                    };
+                    let (lector, escritor) = match modo.as_str() {
+                        "leer" => (Some(BufReader::new(archivo)), None),
+                        "escribir" | "agregar" => (None, Some(BufWriter::new(archivo))),
+                        _ => (None, None),
+                    };
+                    Ok(Valor::Archivo(std::sync::Arc::new(std::sync::Mutex::new(
+                        crate::valor::ArchivoInterno {
+                            ruta: ruta.clone(),
+                            modo: modo.clone(),
+                            cerrado: false,
+                            lector,
+                            escritor,
+                        },
+                    ))))
+                }
+                _ => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto, texto".to_string(),
+                        obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "leer_linea" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Archivo(arc) => {
+                    let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                    if guard.cerrado {
+                        return Err(err_builtin(CausaError::ArchivoYaCerrado, linea, columna));
+                    }
+                    let ruta = guard.ruta.clone();
+                    let lector = guard.lector.as_mut().ok_or_else(|| {
+                        err_builtin(
+                            CausaError::ErrorDeArchivo {
+                                ruta: ruta.clone(),
+                                detalle: "archivo no abierto en modo lectura".to_string(),
+                            },
+                            linea,
+                            columna,
+                        )
+                    })?;
+                    let mut linea_texto = String::new();
+                    match lector.read_line(&mut linea_texto) {
+                        Ok(0) => Ok(Valor::Texto(String::new())),
+                        Ok(_) => {
+                            if linea_texto.ends_with('\n') {
+                                linea_texto.pop();
+                            }
+                            if linea_texto.ends_with('\r') {
+                                linea_texto.pop();
+                            }
+                            Ok(Valor::Texto(linea_texto))
+                        }
+                        Err(e) => Err(err_builtin(
+                            CausaError::ErrorDeArchivo {
+                                ruta: ruta.clone(),
+                                detalle: e.to_string(),
+                            },
+                            linea,
+                            columna,
+                        )),
+                    }
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "archivo".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "leer_todo" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Archivo(arc) => {
+                    let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                    if guard.cerrado {
+                        return Err(err_builtin(CausaError::ArchivoYaCerrado, linea, columna));
+                    }
+                    let ruta = guard.ruta.clone();
+                    let lector = guard.lector.as_mut().ok_or_else(|| {
+                        err_builtin(
+                            CausaError::ErrorDeArchivo {
+                                ruta: ruta.clone(),
+                                detalle: "archivo no abierto en modo lectura".to_string(),
+                            },
+                            linea,
+                            columna,
+                        )
+                    })?;
+                    let mut contenido = String::new();
+                    match lector.read_to_string(&mut contenido) {
+                        Ok(_) => Ok(Valor::Texto(contenido)),
+                        Err(e) => Err(err_builtin(
+                            CausaError::ErrorDeArchivo {
+                                ruta: ruta.clone(),
+                                detalle: e.to_string(),
+                            },
+                            linea,
+                            columna,
+                        )),
+                    }
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "archivo".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "escribir" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Valor::Archivo(arc), Valor::Texto(t)) => {
+                    let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                    if guard.cerrado {
+                        return Err(err_builtin(CausaError::ArchivoYaCerrado, linea, columna));
+                    }
+                    let ruta = guard.ruta.clone();
+                    let escritor = guard.escritor.as_mut().ok_or_else(|| {
+                        err_builtin(
+                            CausaError::ErrorDeArchivo {
+                                ruta: ruta.clone(),
+                                detalle: "archivo no abierto en modo escritura".to_string(),
+                            },
+                            linea,
+                            columna,
+                        )
+                    })?;
+                    escritor.write_all(t.as_bytes()).map_err(|e| {
+                        err_builtin(
+                            CausaError::ErrorDeArchivo {
+                                ruta: ruta.clone(),
+                                detalle: e.to_string(),
+                            },
+                            linea,
+                            columna,
+                        )
+                    })?;
+                    Ok(Valor::Nulo)
+                }
+                _ => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "archivo, texto".to_string(),
+                        obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "escribir_linea" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Valor::Archivo(arc), Valor::Texto(t)) => {
+                    let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                    if guard.cerrado {
+                        return Err(err_builtin(CausaError::ArchivoYaCerrado, linea, columna));
+                    }
+                    let ruta = guard.ruta.clone();
+                    let escritor = guard.escritor.as_mut().ok_or_else(|| {
+                        err_builtin(
+                            CausaError::ErrorDeArchivo {
+                                ruta: ruta.clone(),
+                                detalle: "archivo no abierto en modo escritura".to_string(),
+                            },
+                            linea,
+                            columna,
+                        )
+                    })?;
+                    writeln!(escritor, "{t}").map_err(|e| {
+                        err_builtin(
+                            CausaError::ErrorDeArchivo {
+                                ruta: ruta.clone(),
+                                detalle: e.to_string(),
+                            },
+                            linea,
+                            columna,
+                        )
+                    })?;
+                    Ok(Valor::Nulo)
+                }
+                _ => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "archivo, texto".to_string(),
+                        obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "cerrar" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Archivo(arc) => {
+                    let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.cerrado = true;
+                    guard.lector = None;
+                    guard.escritor = None;
+                    Ok(Valor::Nulo)
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "archivo".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "fin_de_archivo" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Archivo(arc) => {
+                    let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                    if guard.cerrado {
+                        return Err(err_builtin(CausaError::ArchivoYaCerrado, linea, columna));
+                    }
+                    let ruta = guard.ruta.clone();
+                    match guard.lector.as_mut() {
+                        Some(lector) => {
+                            let buf = lector.fill_buf().map_err(|e| {
+                                err_builtin(
+                                    CausaError::ErrorDeArchivo {
+                                        ruta: ruta.clone(),
+                                        detalle: e.to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                )
+                            })?;
+                            Ok(Valor::Logico(buf.is_empty()))
+                        }
+                        None => Ok(Valor::Logico(false)),
+                    }
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "archivo".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "abs" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Entero(v) => match v.checked_abs() {
+                    Some(a) => Ok(Valor::Entero(a)),
+                    None => Err(err_builtin(
+                        CausaError::Aritmetica(MotivoAritmetico::DesbordamientoEntero),
+                        linea,
+                        columna,
+                    )),
+                },
+                Valor::Decimal(v) => Ok(Valor::Decimal(v.abs())),
+                Valor::Real(v) => Ok(Valor::Real(v.abs())),
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "número".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "max" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Valor::Entero(a), Valor::Entero(b)) => Ok(Valor::Entero(*a.max(b))),
+                (Valor::Decimal(a), Valor::Decimal(b)) => Ok(Valor::Decimal(*a.max(b))),
+                (Valor::Real(a), Valor::Real(b)) => Ok(Valor::Real(a.max(*b))),
+                (Valor::Entero(a), Valor::Real(b)) => Ok(Valor::Real((*a as f64).max(*b))),
+                (Valor::Real(a), Valor::Entero(b)) => Ok(Valor::Real(a.max(*b as f64))),
+                _ => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "números compatibles".to_string(),
+                        obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "min" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Valor::Entero(a), Valor::Entero(b)) => Ok(Valor::Entero(*a.min(b))),
+                (Valor::Decimal(a), Valor::Decimal(b)) => Ok(Valor::Decimal(*a.min(b))),
+                (Valor::Real(a), Valor::Real(b)) => Ok(Valor::Real(a.min(*b))),
+                (Valor::Entero(a), Valor::Real(b)) => Ok(Valor::Real((*a as f64).min(*b))),
+                (Valor::Real(a), Valor::Entero(b)) => Ok(Valor::Real(a.min(*b as f64))),
+                _ => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "números compatibles".to_string(),
+                        obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "raiz" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let v = match &args[0] {
+                Valor::Entero(x) => *x as f64,
+                Valor::Decimal(x) => *x as f64 / FACTOR_ESCALA as f64,
+                Valor::Real(x) => *x,
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "número".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            Ok(Valor::Real(v.sqrt()))
+        }
+        "potencia" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Valor::Entero(base), Valor::Entero(exp)) if *exp >= 0 => {
+                    match base.checked_pow(*exp as u32) {
+                        Some(r) => Ok(Valor::Entero(r)),
+                        None => Err(err_builtin(
+                            CausaError::Aritmetica(MotivoAritmetico::DesbordamientoEntero),
+                            linea,
+                            columna,
+                        )),
+                    }
+                }
+                _ => {
+                    let base = match &args[0] {
+                        Valor::Entero(x) => *x as f64,
+                        Valor::Decimal(x) => *x as f64 / FACTOR_ESCALA as f64,
+                        Valor::Real(x) => *x,
+                        _ => {
+                            return Err(err_builtin(
+                                CausaError::AsignacionIncompatible {
+                                    esperado: "número".to_string(),
+                                    obtenido: args[0].nombre_tipo().to_string(),
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+                    };
+                    let exp = match &args[1] {
+                        Valor::Entero(x) => *x as f64,
+                        Valor::Decimal(x) => *x as f64 / FACTOR_ESCALA as f64,
+                        Valor::Real(x) => *x,
+                        _ => {
+                            return Err(err_builtin(
+                                CausaError::AsignacionIncompatible {
+                                    esperado: "número".to_string(),
+                                    obtenido: args[1].nombre_tipo().to_string(),
+                                },
+                                linea,
+                                columna,
+                            ));
+                        }
+                    };
+                    Ok(Valor::Real(base.powf(exp)))
+                }
+            }
+        }
+        "iniciar_tarea" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let func_name = match &args[0] {
+                Valor::Texto(s) => s.clone(),
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            if !entorno.funciones.contains_key(&func_name) {
+                return Err(err_builtin(
+                    CausaError::VariableNoDefinida(func_name),
+                    linea,
+                    columna,
+                ));
+            }
+            let env_clone = entorno.clone();
+            let handle = thread::spawn(move || {
+                let mut env = env_clone;
+                let expr = Expresion::Llamada {
+                    nombre: func_name.clone(),
+                    argumentos: Vec::new(),
+                    linea: 0,
+                    columna: 0,
+                };
+                evaluar_con(&expr, &mut env).map_err(|e| e.to_string())
+            });
+            let mut tareas = TAREAS.lock().unwrap();
+            let id = tareas.len();
+            tareas.push(Some(handle));
+            Ok(Valor::Entero(id as i64))
+        }
+        "esperar_tarea" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let id = match &args[0] {
+                Valor::Entero(v) => *v as usize,
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "entero".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            let handle = {
+                let mut tareas = TAREAS.lock().unwrap();
+                if id >= tareas.len() {
+                    return Err(err_builtin(
+                        CausaError::VariableNoDefinida(format!("tarea {}", id)),
+                        linea,
+                        columna,
+                    ));
+                }
+                tareas[id].take()
+            };
+            match handle {
+                Some(h) => match h.join() {
+                    Ok(Ok(v)) => Ok(v),
+                    Ok(Err(e)) => Err(err_builtin(
+                        CausaError::ErrorDeArchivo {
+                            ruta: "<tarea>".to_string(),
+                            detalle: e,
+                        },
+                        linea,
+                        columna,
+                    )),
+                    Err(_) => Err(err_builtin(
+                        CausaError::ErrorDeArchivo {
+                            ruta: "<tarea>".to_string(),
+                            detalle: "la tarea entró en pánico".to_string(),
+                        },
+                        linea,
+                        columna,
+                    )),
+                },
+                None => Err(err_builtin(
+                    CausaError::ErrorDeArchivo {
+                        ruta: "<tarea>".to_string(),
+                        detalle: "la tarea ya fue esperada".to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        _ => Err(err_builtin(
+            CausaError::VariableNoDefinida(nombre.to_string()),
+            linea,
+            columna,
+        )),
+    }
+}
+
+fn binario_texto_logico<F>(
+    args: &[Valor],
+    nombre: &str,
+    linea: usize,
+    columna: usize,
+    f: F,
+) -> Result<Valor, ErrorEjecucion>
+where
+    F: Fn(&str, &str) -> bool,
+{
+    if args.len() != 2 {
+        return Err(err_builtin(
+            CausaError::FirmaInvalida {
+                funcion: nombre.to_string(),
+                esperado: 2,
+                obtenido: args.len(),
+            },
+            linea,
+            columna,
+        ));
+    }
+    match (&args[0], &args[1]) {
+        (Valor::Texto(a), Valor::Texto(b)) => Ok(Valor::Logico(f(a, b))),
+        _ => Err(err_builtin(
+            CausaError::AsignacionIncompatible {
+                esperado: "texto, texto".to_string(),
+                obtenido: args[0].nombre_tipo().to_string(),
+            },
+            linea,
+            columna,
+        )),
+    }
+}
+
+fn unario_texto<F>(
+    args: &[Valor],
+    nombre: &str,
+    linea: usize,
+    columna: usize,
+    f: F,
+) -> Result<Valor, ErrorEjecucion>
+where
+    F: Fn(&str) -> String,
+{
+    if args.len() != 1 {
+        return Err(err_builtin(
+            CausaError::FirmaInvalida {
+                funcion: nombre.to_string(),
+                esperado: 1,
+                obtenido: args.len(),
+            },
+            linea,
+            columna,
+        ));
+    }
+    match &args[0] {
+        Valor::Texto(t) => Ok(Valor::Texto(f(t))),
+        otro => Err(err_builtin(
+            CausaError::AsignacionIncompatible {
+                esperado: "texto".to_string(),
+                obtenido: otro.nombre_tipo().to_string(),
+            },
+            linea,
+            columna,
+        )),
+    }
+}
+
+fn resolver_modulo(ruta: &str) -> PathBuf {
+    let base = PathBuf::from(ruta);
+    if base.is_file() {
+        return base;
+    }
+    if let Some(resuelto) = crate::paquetes::resolver_desde_bloqueo(ruta) {
+        return resuelto;
+    }
+    let candidatos = [
+        PathBuf::from(format!("{}.bsk", ruta)),
+        base.join("lib.bsk"),
+        base.join("src").join("lib.bsk"),
+        PathBuf::from("paquetes").join(ruta).join("lib.bsk"),
+        PathBuf::from("vendor").join(ruta).join("lib.bsk"),
+    ];
+    for c in candidatos {
+        if c.is_file() {
+            return c;
+        }
+    }
+    base
 }
 
 #[cfg(test)]

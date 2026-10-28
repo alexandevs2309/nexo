@@ -36,9 +36,57 @@ Los prefijos son una propuesta; deben aprobarse antes de fijarlos como interfaz 
 7. El color no puede ser el único indicador de severidad.
 8. El parser debe evitar mensajes múltiples engañosos tras un único fallo raíz.
 
+## Códigos implementados en el prototipo (E1xxx)
+El prototipo asigna códigos estables `E1xxx` a `CausaError`:
+
+| Código | Variante |
+|---|---|
+| E1001 | Aritmetica |
+| E1002 | VariableNoDefinida |
+| E1003 | DeclaracionDuplicada |
+| E1004 | AsignacionIncompatible |
+| E1005 | CondicionNoLogica |
+| E1006 | OperandoNoLogico |
+| E1007 | TiposIncompatibles |
+| E1008 | LimiteIteraciones |
+| E1009 | FirmaInvalida |
+| E1010 | RetornoAusente |
+| E1011 | TipoDeRetornoIncompatible |
+| E1012 | RetornarFueraDeBloque |
+| E1013 | TipoParametroIncompatible |
+| E1014 | RetornoIncompatibleConAnotacion |
+| E1015 | SenalRomper |
+| E1016 | SenalContinuar |
+| E1017 | IteracionSobreNoColeccion |
+| E1018 | RangoTipoInvalido |
+| E1019 | ModificacionDuranteIteracion |
+| E1020 | NombreReservado |
+| E1021 | EntradaInvalida |
+| E1022 | ArchivoNoEncontrado |
+| E1023 | PermisosDenegados |
+| E1024 | ErrorDeArchivo |
+| E1025 | ArchivoYaCerrado |
+| E1026 | IndiceTextoFueraDeRango |
+| E1027 | ConversionTextoInvalida |
+| E1028 | SeparadorVacio |
+| E1029 | ReasignacionInmutable |
+
+Los códigos se emiten en el mensaje de `ErrorEjecucion` como `[E1xxx]`.
+
 ## Pendiente
 Definir columnas en bytes, puntos de código o unidades UTF-16; comportamiento con tabulaciones; normalización de identificadores; estrategia de recuperación sintáctica y códigos definitivos.
 
+
+## Errores de paquetes y dependencias
+
+La resolución de paquetes ocurre antes de ejecutar el programa y no produce
+códigos `E1xxx`. El CLI devuelve código de salida `3` y un mensaje en `stderr`:
+
+- manifiesto ausente, ilegible o inválido;
+- nombre o versión de paquete inválidos;
+- dependencia duplicada o no encontrada;
+- versión solicitada distinta de la declarada por el paquete;
+- error al escribir o leer `basilisco.lock`.
 
 ## Sincronización con código (prototipo)
 

@@ -330,6 +330,8 @@ impl Lexer {
             "mostrar_sin_salto" => TipoToken::MostrarSinSalto,
             "intentar" => TipoToken::Intentar,
             "rescatar" => TipoToken::Rescatar,
+            "importar" => TipoToken::Importar,
+            "exportar" => TipoToken::Exportar,
             "usar" => TipoToken::Usar,
             "como" => TipoToken::Como,
             "publico" => TipoToken::Publico,

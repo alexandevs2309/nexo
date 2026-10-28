@@ -4,11 +4,10 @@
 //! superior arbitrarias: solo procesa declaraciones, definiciones de función y
 //! sentencias `usar` (para importaciones transitivas).
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use crate::evaluador::{CausaError, Entorno, ErrorEjecucion};
 use crate::lexer::Lexer;
@@ -34,7 +33,7 @@ pub enum SimbodoExportado {
 pub struct ModuloCargado {
     pub ruta: PathBuf,
     pub ast: Vec<Sentencia>,
-    pub entorno: RefCell<Entorno>,
+    pub entorno: Mutex<Entorno>,
     pub exportaciones: HashMap<String, SimbodoExportado>,
 }
 
@@ -44,7 +43,7 @@ pub struct CargadorModulos {
     root: PathBuf,
     root_canonical: Option<PathBuf>,
     root_error: Option<String>,
-    cache: HashMap<PathBuf, Rc<ModuloCargado>>,
+    cache: HashMap<PathBuf, Arc<ModuloCargado>>,
     en_carga: HashSet<PathBuf>,
 }
 
@@ -75,13 +74,13 @@ impl CargadorModulos {
 
     /// Carga (o reutiliza) un módulo.
     pub fn cargar(
-        cargador: &Rc<RefCell<Self>>,
+        cargador: &Arc<Mutex<Self>>,
         ruta_relativa: &str,
         archivo_importador: Option<&Path>,
-    ) -> Result<Rc<ModuloCargado>, ErrorEjecucion> {
+    ) -> Result<Arc<ModuloCargado>, ErrorEjecucion> {
         // 0. Validar raíz.
         let root = {
-            let c = cargador.borrow();
+            let c = cargador.lock().unwrap();
             match &c.root_canonical {
                 Some(r) => r.clone(),
                 None => {
@@ -148,7 +147,7 @@ impl CargadorModulos {
 
         // 5. Caché.
         {
-            let c = cargador.borrow();
+            let c = cargador.lock().unwrap();
             if let Some(modulo) = c.cache.get(&canonical) {
                 return Ok(modulo.clone());
             }
@@ -168,7 +167,7 @@ impl CargadorModulos {
         // 7. Marcar como en carga.
         {
             let cache_hit = {
-                let c = cargador.borrow();
+                let c = cargador.lock().unwrap();
                 if c.cache.contains_key(&canonical) {
                     Some(c.cache.get(&canonical).unwrap().clone())
                 } else {
@@ -178,19 +177,19 @@ impl CargadorModulos {
             if let Some(m) = cache_hit {
                 return Ok(m);
             }
-            cargador.borrow_mut().en_carga_insert(canonical.clone());
+            cargador.lock().unwrap().en_carga_insert(canonical.clone());
         }
 
         // 8. Cargar internamente.
         let resultado = CargadorModulos::cargar_interno(cargador, &canonical);
 
         // 9. Limpiar marca.
-        cargador.borrow_mut().en_carga.remove(&canonical);
+        cargador.lock().unwrap().en_carga.remove(&canonical);
 
         match resultado {
             Ok(modulo) => {
-                let rc = Rc::new(modulo);
-                cargador.borrow_mut().cache.insert(canonical, rc.clone());
+                let rc = Arc::new(modulo);
+                cargador.lock().unwrap().cache.insert(canonical, rc.clone());
                 Ok(rc)
             }
             Err(e) => Err(e),
@@ -198,7 +197,7 @@ impl CargadorModulos {
     }
 
     fn cargar_interno(
-        cargador: &Rc<RefCell<Self>>,
+        cargador: &Arc<Mutex<Self>>,
         canonical: &Path,
     ) -> Result<ModuloCargado, ErrorEjecucion> {
         let ruta_str = canonical.display().to_string();
@@ -305,7 +304,7 @@ impl CargadorModulos {
         Ok(ModuloCargado {
             ruta: canonical.to_path_buf(),
             ast,
-            entorno: RefCell::new(entorno),
+            entorno: Mutex::new(entorno),
             exportaciones,
         })
     }
@@ -366,6 +365,8 @@ fn ubicacion_sentencia(s: &Sentencia) -> (usize, usize) {
         | Sentencia::Romper { linea, columna }
         | Sentencia::Continuar { linea, columna }
         | Sentencia::IntentarRescatar { linea, columna, .. }
+        | Sentencia::Importar { linea, columna, .. }
+        | Sentencia::Exportar { linea, columna, .. }
         | Sentencia::Usar { linea, columna, .. } => (*linea, *columna),
         Sentencia::Bloque(_) | Sentencia::Expresion(_) => (1, 1),
     }

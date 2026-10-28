@@ -8,6 +8,13 @@ Definir una interfaz estable y automatizable. Los nombres finales deben validars
 ## Comandos implementados
 - `basilisco run <archivo>`: ejecutar un programa `.bsk` o un archivo legado `.nexo`.
 - `basilisco ejecutar <archivo>`: alias de `run`.
+- `basilisco analizar <archivo>`: analizar sin ejecutar.
+- `basilisco formatear <archivo>`: reescribir con formato canónico basado en AST.
+- `basilisco inicializar [ruta]`: crear proyecto mínimo con `basilisco.toml`, `hola.bsk` y `paquetes/`.
+- `basilisco probar [ruta]`: ejecutar los archivos `.bsk` de una ruta.
+- `basilisco instalar [ruta]`: resolver dependencias locales y escribir `basilisco.lock`.
+- `basilisco paquetes [ruta]`: listar las dependencias del bloqueo.
+- `basilisco nuevo [archivo.bsk]`: crear un programa inicial.
 - `basilisco demo`: ejecutar la demostración integrada.
 - `basilisco --version`: imprimir la versión de BASILISCO.
 - `basilisco --help`: mostrar ayuda.
@@ -19,11 +26,15 @@ Definir una interfaz estable y automatizable. Los nombres finales deben validars
 - `.nx`: no soportada; se rechaza con código 2 y un mensaje que indica usar `.bsk` o `.nexo`.
 - Otra extensión o ausencia de extensión: error de uso.
 
+## Paquetes
+El contrato detallado de manifiesto, resolución y bloqueo está en
+`10-especificacion/paquetes-y-dependencias.md`.
+
 ## Comandos candidatos (no implementados)
-- `basilisco analizar <archivo>`: analizar sin ejecutar efectos.
-- `basilisco probar [ruta]`: ejecutar pruebas del proyecto.
-- `basilisco formatear <ruta>`: formatear o comprobar formato.
-- `basilisco inicializar [ruta]`: crear estructura mínima de proyecto.
+- `basilisco actualizar`: actualizar dependencias respetando el bloqueo.
+- `basilisco publicar`: empaquetar y publicar en un registro.
+- `basilisco comprobar`: verificar formato sin reescribir.
+- `basilisco depurar`: depurador interactivo.
 
 ## Contrato común
 - salida normal a stdout; errores y diagnósticos a stderr;
@@ -39,7 +50,7 @@ Definir una interfaz estable y automatizable. Los nombres finales deben validars
 - `0`: éxito;
 - `1`: error de lectura, sintaxis o ejecución;
 - `2`: error de uso o extensión no soportada;
-- `3`: error de configuración/dependencias (reservado);
+- `3`: error de configuración, manifiesto o resolución de dependencias;
 - `4`: fallo interno del toolchain (reservado).
 
 Los códigos implementados tienen tests de integración en `prototipo/tests/cli.rs`.

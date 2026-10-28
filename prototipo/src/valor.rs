@@ -14,7 +14,6 @@
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 /// Escala fija del decimal del núcleo: 9 decimales (ADR-0005 §1.2).
@@ -45,7 +44,7 @@ pub enum Valor {
     /// Archivo abierto (ADR-0013 §3.5). Encapsula el estado de E/S.
     Archivo(Arc<Mutex<ArchivoInterno>>),
     /// Módulo cargado (ADR-0017). Referencia opaca al módulo.
-    Modulo(Rc<crate::cargador::ModuloCargado>),
+    Modulo(Arc<crate::cargador::ModuloCargado>),
 }
 
 /// Estado interno de un archivo abierto (ADR-0013 §3.5). Opaco para el código BASILISCO.
@@ -75,7 +74,7 @@ impl Clone for Valor {
             Valor::Lista(v) => Valor::Lista(v.clone()),
             Valor::Nulo => Valor::Nulo,
             Valor::Archivo(arc) => Valor::Archivo(Arc::clone(arc)),
-            Valor::Modulo(rc) => Valor::Modulo(Rc::clone(rc)),
+            Valor::Modulo(rc) => Valor::Modulo(Arc::clone(rc)),
         }
     }
 }
@@ -110,7 +109,7 @@ impl PartialEq for Valor {
             (Valor::Nulo, Valor::Nulo) => true,
             // Archivos se comparan por identidad de puntero (Arc).
             (Valor::Archivo(a), Valor::Archivo(b)) => Arc::ptr_eq(a, b),
-            (Valor::Modulo(a), Valor::Modulo(b)) => Rc::ptr_eq(a, b),
+            (Valor::Modulo(a), Valor::Modulo(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
