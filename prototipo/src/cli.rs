@@ -165,7 +165,7 @@ fn ayuda() {
     println!("Uso:");
     println!("  {COMANDO} nuevo [archivo.bsk]   crea un programa inicial");
     println!("  {COMANDO} nuevo proyecto <nombre> crea un proyecto BASILISCO");
-    println!("  {COMANDO} run <archivo.bsk>      ejecuta un programa");
+    println!("  {COMANDO} run [<archivo.bsk>] ejecuta un archivo o proyecto");
     println!("  {COMANDO} run <archivo.nexo>     ejecuta un programa legado");
     println!("  {COMANDO} run                   ejecuta el proyecto actual");
     println!("  {COMANDO} analizar <archivo>     analiza sin ejecutar");
