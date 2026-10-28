@@ -1,6 +1,6 @@
 # BASILISCO — Prototipo funcional
 
-**Estado:** BASILISCO 0.4.0 está publicado en crates.io y GitHub. El prototipo Rust incluye expresiones, variables y ámbitos, funciones, control de flujo, texto, arreglos y listas básicos, además de una CLI. La versión candidata 0.5.0 está en desarrollo e incorpora `basilisco nuevo` para crear un archivo inicial. El código se distribuye bajo Apache License 2.0 conforme a `LICENSE`. La especificación normativa 0.3 está en `10-especificacion/`. **Nexo** queda como nombre histórico; la identidad objetivo es **BASILISCO**.
+**Estado:** BASILISCO 0.4.0 está publicado; la versión 0.5.0 está en desarrollo. El prototipo Rust de `prototipo/` es un intérprete con lexer, parser, evaluador, funciones, control de flujo, proyectos, módulos, formateador y resolución **local** de paquetes. La ejecución normal interpreta el AST directamente. El comando `analizar` comprueba léxico y sintaxis; todavía no hay análisis semántico estático integrado. Este repositorio no contiene una IR ni una máquina virtual implementadas. El código se distribuye bajo Apache License 2.0 conforme a `LICENSE`. **Nexo** queda como nombre histórico; la identidad objetivo es **BASILISCO**.
 
 ## Propósito
 Preparar una base extensa para desarrollar BASILISCO como lenguaje multipropósito, con una experiencia de programación orientada al español, rigor técnico, interoperabilidad y evolución gradual.
@@ -31,8 +31,15 @@ Visión y requisitos; sintaxis y gramática; semántica; tipos; memoria; funcion
 - Pendiente: requiere evidencia o decisión.
 - Exploratorio: posibilidad futura, no compromiso.
 
-## Limitaciones actuales
-El lenguaje sigue siendo un subconjunto en evolución. Arreglos y listas tienen operaciones básicas; no hay módulos avanzados, sistema de paquetes, biblioteca estándar extensa, depurador ni IDE. La entrada/salida y la distribución requieren trabajo adicional. Los documentos de diseño pueden describir capacidades futuras que todavía no existen en el prototipo. Los ejemplos ejecutables están en `prototipo/examples/*.bsk`; los de `ejemplos/` son conceptuales.
+## Estado comprobado y limitaciones
+- El comando `analizar` solo valida léxico y sintaxis. La comprobación de tipos y varios errores ocurren durante la ejecución; no hay un pase semántico estático general.
+- Los módulos locales y proyectos funcionan en el prototipo, pero su semántica y sus garantías todavía son prototipales.
+- El gestor resuelve dependencias locales desde rutas configuradas, `paquetes/` o `vendor/` y genera `basilisco.lock`. No descarga paquetes ni resuelve dependencias transitivas; tampoco verifica firmas o integridad criptográfica.
+- La concurrencia se limita a `iniciar_tarea` y `esperar_tarea`; no hay canales, cancelación ni sincronización de usuario.
+- La biblioteca estándar es pequeña: incluye operaciones de texto y E/S básica. No hay FFI, bindings nativos, backend WASM/nativo, depurador ni IDE implementados en este repositorio.
+- No hay una IR o VM en el árbol actual. Los documentos pueden proponer capacidades futuras sin que eso signifique que existan en el código.
+
+Los ejemplos ejecutables están en `prototipo/examples/*.bsk`; los de `ejemplos/` son conceptuales. Consulta el [registro de brechas](10-especificacion/registro-de-brechas.md) para prioridades y evidencia.
 
 ## Estado de publicación
 La versión `0.4.0` está publicada. La versión `0.5.0` está en desarrollo y aún no se ha publicado.

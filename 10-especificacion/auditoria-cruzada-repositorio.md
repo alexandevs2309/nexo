@@ -1,10 +1,12 @@
-# Auditoría cruzada: Base Ultra 0.3 frente al repositorio Nexo
+# Auditoría histórica (2026-10-21): Base Ultra 0.3 frente al repositorio Nexo
 
-**Fecha de consulta:** 2026-10-21  
-**Repositorio:** `alexandevs2309/nexo`  
-**Referencia consultada:** rama predeterminada `main`  
-**Alcance:** lectura de documentos, ADR, fuentes Rust y manifiesto; no se ejecutaron comandos de compilación en este entorno.  
+**Fecha de consulta original:** 2026-10-21
+**Repositorio:** `alexandevs2309/nexo`
+**Referencia consultada:** rama predeterminada `main`
+**Alcance:** lectura de documentos, ADR, fuentes Rust y manifiesto; no se ejecutaron comandos de compilación en este entorno.
 **Regla:** esta auditoría describe lo que aparece en el repositorio consultado; no certifica que los tests pasen en el momento de leerla.
+
+> **Obsoleta como descripción del estado actual.** El contenido bajo los encabezados siguientes conserva el corte del 21 de octubre de 2026. En ese momento todavía afirmaba que no había funciones, módulos ni paquetes. El código actual sí incluye esas capacidades parcialmente. Para el estado comprobado vigente consulta [`registro-de-brechas.md`](registro-de-brechas.md) y [`alcance-del-nucleo.md`](../02-lenguaje/alcance-del-nucleo.md). La revisión actual confirma que `analizar` solo valida léxico y sintaxis, el gestor de paquetes es local, y en este árbol no se encontraron un pase semántico estático general, una IR ni una VM.
 
 ## 1. Dictamen ejecutivo
 La Base Ultra 0.3 es útil como expediente de diseño, pero necesita alinearse con el estado real del prototipo. La discrepancia más importante no es solo el README: el repositorio ya contiene una implementación ejecutable de expresiones, variables, ámbitos, condiciones, ciclos, comparaciones y lógica; en cambio, las funciones siguen siendo una propuesta de incremento posterior.

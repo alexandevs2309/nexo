@@ -29,6 +29,8 @@ Este registro es el backlog de especificación. Las prioridades son recomendacio
 | GAP-023 | Accesibilidad y localización | P2 | Barreras de uso y mensajes inconsistentes | Guía de UX, contraste, lector de pantalla y catálogo |
 | GAP-024 | Instalación/actualización/desinstalación | P2 | Experiencia insegura o rota | Paquetes verificables, rollback y canales de release |
 | GAP-025 | Especificación de extensiones | P2 | Fragmentación del ecosistema | Política de extensión, namespaces y versionado |
+| GAP-026 | Análisis semántico estático | P1 | Errores de tipos y nombres aparecen tarde, durante ejecución | Pase semántico integrado, reglas aprobadas y pruebas negativas antes de ejecutar |
+| GAP-027 | IR y máquina virtual | P2 | Sin ruta de ejecución alternativa ni base para optimización/backends | Diseño aprobado, implementación integrada y suite de equivalencia con el intérprete |
 
 ## Orden de resolución recomendado
 1. GAP-001 a GAP-006.
@@ -59,7 +61,10 @@ Una brecha no se cierra porque exista un documento. Debe tener decisión aprobad
 | Concurrencia | Implementado mínimamente: `iniciar_tarea`/`esperar_tarea` sobre hilos, sin cancelación ni canales | Prueba manual; pendiente suite dedicada | GAP-014 / no apto para producción |
 | Formateador | Implementado sobre AST para el subconjunto v0.5 | Pruebas CLI de formato | GAP-017 / sin preservación de comentarios |
 | FFI/ABI | No disponible | Sin suite | GAP-015 / fuera de alcance |
+| Análisis semántico estático | No disponible como pase separado; `analizar` solo ejecuta lexer y parser | La CLI prueba sintaxis válida/inválida; validaciones semánticas ocurren principalmente al evaluar | GAP-026 / pendiente |
+| IR/VM | No encontradas en el árbol actual | Sin módulo, binario ni pruebas de ejecución para IR/VM | GAP-027 / no implementado en este repositorio |
+| Backends nativos/WASM y bindings | No encontrados en el árbol actual | Sin backends ni pruebas de interoperabilidad | GAP-015 y GAP-022 / pendientes |
 
-**Verificación local (2026-10-28):** 380 pruebas; `cargo test`, `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` pasan en el prototipo. La suite incluye 9 pruebas de paquetes (resolución, bloqueo, versiones, ruta explícita e importación de extremo a extremo). Esto no declara conformidad con Core 0.3 ni superación de puertas de distribución.
+**Verificación local (2026-10-28):** `cargo test --manifest-path prototipo/Cargo.toml` pasa en el árbol actual. La suite incluye pruebas de paquetes (resolución, bloqueo, versiones, ruta explícita e importación de extremo a extremo) y de cargador de módulos. Esta ejecución no certifica otras plataformas ni declara conformidad con Core 0.3 o superación de puertas de distribución. `cargo clippy` y `cargo fmt --check` no se ejecutaron en esta revisión.
 
-**Brechas que permanecen abiertas:** GAP-001 a GAP-009 siguen requiriendo cierre por separado en norma, pruebas y código; GAP-008 se cierra parcialmente para los casos básicos de arreglos/listas, no para iteración completa. GAP-010, GAP-014, GAP-016 y GAP-017 tienen implementación prototipal, no cierre completo. Las extensiones marcadas prototipales necesitan los criterios de límite indicados por ADR-0012 a ADR-0014 antes de entrar en una garantía de versión.
+**Brechas que permanecen abiertas:** GAP-001 a GAP-009 siguen requiriendo cierre por separado en norma, pruebas y código; GAP-008 se cierra parcialmente para los casos básicos de arreglos/listas, no para iteración completa. GAP-010, GAP-014, GAP-016 y GAP-017 tienen implementación prototipal, no cierre completo. GAP-026 (análisis semántico estático) y GAP-027 (IR/VM) no están implementados. Las extensiones prototipales necesitan criterios de límite y conformidad antes de entrar en una garantía de versión.
