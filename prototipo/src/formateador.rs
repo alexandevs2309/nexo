@@ -119,10 +119,14 @@ fn expr_str(e: &Expresion) -> String {
         Expresion::Indice { objeto, indice, .. } => {
             format!("{}[{}]", expr_str(objeto), expr_str(indice))
         }
-        Expresion::Acceso { objeto, miembro, .. } => {
+        Expresion::Acceso {
+            objeto, miembro, ..
+        } => {
             format!("{}.{}", expr_str(objeto), miembro)
         }
-        Expresion::LlamadaIndirecta { callee, argumentos, .. } => {
+        Expresion::LlamadaIndirecta {
+            callee, argumentos, ..
+        } => {
             let args: Vec<String> = argumentos.iter().map(expr_str).collect();
             format!("{}({})", expr_str(callee), args.join(", "))
         }
@@ -375,7 +379,12 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
             }
             out.push('\n');
         }
-        Sentencia::Usar { ruta, alias, nombres, .. } => {
+        Sentencia::Usar {
+            ruta,
+            alias,
+            nombres,
+            ..
+        } => {
             out.push_str(&ind);
             out.push_str("usar \"");
             out.push_str(ruta);

@@ -72,6 +72,74 @@ impl CargadorModulos {
         self.root_canonical.as_ref().unwrap_or(&self.root)
     }
 
+    /// Resuelve una ruta de módulo a su ruta canónica sin cargar ni ejecutar
+    /// el módulo. Reutiliza las mismas reglas de normalización y seguridad
+    /// que `cargar`.
+    pub fn resolver_ruta(
+        cargador: &Arc<Mutex<Self>>,
+        ruta_relativa: &str,
+        archivo_importador: Option<&Path>,
+    ) -> Result<PathBuf, ErrorEjecucion> {
+        let root = {
+            let c = cargador.lock().unwrap();
+            match &c.root_canonical {
+                Some(r) => r.clone(),
+                None => {
+                    return Err(ErrorEjecucion {
+                        mensaje: c.root_error.clone().unwrap_or_default(),
+                        causa: Box::new(CausaError::RutaNoPermitida {
+                            ruta: c.root.display().to_string(),
+                        }),
+                        linea: 1,
+                        columna: 1,
+                        archivo: None,
+                    });
+                }
+            }
+        };
+
+        let ruta_normalizada = normalizar_extension(ruta_relativa)?;
+
+        let base_dir = match archivo_importador {
+            Some(p) => {
+                if let Ok(canonical_importador) = std::fs::canonicalize(p) {
+                    canonical_importador
+                        .parent()
+                        .map(|pp| pp.to_path_buf())
+                        .unwrap_or_else(|| root.clone())
+                } else {
+                    root.clone()
+                }
+            }
+            None => root.clone(),
+        };
+        let resolved = base_dir.join(ruta_normalizada);
+
+        let canonical = std::fs::canonicalize(&resolved).map_err(|_| ErrorEjecucion {
+            mensaje: format!("módulo no encontrado: {}", resolved.display()),
+            causa: Box::new(CausaError::ModuloNoEncontrado {
+                ruta: resolved.display().to_string(),
+            }),
+            linea: 1,
+            columna: 1,
+            archivo: Some(resolved.display().to_string()),
+        })?;
+
+        if !canonical.starts_with(&root) {
+            return Err(ErrorEjecucion {
+                mensaje: format!("ruta no permitida: {}", canonical.display()),
+                causa: Box::new(CausaError::RutaNoPermitida {
+                    ruta: canonical.display().to_string(),
+                }),
+                linea: 1,
+                columna: 1,
+                archivo: Some(canonical.display().to_string()),
+            });
+        }
+
+        Ok(canonical)
+    }
+
     /// Carga (o reutiliza) un módulo.
     pub fn cargar(
         cargador: &Arc<Mutex<Self>>,

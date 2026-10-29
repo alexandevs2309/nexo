@@ -48,10 +48,7 @@ fn cache_reutiliza_modulo() {
     let cargador = Arc::new(Mutex::new(CargadorModulos::nuevo(dir.clone())));
     let m1 = CargadorModulos::cargar(&cargador, "lib.bsk", None).unwrap();
     let m2 = CargadorModulos::cargar(&cargador, "lib.bsk", None).unwrap();
-    assert!(
-        Arc::ptr_eq(&m1, &m2),
-        "debería reutilizar el mismo Rc"
-    );
+    assert!(Arc::ptr_eq(&m1, &m2), "debería reutilizar el mismo Rc");
 }
 
 #[test]

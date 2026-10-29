@@ -1,7 +1,6 @@
 funcion doble(n) {
   retornar n * 2
 }
-
 sea contador = 0
 sea total = 0
 mientras contador < 3 {

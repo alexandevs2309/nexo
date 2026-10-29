@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
+use crate::cargador::CargadorModulos;
 use crate::formateador;
 use crate::paquetes::{self, BLOQUEO};
-use crate::cargador::CargadorModulos;
-use crate::{Entorno, Lexer, Parser, Valor, evaluar};
+use crate::{ContextoSemantico, Entorno, Lexer, Parser, Valor, evaluar};
 
 pub const NOMBRE: &str = "BASILISCO";
 pub const COMANDO: &str = "basilisco";
@@ -309,16 +309,35 @@ fn analizar_archivo(ruta: &Path) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    match Parser::nuevo(tokens).parsear_programa() {
-        Ok(_) => {
-            println!("análisis correcto: {}", ruta.display());
-            ExitCode::SUCCESS
-        }
+    let sentencias = match Parser::nuevo(tokens).parsear_programa() {
+        Ok(s) => s,
         Err(e) => {
             eprintln!("{}: {e}", ruta.display());
-            ExitCode::from(1)
+            return ExitCode::from(1);
         }
+    };
+
+    let root = ruta
+        .parent()
+        .map(|p| {
+            if p.as_os_str().is_empty() {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            } else {
+                p.to_path_buf()
+            }
+        })
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let cargador = Arc::new(Mutex::new(CargadorModulos::nuevo(root)));
+    let mut ctx = ContextoSemantico::con_cargador(cargador, Some(ruta.display().to_string()));
+    let errs = ctx.analizar_programa(&sentencias);
+    if !errs.is_empty() {
+        for e in errs {
+            eprintln!("{}", e);
+        }
+        return ExitCode::from(1);
     }
+    println!("análisis correcto: {}", ruta.display());
+    ExitCode::SUCCESS
 }
 
 fn formatear_archivo(ruta: &Path) -> ExitCode {

@@ -186,6 +186,21 @@ pub const NOMBRES_RESERVADOS: &[&str] = &[
     "min",
     "raiz",
     "potencia",
+    "redondear",
+    "map",
+    "filtrar",
+    "reducir",
+    "piso",
+    "techo",
+    "posicion",
+    "repetir",
+    "agregar",
+    "eliminar",
+    "invertir",
+    "ordenar",
+    "existe_archivo",
+    "leer_archivo",
+    "escribir_archivo",
     "iniciar_tarea",
     "esperar_tarea",
 ];
@@ -386,12 +401,19 @@ impl std::fmt::Display for ErrorEjecucion {
             Some(archivo) => write!(
                 f,
                 "error de ejecución [{}] [{}:{}:{}]: {}",
-                self.causa.codigo(), archivo, self.linea, self.columna, self.mensaje
+                self.causa.codigo(),
+                archivo,
+                self.linea,
+                self.columna,
+                self.mensaje
             ),
             None => write!(
                 f,
                 "error de ejecución [{}] [{}:{}]: {}",
-                self.causa.codigo(), self.linea, self.columna, self.mensaje
+                self.causa.codigo(),
+                self.linea,
+                self.columna,
+                self.mensaje
             ),
         }
     }
@@ -486,6 +508,59 @@ impl Entorno {
     /// Evalúa una expresión contra este entorno.
     pub fn evaluar_expresion(&mut self, e: &Expresion) -> Result<Valor, ErrorEjecucion> {
         evaluar_con(e, self)
+    }
+
+    /// Llama a una función por nombre con los argumentos dados, reutilizando
+    /// la ejecución normal de su cuerpo. Útil para funciones de orden superior.
+    pub fn llamar_funcion_por_nombre(
+        &mut self,
+        nombre: &str,
+        args: &[Valor],
+        linea: usize,
+        columna: usize,
+    ) -> Result<Valor, ErrorEjecucion> {
+        let fdef = self.funciones.get(nombre).cloned().ok_or_else(|| {
+            error(
+                CausaError::VariableNoDefinida(nombre.to_string()),
+                linea,
+                columna,
+            )
+        })?;
+        if args.len() != fdef.parametros.len() {
+            return Err(error(
+                CausaError::FirmaInvalida {
+                    funcion: nombre.to_string(),
+                    esperado: fdef.parametros.len(),
+                    obtenido: args.len(),
+                },
+                linea,
+                columna,
+            ));
+        }
+        self.ambitos.push(HashMap::new());
+        for ((pname, _), val) in fdef.parametros.iter().zip(args.iter()) {
+            self.insertar_variable(
+                pname.clone(),
+                VariableInfo {
+                    valor: val.clone(),
+                    tipo_declarado: None,
+                    mutable: true,
+                    es_const: false,
+                },
+            );
+        }
+        let r = self.ejecutar_funcion_sentencias(&fdef.cuerpo, nombre);
+        self.ambitos.pop();
+        match r? {
+            Some(v) => Ok(v),
+            None => Err(error(
+                CausaError::RetornoAusente {
+                    funcion: nombre.to_string(),
+                },
+                linea,
+                columna,
+            )),
+        }
     }
 
     /// Ejecuta un programa sentencia a sentencia.
@@ -2737,6 +2812,21 @@ fn es_builtin(nombre: &str) -> bool {
             | "min"
             | "raiz"
             | "potencia"
+            | "redondear"
+            | "map"
+            | "filtrar"
+            | "reducir"
+            | "piso"
+            | "techo"
+            | "posicion"
+            | "repetir"
+            | "agregar"
+            | "eliminar"
+            | "invertir"
+            | "ordenar"
+            | "existe_archivo"
+            | "leer_archivo"
+            | "escribir_archivo"
             | "iniciar_tarea"
             | "esperar_tarea"
     )
@@ -2751,7 +2841,7 @@ fn evaluar_builtin(
     args: &[Valor],
     linea: usize,
     columna: usize,
-    entorno: &Entorno,
+    entorno: &mut Entorno,
 ) -> Result<Valor, ErrorEjecucion> {
     match nombre {
         "leer" => {
@@ -2938,7 +3028,6 @@ fn evaluar_builtin(
                 )),
             }
         }
-        "contiene" => binario_texto_logico(args, nombre, linea, columna, |t, sub| t.contains(sub)),
         "empieza_con" => {
             binario_texto_logico(args, nombre, linea, columna, |t, sub| t.starts_with(sub))
         }
@@ -3786,6 +3875,563 @@ fn evaluar_builtin(
                 }
             }
         }
+        "agregar" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Arreglo(v) => {
+                    let mut n = v.clone();
+                    n.push(args[1].clone());
+                    Ok(Valor::Arreglo(n))
+                }
+                Valor::Lista(v) => {
+                    let mut n = v.clone();
+                    n.push(args[1].clone());
+                    Ok(Valor::Lista(n))
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "arreglo o lista".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "eliminar" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let idx = match &args[1] {
+                Valor::Entero(i) if *i >= 0 => *i as usize,
+                _ => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "entero no negativo".to_string(),
+                            obtenido: args[1].nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            match &args[0] {
+                Valor::Arreglo(v) => {
+                    if idx >= v.len() {
+                        return Err(err_builtin(
+                            CausaError::IndiceTextoFueraDeRango {
+                                indice: idx as i64,
+                                longitud: v.len(),
+                            },
+                            linea,
+                            columna,
+                        ));
+                    }
+                    let mut n = v.clone();
+                    n.remove(idx);
+                    Ok(Valor::Arreglo(n))
+                }
+                Valor::Lista(v) => {
+                    if idx >= v.len() {
+                        return Err(err_builtin(
+                            CausaError::IndiceTextoFueraDeRango {
+                                indice: idx as i64,
+                                longitud: v.len(),
+                            },
+                            linea,
+                            columna,
+                        ));
+                    }
+                    let mut n = v.clone();
+                    n.remove(idx);
+                    Ok(Valor::Lista(n))
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "arreglo o lista".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "contiene" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Arreglo(v) | Valor::Lista(v) => Ok(Valor::Logico(
+                    v.iter().any(|x| valores_iguales(x, &args[1])),
+                )),
+                Valor::Texto(t) => match &args[1] {
+                    Valor::Texto(sub) => Ok(Valor::Logico(t.contains(sub))),
+                    _ => Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: args[1].nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    )),
+                },
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "arreglo, lista o texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "invertir" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Arreglo(v) => {
+                    let mut n = v.clone();
+                    n.reverse();
+                    Ok(Valor::Arreglo(n))
+                }
+                Valor::Lista(v) => {
+                    let mut n = v.clone();
+                    n.reverse();
+                    Ok(Valor::Lista(n))
+                }
+                Valor::Texto(t) => {
+                    let mut c: Vec<char> = t.chars().collect();
+                    c.reverse();
+                    Ok(Valor::Texto(c.into_iter().collect()))
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "arreglo, lista o texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "ordenar" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Arreglo(v) => {
+                    let mut n = v.clone();
+                    if !ordenar_valores(&mut n) {
+                        return Err(err_builtin(
+                            CausaError::AsignacionIncompatible {
+                                esperado: "valores ordenables".to_string(),
+                                obtenido: "valores no ordenables".to_string(),
+                            },
+                            linea,
+                            columna,
+                        ));
+                    }
+                    Ok(Valor::Arreglo(n))
+                }
+                Valor::Lista(v) => {
+                    let mut n = v.clone();
+                    if !ordenar_valores(&mut n) {
+                        return Err(err_builtin(
+                            CausaError::AsignacionIncompatible {
+                                esperado: "valores ordenables".to_string(),
+                                obtenido: "valores no ordenables".to_string(),
+                            },
+                            linea,
+                            columna,
+                        ));
+                    }
+                    Ok(Valor::Lista(n))
+                }
+                Valor::Texto(t) => {
+                    let mut c: Vec<char> = t.chars().collect();
+                    c.sort();
+                    Ok(Valor::Texto(c.into_iter().collect()))
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "arreglo, lista o texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "existe_archivo" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Texto(ruta) => {
+                    let ruta_segura = validar_ruta_archivo(ruta, entorno, linea, columna)?;
+                    Ok(Valor::Logico(ruta_segura.exists()))
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "leer_archivo" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Texto(ruta) => {
+                    let ruta_segura = validar_ruta_archivo(ruta, entorno, linea, columna)?;
+                    let ruta_str = ruta_segura.display().to_string();
+                    match std::fs::read_to_string(&ruta_segura) {
+                        Ok(contenido) => Ok(Valor::Texto(contenido)),
+                        Err(e) => {
+                            if e.kind() == io::ErrorKind::NotFound {
+                                Err(err_builtin(
+                                    CausaError::ArchivoNoEncontrado { ruta: ruta_str },
+                                    linea,
+                                    columna,
+                                ))
+                            } else if e.kind() == io::ErrorKind::PermissionDenied {
+                                Err(err_builtin(
+                                    CausaError::PermisosDenegados { ruta: ruta_str },
+                                    linea,
+                                    columna,
+                                ))
+                            } else {
+                                Err(err_builtin(
+                                    CausaError::ErrorDeArchivo {
+                                        ruta: ruta_str,
+                                        detalle: e.to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                ))
+                            }
+                        }
+                    }
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "escribir_archivo" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Valor::Texto(ruta), Valor::Texto(contenido)) => {
+                    let ruta_segura = validar_ruta_archivo(ruta, entorno, linea, columna)?;
+                    let ruta_str = ruta_segura.display().to_string();
+                    match std::fs::write(&ruta_segura, contenido) {
+                        Ok(()) => Ok(Valor::Nulo),
+                        Err(e) => {
+                            if e.kind() == io::ErrorKind::PermissionDenied {
+                                Err(err_builtin(
+                                    CausaError::PermisosDenegados { ruta: ruta_str },
+                                    linea,
+                                    columna,
+                                ))
+                            } else {
+                                Err(err_builtin(
+                                    CausaError::ErrorDeArchivo {
+                                        ruta: ruta_str,
+                                        detalle: e.to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                ))
+                            }
+                        }
+                    }
+                }
+                _ => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto, texto".to_string(),
+                        obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "map" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let func_name = match &args[1] {
+                Valor::Texto(s) => s.clone(),
+                _ => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: args[1].nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            match &args[0] {
+                Valor::Arreglo(v) => {
+                    let mut out = Vec::new();
+                    for item in v {
+                        let r = entorno.llamar_funcion_por_nombre(
+                            &func_name,
+                            std::slice::from_ref(item),
+                            linea,
+                            columna,
+                        )?;
+                        out.push(r);
+                    }
+                    Ok(Valor::Arreglo(out))
+                }
+                Valor::Lista(v) => {
+                    let mut out = Vec::new();
+                    for item in v {
+                        let r = entorno.llamar_funcion_por_nombre(
+                            &func_name,
+                            std::slice::from_ref(item),
+                            linea,
+                            columna,
+                        )?;
+                        out.push(r);
+                    }
+                    Ok(Valor::Lista(out))
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "arreglo o lista".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "filtrar" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let func_name = match &args[1] {
+                Valor::Texto(s) => s.clone(),
+                _ => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: args[1].nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            match &args[0] {
+                Valor::Arreglo(v) => {
+                    let mut out = Vec::new();
+                    for item in v {
+                        let r = entorno.llamar_funcion_por_nombre(
+                            &func_name,
+                            std::slice::from_ref(item),
+                            linea,
+                            columna,
+                        )?;
+                        match r {
+                            Valor::Logico(true) => out.push(item.clone()),
+                            Valor::Logico(false) => {}
+                            _ => {
+                                return Err(err_builtin(
+                                    CausaError::AsignacionIncompatible {
+                                        esperado: "lógico".to_string(),
+                                        obtenido: r.nombre_tipo().to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                ));
+                            }
+                        }
+                    }
+                    Ok(Valor::Arreglo(out))
+                }
+                Valor::Lista(v) => {
+                    let mut out = Vec::new();
+                    for item in v {
+                        let r = entorno.llamar_funcion_por_nombre(
+                            &func_name,
+                            std::slice::from_ref(item),
+                            linea,
+                            columna,
+                        )?;
+                        match r {
+                            Valor::Logico(true) => out.push(item.clone()),
+                            Valor::Logico(false) => {}
+                            _ => {
+                                return Err(err_builtin(
+                                    CausaError::AsignacionIncompatible {
+                                        esperado: "lógico".to_string(),
+                                        obtenido: r.nombre_tipo().to_string(),
+                                    },
+                                    linea,
+                                    columna,
+                                ));
+                            }
+                        }
+                    }
+                    Ok(Valor::Lista(out))
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "arreglo o lista".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "reducir" => {
+            if args.len() != 3 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 3,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let func_name = match &args[1] {
+                Valor::Texto(s) => s.clone(),
+                _ => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: args[1].nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            let mut acc = args[2].clone();
+            match &args[0] {
+                Valor::Arreglo(v) | Valor::Lista(v) => {
+                    for item in v {
+                        acc = entorno.llamar_funcion_por_nombre(
+                            &func_name,
+                            &[acc, item.clone()],
+                            linea,
+                            columna,
+                        )?;
+                    }
+                    Ok(acc)
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "arreglo o lista".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
         "iniciar_tarea" => {
             if args.len() != 1 {
                 return Err(err_builtin(
@@ -3997,6 +4643,97 @@ fn resolver_modulo(ruta: &str) -> PathBuf {
         }
     }
     base
+}
+
+fn valores_iguales(a: &Valor, b: &Valor) -> bool {
+    match (a, b) {
+        (Valor::Entero(x), Valor::Entero(y)) => x == y,
+        (Valor::Decimal(x), Valor::Decimal(y)) => x == y,
+        (Valor::Real(x), Valor::Real(y)) => x == y,
+        (Valor::Logico(x), Valor::Logico(y)) => x == y,
+        (Valor::Texto(x), Valor::Texto(y)) => x == y,
+        (Valor::Nulo, Valor::Nulo) => true,
+        (Valor::Arreglo(x), Valor::Arreglo(y)) | (Valor::Lista(x), Valor::Lista(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(a, b)| valores_iguales(a, b))
+        }
+        _ => false,
+    }
+}
+
+fn ordenar_valores(valores: &mut [Valor]) -> bool {
+    if valores.is_empty() {
+        return true;
+    }
+    let primero = &valores[0];
+    for v in &valores[1..] {
+        match (primero, v) {
+            (Valor::Entero(_), Valor::Entero(_)) => {}
+            (Valor::Decimal(_), Valor::Decimal(_)) => {}
+            (Valor::Real(_), Valor::Real(_)) => {}
+            (Valor::Texto(_), Valor::Texto(_)) => {}
+            _ => return false,
+        }
+    }
+    valores.sort_by(|a, b| match (a, b) {
+        (Valor::Entero(x), Valor::Entero(y)) => x.cmp(y),
+        (Valor::Decimal(x), Valor::Decimal(y)) => x.cmp(y),
+        (Valor::Real(x), Valor::Real(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+        (Valor::Texto(x), Valor::Texto(y)) => x.cmp(y),
+        _ => std::cmp::Ordering::Equal,
+    });
+    true
+}
+
+fn validar_ruta_archivo(
+    ruta: &str,
+    entorno: &Entorno,
+    linea: usize,
+    columna: usize,
+) -> Result<std::path::PathBuf, ErrorEjecucion> {
+    let root = match &entorno.cargador {
+        Some(c) => c.lock().unwrap().root().to_path_buf(),
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    };
+    let root = std::fs::canonicalize(&root).unwrap_or(root);
+    let path = std::path::Path::new(ruta);
+    let canonical = if path.exists() {
+        std::fs::canonicalize(path).map_err(|e| {
+            err_builtin(
+                CausaError::ErrorDeArchivo {
+                    ruta: ruta.to_string(),
+                    detalle: e.to_string(),
+                },
+                linea,
+                columna,
+            )
+        })?
+    } else {
+        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+        let canon_parent = std::fs::canonicalize(parent).map_err(|e| {
+            err_builtin(
+                CausaError::ErrorDeArchivo {
+                    ruta: ruta.to_string(),
+                    detalle: e.to_string(),
+                },
+                linea,
+                columna,
+            )
+        })?;
+        match path.file_name() {
+            Some(name) => canon_parent.join(name),
+            None => canon_parent,
+        }
+    };
+    if !canonical.starts_with(&root) {
+        return Err(err_builtin(
+            CausaError::RutaNoPermitida {
+                ruta: canonical.display().to_string(),
+            },
+            linea,
+            columna,
+        ));
+    }
+    Ok(canonical)
 }
 
 #[cfg(test)]
