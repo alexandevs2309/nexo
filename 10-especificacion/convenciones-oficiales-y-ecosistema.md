@@ -1,7 +1,8 @@
 # Convenciones oficiales y ecosistema de BASILISCO
 
-- **Estado:** propuesta de arquitectura; requiere aprobación del autor antes de convertirse en contrato normativo.
+- **Estado:** decisiones de dirección aprobadas por el autor el 2026-10-29; implementación pendiente. Este documento no afirma que el prototipo ya cumpla las convenciones objetivo.
 - **Objetivo:** que BASILISCO tenga una experiencia consistente de instalación, proyectos, extensiones, bibliotecas, paquetes y distribución.
+- **Decisiones aprobadas:** extensión canónica objetivo `.bs`; manifiesto `basilisco.toml` con TOML; CLI principal `bsk`; registro oficial propio por fases.
 - **Principio:** una convención oficial, un formato de manifiesto, un comando principal y reglas de compatibilidad documentadas.
 
 ## 1. Aclaración de conceptos
@@ -24,39 +25,40 @@ Los lenguajes no suelen ser un único programa aislado. El ecosistema se compone
 
 BASILISCO debe definir estas piezas de forma explícita, aunque al principio algunas funciones sean locales o limitadas.
 
-## 2. Propuesta de nombres y convenciones
+## 2. Convenciones objetivo aprobadas y estado de implementación
 
-Los nombres siguientes son una propuesta, no una afirmación de que todos los comandos ya existan.
+Las decisiones de dirección de esta sección fueron aprobadas por el autor. Son el objetivo de migración, no una afirmación de que la implementación actual ya las cumpla.
 
 ### 2.1 Identidad y ejecutables
 
 - Nombre del lenguaje: **BASILISCO**.
-- Comando principal: `basilisco`.
-- Alias corto: `bsk`.
-- Extensión canónica de fuente: `.bsk`.
-- Extensión histórica: `.nexo`, solo por compatibilidad temporal y con aviso.
+- Comando principal objetivo: `bsk`.
+- Alias de compatibilidad: `basilisco`.
+- Extensión canónica objetivo de fuente: `.bs`.
+- Extensión anterior: `.bsk`, que debe mantenerse temporalmente por compatibilidad.
+- Extensión histórica: `.nexo`, que se conserva temporalmente mientras las pruebas confirmen su aceptación.
 - No aceptar `.nx` sin una decisión explícita de compatibilidad.
-- Todos los ejemplos oficiales nuevos deben usar `.bsk`.
+- Los ejemplos nuevos deben usar `.bs` después de que la migración de código esté implementada; hasta entonces, la documentación de uso real debe identificar la extensión que admite el prototipo.
 - El número de versión del CLI debe corresponder al release del paquete; la versión del lenguaje/contrato debe documentarse por separado si evoluciona de forma independiente.
 
 ### 2.2 Comandos canónicos propuestos
 
 | Comando | Propósito |
 |---|---|
-| `basilisco --version` | Mostrar versión del CLI/runtime |
-| `basilisco --help` | Ayuda general |
-| `basilisco nuevo proyecto <nombre>` | Crear estructura de proyecto |
-| `basilisco run [archivo.bsk]` | Ejecutar archivo o entrada del proyecto |
-| `basilisco analizar [ruta]` | Lexer, parser y análisis semántico sin ejecutar |
-| `basilisco formatear [ruta]` | Formatear fuente |
-| `basilisco probar [ruta]` | Ejecutar pruebas del proyecto |
-| `basilisco instalar` | Resolver e instalar dependencias declaradas |
-| `basilisco agregar <paquete> [versión]` | Añadir dependencia al manifiesto |
-| `basilisco quitar <paquete>` | Quitar dependencia |
-| `basilisco paquetes` | Listar dependencias resueltas |
-| `basilisco publicar` | Validar y publicar un paquete, cuando exista registro remoto |
-| `basilisco doc` | Generar/mostrar documentación, cuando se implemente |
-| `basilisco fmt --check` | Comprobar formato sin modificar archivos, si se adopta esta forma |
+| `bsk --version` | Mostrar versión del CLI/runtime |
+| `bsk --help` | Ayuda general |
+| `bsk nuevo proyecto <nombre>` | Crear estructura de proyecto |
+| `bsk run [archivo.bs]` | Ejecutar archivo o entrada del proyecto |
+| `bsk analizar [ruta]` | Lexer, parser y análisis semántico sin ejecutar |
+| `bsk formatear [ruta]` | Formatear fuente |
+| `bsk probar [ruta]` | Ejecutar pruebas del proyecto |
+| `bsk instalar` | Resolver e instalar dependencias declaradas |
+| `bsk agregar <paquete> [versión]` | Añadir dependencia al manifiesto |
+| `bsk quitar <paquete>` | Quitar dependencia |
+| `bsk paquetes` | Listar dependencias resueltas |
+| `bsk publicar` | Validar y publicar un paquete, cuando exista registro remoto |
+| `bsk doc` | Generar/mostrar documentación, cuando se implemente |
+| `bsk fmt --check` | Comprobar formato sin modificar archivos, si se adopta esta forma |
 
 No prometer comandos que todavía no estén implementados. Mantener compatibilidad con los nombres existentes mediante aliases o deprecación documentada; evitar dos comandos que hagan lo mismo de forma diferente.
 
@@ -66,13 +68,14 @@ Propuesta inicial:
 
 | Extensión | Uso |
 |---|---|
-| `.bsk` | Fuente BASILISCO |
+| `.bs` | Extensión canónica objetivo de fuente BASILISCO |
+| `.bsk` | Extensión anterior; mantener temporalmente por compatibilidad |
 | `.bskm` | Propuesta para módulo BASILISCO separado, solo si hace falta distinguirlo de un programa ejecutable |
 | `.bskpkg` | Propuesta para archivo de paquete distribuible, únicamente si se define un formato binario/archivo oficial |
 | `.bsk.lock` | Alternativa propuesta para lockfile; actualmente el proyecto usa `basilisco.lock`, que debe conservarse hasta una migración aprobada |
 | `.bskc` | No reservar todavía; decidir solo si aparece un artefacto compilado con formato estable |
 
-**Recomendación:** por ahora, mantener únicamente `.bsk` como extensión canónica de código fuente y `.nexo` como legado. No inventar extensiones adicionales antes de que tengan una función técnica real. Las bibliotecas pueden ser directorios/paquetes descritos por el manifiesto sin necesitar una extensión de archivo especial.
+**Decisión objetivo:** `.bs` será la extensión canónica; `.bsk` y `.nexo` deben permanecer aceptadas durante la transición según una política de deprecación. La implementación actual sigue usando `.bsk` como canónica, por lo que este cambio requiere código, pruebas y migración de ejemplos. No inventar extensiones adicionales antes de que tengan una función técnica real.
 
 ## 4. Estructura oficial propuesta para un proyecto
 
@@ -102,9 +105,11 @@ Reglas:
 - Los artefactos generados deben ir en un directorio ignorado por Git, por ejemplo `build/` o `.basilisco/`, tras decidir uno.
 - La creación del proyecto debe producir un ejemplo que se ejecute sin conexión ni dependencias externas.
 
-## 5. Un único manifiesto
+## 5. Un único manifiesto TOML
 
-El repositorio ya tiene documentación de dos subconjuntos de manifiesto `basilisco.toml`: uno orientado a proyecto y otro a paquetes/dependencias. Eso puede generar incompatibilidad si ambos se implementan como formatos separados.
+El repositorio contiene dos parsers manuales diferentes para `basilisco.toml`: `proyecto.rs` admite solo asignaciones simples de cadenas y rechaza tablas/arrays; `paquetes.rs` admite un subconjunto distinto con `[paquete]`, `[dependencias]` y tablas inline. Por tanto, la implementación actual no es un parser TOML completo ni un único esquema.
+
+**Decisión:** conservar el nombre `basilisco.toml` y usar TOML como formato de configuración. La implementación debe usar un parser compatible con la versión de TOML fijada y validar por separado el esquema BASILISCO. No declarar compatibilidad completa con TOML hasta que las pruebas lo demuestren.
 
 Propuesta de un solo formato TOML:
 
@@ -112,7 +117,7 @@ Propuesta de un solo formato TOML:
 [proyecto]
 nombre = "mi_proyecto"
 version = "0.1.0"
-entrada = "src/principal.bsk"
+entrada = "src/principal.bs"
 requerimiento_basilisco = ">=0.6.0"
 
 [dependencias]
@@ -264,19 +269,21 @@ El lenguaje debe tener un perfil de conformidad por versión. Una extensión exp
 | Python | `.py` | `pip` instala; `python` ejecuta | PyPI |
 | JavaScript/Node.js | `.js`, `.mjs`, `.cjs` según contexto | `npm` | npm registry |
 | Rust | `.rs` | `cargo` | crates.io |
-| BASILISCO (propuesta/estado actual) | `.bsk` | `basilisco` / `bsk`; comandos de paquetes en evolución | Registro remoto aún por definir |
+| BASILISCO (objetivo) | `.bs` | `bsk` (alias `basilisco`) | Registro oficial propio por fases |
 
 Las convenciones externas son referencias, no plantillas que deban copiarse literalmente. La meta es que el usuario no necesite entender el interior del intérprete para crear, ejecutar, probar, instalar y publicar.
 
-## 12. Decisiones que debe aprobar el autor
+## 12. Decisiones y tareas pendientes
 
-- [ ] Mantener `.bsk` como única extensión canónica.
-- [ ] Mantener `basilisco` como CLI principal y `bsk` como alias.
-- [ ] Elegir una única gramática de `basilisco.toml`.
+Las decisiones principales de extensión, manifiesto, CLI y registro ya fueron aprobadas como dirección el 2026-10-29. Siguen pendientes de especificación e implementación:
+
+- [ ] Migrar a `.bs` como extensión canónica y mantener `.bsk`/`.nexo` durante la transición.
+- [ ] Usar `bsk` como comando principal y conservar `basilisco` como alias.
+- [ ] Implementar un único esquema versionado para `basilisco.toml` usando TOML conforme.
 - [ ] Aprobar estructura estándar de proyectos.
 - [ ] Elegir convención de nombres de variables, funciones, tipos y paquetes.
 - [ ] Unificar `importar`/`usar`/`exportar` en una interfaz modular coherente.
-- [ ] Definir el alcance del gestor local antes del registro remoto.
+- [ ] Completar y probar el gestor local antes de construir el registro remoto propio.
 - [ ] Aprobar política de compatibilidad y deprecación.
 - [ ] Definir qué módulos integran la biblioteca estándar inicial.
 - [ ] Definir qué significa “estable” para cada perfil del lenguaje.
@@ -293,4 +300,4 @@ Las convenciones externas son referencias, no plantillas que deban copiarse lite
 
 ## Regla final
 
-BASILISCO debe ofrecer una experiencia coherente de extremo a extremo: instalar el runtime, crear un proyecto, escribir `.bsk`, ejecutar, analizar, probar, añadir una biblioteca, reproducir dependencias y —cuando exista un registro— publicar un paquete. Las convenciones se deben definir antes de multiplicar herramientas y formatos.
+BASILISCO debe ofrecer una experiencia coherente de extremo a extremo: instalar el runtime, crear un proyecto, escribir `.bs`, ejecutar, analizar, probar, añadir una biblioteca, reproducir dependencias y —cuando exista un registro— publicar un paquete. Hasta que la migración esté implementada y verificada, la extensión `.bs` y el uso principal de `bsk` son objetivos, no capacidades confirmadas del código. Las convenciones se deben definir antes de multiplicar herramientas y formatos.
