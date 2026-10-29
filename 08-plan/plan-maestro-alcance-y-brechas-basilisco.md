@@ -216,9 +216,10 @@ Las prioridades son recomendaciones de ingeniería, no una afirmación de que el
 3. **Completar análisis semántico y tipos:** base para todas las funciones posteriores.
 4. **Implementar funciones de primera clase:** primero valores función y firmas; luego cierres.
 5. **Completar colecciones, errores y módulos.**
-6. **Formalizar convención de proyecto, CLI y paquetes.**
-7. **Ampliar biblioteca estándar y documentación.**
-8. **Mejorar publicación/CI y, con métricas, decidir IR/VM/FFI.**
+6. **Ejecutar la migración de convenciones aprobada:** `.bs` canónica, `bsk` principal, un único `basilisco.toml` TOML y compatibilidad temporal con `.bsk`/`.nexo`.
+7. **Completar paquetes locales reproducibles y el lockfile antes del registro remoto.**
+8. **Ampliar biblioteca estándar y documentación sincronizada.**
+9. **Desarrollar el registro oficial por fases y mejorar publicación/CI; con métricas, decidir IR/VM/FFI.**
 
 No iniciar varias fases semánticas grandes a la vez. Cada fase debe terminar con pruebas, documentación y un commit revisable.
 
@@ -256,3 +257,21 @@ El registro de brechas del proyecto informa una ejecución local de `cargo test`
 - `prototipo/src/` y `prototipo/tests/`
 
 **Regla final:** ante una discrepancia, no asumir que el README o el código gana automáticamente. Registrar el conflicto, decidir cuál es el comportamiento normativo, añadir la prueba correspondiente y actualizar las fuentes afectadas.
+
+
+## 9. Decisiones de ecosistema aprobadas y plan de migración
+
+El 2026-10-29 el autor aprobó como dirección de producto:
+- extensión de fuente objetivo `.bs`;
+- manifiesto `basilisco.toml` con formato TOML;
+- comando principal `bsk`, manteniendo `basilisco` como alias de compatibilidad;
+- registro oficial de paquetes desarrollado por fases.
+
+Estas decisiones **no significan que estén implementadas**. El estado observado sigue siendo:
+- la CLI define `.bsk` como extensión canónica y `.nexo` como legado;
+- existen dos parsers manuales distintos para `basilisco.toml`, ninguno de los cuales garantiza TOML completo;
+- el gestor de paquetes resuelve dependencias localmente y no descarga del registro remoto.
+
+El plan detallado, incluyendo compatibilidad, fases, pruebas y cambios documentales, está en [`08-plan/migracion-convenciones-basilisco.md`](migracion-convenciones-basilisco.md).
+
+**Bloqueo previo a implementación:** especificar el esquema único del manifiesto, fijar la versión de TOML admitida y definir la política de transición para extensiones. No publicar documentación que presente `.bs` o el registro remoto como capacidades disponibles hasta que pasen las pruebas de aceptación.
