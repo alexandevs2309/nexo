@@ -1,6 +1,6 @@
 # BASILISCO — Prototipo funcional
 
-**Estado:** BASILISCO 0.4.0 está publicado; la versión 0.5.0 está en desarrollo. El prototipo Rust de `prototipo/` es un intérprete con lexer, parser, evaluador, funciones, control de flujo, proyectos, módulos, formateador y resolución **local** de paquetes. La ejecución normal interpreta el AST directamente. El comando `analizar` comprueba léxico y sintaxis; todavía no hay análisis semántico estático integrado. Este repositorio no contiene una IR ni una máquina virtual implementadas. El código se distribuye bajo Apache License 2.0 conforme a `LICENSE`. **Nexo** queda como nombre histórico; la identidad objetivo es **BASILISCO**.
+**Estado del código:** el manifiesto `prototipo/Cargo.toml` declara la versión `0.6.0`; la versión publicada en el registro de paquetes debe comprobarse por separado. El prototipo Rust de `prototipo/` es un intérprete con lexer, parser, evaluador, funciones, control de flujo, proyectos, módulos, formateador y resolución **local** de paquetes. La ejecución normal interpreta el AST directamente. `analizar` integra validaciones léxicas, sintácticas y análisis semántico disponible en el prototipo, cuyo alcance debe evaluarse contra la especificación. Este repositorio no contiene una IR ni una máquina virtual implementadas. El código se distribuye bajo Apache License 2.0 conforme a `LICENSE`. **Nexo** queda como nombre histórico; la identidad del lenguaje es **BASILISCO**.
 
 ## Propósito
 Preparar una base extensa para desarrollar BASILISCO como lenguaje multipropósito, con una experiencia de programación orientada al español, rigor técnico, interoperabilidad y evolución gradual.
@@ -12,10 +12,11 @@ El código de BASILISCO se distribuye bajo **Apache-2.0**. Consulta el archivo [
 - **Validación:** ejecutar `cargo test` y `cargo clippy --all-targets -- -D warnings`.
 - **Ejecutar las pruebas y la demo:** `cd prototipo && cargo test && cargo run -- demo`
 - **Ejecutar un archivo:** desde `prototipo/`, `cargo run -- run examples/tutorial_inicio.bsk`.
-- **CLI:** `basilisco nuevo` crea `hola.bsk` en la carpeta actual; `basilisco run archivo.bsk` lo ejecuta. `bsk` es el alias. `--help` y `--version` muestran ayuda y versión.
-- **Extensiones:** `.bsk` es canónica; `.nexo` se acepta como legado; `.nx` no está soportada.
+- **CLI actual:** los binarios `basilisco` y `bsk` comparten el punto de entrada. El contrato actual de mensajes/documentación todavía usa `basilisco` como comando principal; ambos ofrecen `--help` y `--version`.
+- **Extensiones actuales:** `.bsk` es canónica; `.nexo` se acepta como legado; `.nx` no está soportada.
+- **Migración aprobada, aún no implementada:** `.bs` será la extensión canónica y `bsk` el comando principal documentado. `.bsk` y `.nexo` deben conservarse durante una transición compatible. Ver [plan de migración](08-plan/migracion-convenciones-basilisco.md).
 - **Tutorial verificable:** [prototipo/tutorial/01-primer-programa.md](prototipo/tutorial/01-primer-programa.md).
-- **Ejemplos ejecutables:** `prototipo/examples/*.bsk`. La CLI indica archivo, línea y columna en errores de ejecución.
+- **Ejemplos ejecutables actuales:** `prototipo/examples/*.bsk`. La migración a `.bs` no se considera terminada hasta actualizar resolución, imports, formateador, fixtures, ejemplos y pruebas.
 - **Perfil v0.4:** [perfil de conformidad](10-especificacion/perfil-de-conformidad-v0.4.md) aprobado como contrato acotado por ADR-0015. No declara estable el lenguaje completo ni autoriza por sí solo su publicación.
 - **Gobernanza:** documentos y decisiones en `00-gobernanza/`, validación en `07-validacion/` y especificación en `10-especificacion/`.
 
@@ -32,14 +33,14 @@ Visión y requisitos; sintaxis y gramática; semántica; tipos; memoria; funcion
 - Exploratorio: posibilidad futura, no compromiso.
 
 ## Estado comprobado y limitaciones
-- El comando `analizar` solo valida léxico y sintaxis. La comprobación de tipos y varios errores ocurren durante la ejecución; no hay un pase semántico estático general.
+- El comando `analizar` integra el análisis semántico existente; no debe interpretarse como garantía de que todas las reglas de tipos y nombres del lenguaje estén cubiertas. La cobertura debe cerrarse con pruebas positivas y negativas.
 - Los módulos locales y proyectos funcionan en el prototipo, pero su semántica y sus garantías todavía son prototipales.
-- El gestor resuelve dependencias locales desde rutas configuradas, `paquetes/` o `vendor/` y genera `basilisco.lock`. No descarga paquetes ni resuelve dependencias transitivas; tampoco verifica firmas o integridad criptográfica.
+- El gestor resuelve dependencias locales desde rutas configuradas, `paquetes/` o `vendor/` y genera `basilisco.lock`. No descarga paquetes del registro remoto. La revisión del código detectó dos parsers manuales distintos para `basilisco.toml`, ambos limitados a subconjuntos diferentes; hasta unificar el esquema y usar un parser TOML conforme, no debe afirmarse compatibilidad completa con TOML.
 - La concurrencia se limita a `iniciar_tarea` y `esperar_tarea`; no hay canales, cancelación ni sincronización de usuario.
 - La biblioteca estándar es pequeña: incluye operaciones de texto y E/S básica. No hay FFI, bindings nativos, backend WASM/nativo, depurador ni IDE implementados en este repositorio.
 - No hay una IR o VM en el árbol actual. Los documentos pueden proponer capacidades futuras sin que eso signifique que existan en el código.
 
-Los ejemplos ejecutables están en `prototipo/examples/*.bsk`; los de `ejemplos/` son conceptuales. Consulta el [registro de brechas](10-especificacion/registro-de-brechas.md) para prioridades y evidencia.
+Los ejemplos ejecutables actuales están en `prototipo/examples/*.bsk`; los de `ejemplos/` son conceptuales. Consulta el [registro de brechas](10-especificacion/registro-de-brechas.md) y el [plan de migración de convenciones](08-plan/migracion-convenciones-basilisco.md) para prioridades, estado y criterios de aceptación.
 
 ## Estado de publicación
-La versión `0.4.0` está publicada. La versión `0.5.0` está en desarrollo y aún no se ha publicado.
+La versión declarada por `prototipo/Cargo.toml` en la rama auditada es `0.6.0`. La publicación en crates.io es un estado distinto del número del manifiesto y debe verificarse antes de anunciar una versión disponible.
