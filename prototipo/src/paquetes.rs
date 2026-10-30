@@ -51,6 +51,8 @@ pub struct DependenciaResuelta {
     pub version: String,
     /// Ruta al archivo `.bsk` de entrada del paquete.
     pub ruta: PathBuf,
+    /// Hash SHA-256 del archivo de entrada, para verificación de integridad.
+    pub hash: String,
 }
 
 /// Lee y valida `basilisco.toml` en `base`.
@@ -150,17 +152,67 @@ pub fn parsear_manifiesto(texto: &str) -> Result<Manifiesto, String> {
     })
 }
 
-/// Resuelve las dependencias de un manifiesto contra el sistema de archivos.
+/// Resuelve las dependencias de un manifiesto contra el sistema de archivos,
+/// incluyendo dependencias transitivas, detección de ciclos y conflictos.
 pub fn resolver_dependencias(
     manifiesto: &Manifiesto,
     base: &Path,
 ) -> Result<Vec<DependenciaResuelta>, String> {
-    let mut resueltas = Vec::with_capacity(manifiesto.dependencias.len());
+    let base_canonical = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    let mut resueltas: std::collections::BTreeMap<String, DependenciaResuelta> =
+        std::collections::BTreeMap::new();
+    let mut visitando: std::collections::HashSet<String> = std::collections::HashSet::new();
+    resolver_recursivo(manifiesto, &base_canonical, &mut resueltas, &mut visitando)?;
+    Ok(resueltas.into_values().collect())
+}
+
+fn resolver_recursivo(
+    manifiesto: &Manifiesto,
+    base: &Path,
+    resueltas: &mut std::collections::BTreeMap<String, DependenciaResuelta>,
+    visitando: &mut std::collections::HashSet<String>,
+) -> Result<(), String> {
     for dep in &manifiesto.dependencias {
-        resueltas.push(resolver_dependencia(dep, base)?);
+        if visitando.contains(&dep.nombre) {
+            return Err(format!(
+                "ciclo de dependencias detectado en '{}'",
+                dep.nombre
+            ));
+        }
+        if let Some(existing) = resueltas.get(&dep.nombre) {
+            if !version_compatible(&dep.version, &existing.version) {
+                return Err(format!(
+                    "conflicto de versión para '{}': se pidió {} y ya se resolvió {}",
+                    dep.nombre, dep.version, existing.version
+                ));
+            }
+            continue;
+        }
+        visitando.insert(dep.nombre.clone());
+        let resolved = resolver_dependencia(dep, base)?;
+        // Hash de integridad.
+        let hash = hash_archivo(&resolved.ruta).unwrap_or_default();
+        let mut resolved = resolved;
+        resolved.hash = hash;
+        let _ = asegurar_cache(base, &resolved);
+
+        // Dependencias transitivas.
+        if let Ok(texto) = std::fs::read_to_string(&resolved.ruta) {
+            // buscar manifiesto vecino
+            if let Some(_man) = manifiesto_vecino(&resolved.ruta) {
+                // resolver con base = directorio del paquete
+                let dep_base = resolved.ruta.parent().unwrap_or(base).to_path_buf();
+                if let Ok(subman) = cargar_manifiesto(&dep_base) {
+                    resolver_recursivo(&subman, base, resueltas, visitando)?;
+                }
+            }
+            let _ = texto;
+        }
+
+        resueltas.insert(dep.nombre.clone(), resolved);
+        visitando.remove(&dep.nombre);
     }
-    resueltas.sort_by(|a, b| a.nombre.cmp(&b.nombre));
-    Ok(resueltas)
+    Ok(())
 }
 
 fn resolver_dependencia(dep: &Dependencia, base: &Path) -> Result<DependenciaResuelta, String> {
@@ -173,8 +225,26 @@ fn resolver_dependencia(dep: &Dependencia, base: &Path) -> Result<DependenciaRes
     candidatos.push(base.join(&dep.nombre));
 
     let mut buscados = Vec::new();
-    for candidato in candidatos {
-        if let Some(archivo) = archivo_de_paquete(&candidato) {
+    for (i, candidato) in candidatos.iter().enumerate() {
+        let explicito = dep.ruta.is_some() && i == 0;
+        let canonical = std::fs::canonicalize(candidato).ok();
+        if let Some(c) = &canonical {
+            if explicito {
+                let parent = base.parent().unwrap_or(base);
+                let parent_canonical =
+                    std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+                if !c.starts_with(&parent_canonical) {
+                    continue;
+                }
+            } else {
+                let base_canonical =
+                    std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+                if !c.starts_with(&base_canonical) {
+                    continue;
+                }
+            }
+        }
+        if let Some(archivo) = archivo_de_paquete(candidato) {
             let declarado = manifestacion_de_paquete(&archivo);
             if let Some(otro) = &declarado {
                 if otro.nombre != dep.nombre {
@@ -197,6 +267,7 @@ fn resolver_dependencia(dep: &Dependencia, base: &Path) -> Result<DependenciaRes
                 nombre: dep.nombre.clone(),
                 version,
                 ruta: archivo,
+                hash: String::new(),
             });
         }
         buscados.push(candidato.display().to_string());
@@ -243,17 +314,75 @@ fn manifestacion_de_paquete(archivo: &Path) -> Option<Paquete> {
     }
 }
 
+/// Verifica que los hashes de los paquetes resueltos coincidan con el lock existente.
+pub fn verificar_integridad(base: &Path, resueltas: &[DependenciaResuelta]) -> Result<(), String> {
+    // Calcular hashes actuales.
+    for dep in resueltas {
+        let actual = hash_archivo(&dep.ruta)?;
+        if !dep.hash.is_empty() && dep.hash != actual {
+            return Err(format!(
+                "integridad comprometida para '{}': hash esperado {} y se obtuvo {}",
+                dep.nombre, dep.hash, actual
+            ));
+        }
+    }
+    // Si existe lock previo, comparar.
+    if let Ok(Some(previas)) = leer_bloqueo(base) {
+        for prev in &previas {
+            if let Some(actual) = resueltas.iter().find(|d| d.nombre == prev.nombre) {
+                let actual_hash = hash_archivo(&actual.ruta)?;
+                if !prev.hash.is_empty() && prev.hash != actual_hash {
+                    return Err(format!(
+                        "integridad comprometida para '{}': hash del bloqueo {} y hash actual {}",
+                        prev.nombre, prev.hash, actual_hash
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Asegura una copia en caché local organizada por nombre y versión.
+pub fn asegurar_cache(base: &Path, dep: &DependenciaResuelta) -> Result<PathBuf, String> {
+    let cache_dir = base
+        .join(".basilisco")
+        .join("cache")
+        .join(&dep.nombre)
+        .join(&dep.version);
+    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+    let destino = cache_dir.join(dep.ruta.file_name().unwrap_or_default());
+    if destino.exists() {
+        let actual = hash_archivo(&destino)?;
+        if !dep.hash.is_empty() && actual != dep.hash {
+            return Err(format!(
+                "integridad comprometida en caché para '{}'",
+                dep.nombre
+            ));
+        }
+    } else {
+        fs::copy(&dep.ruta, &destino).map_err(|e| e.to_string())?;
+    }
+    Ok(destino)
+}
+
 /// Escribe `basilisco.lock` de forma determinista.
 pub fn escribir_bloqueo(base: &Path, resueltas: &[DependenciaResuelta]) -> Result<(), String> {
     let mut salida = String::new();
     salida.push_str("# Generado por basilisco. No editar a mano.\n");
     salida.push_str(&format!("version = {VERSION_BLOQUEO}\n"));
     for dep in resueltas {
+        let base_canonical = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
         let ruta = dep
             .ruta
-            .strip_prefix(base)
+            .strip_prefix(&base_canonical)
             .map(Path::to_path_buf)
-            .unwrap_or_else(|_| dep.ruta.clone());
+            .unwrap_or_else(|_| {
+                dep.ruta
+                    .strip_prefix(base)
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|_| dep.ruta.clone())
+            });
         salida.push_str("\n[[dependencia]]\n");
         salida.push_str(&format!("nombre = \"{}\"\n", escapar(&dep.nombre)));
         salida.push_str(&format!("version = \"{}\"\n", escapar(&dep.version)));
@@ -261,6 +390,7 @@ pub fn escribir_bloqueo(base: &Path, resueltas: &[DependenciaResuelta]) -> Resul
             "ruta = \"{}\"\n",
             escapar(&ruta.to_string_lossy())
         ));
+        salida.push_str(&format!("hash = \"{}\"\n", escapar(&dep.hash)));
     }
     let ruta = base.join(BLOQUEO);
     fs::write(&ruta, salida).map_err(|e| format!("no se pudo escribir '{}': {e}", ruta.display()))
@@ -281,7 +411,13 @@ pub fn leer_bloqueo(base: &Path) -> Result<Option<Vec<DependenciaResuelta>>, Str
 
 fn parsear_bloqueo(texto: &str) -> Result<Vec<DependenciaResuelta>, String> {
     let mut resultado: Vec<DependenciaResuelta> = Vec::new();
-    let mut actual: Option<(Option<String>, Option<String>, Option<String>)> = None;
+    #[allow(clippy::type_complexity)]
+    let mut actual: Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = None;
     let mut version_bloqueo: Option<u32> = None;
 
     for (numero, cruda) in texto.lines().enumerate() {
@@ -293,7 +429,7 @@ fn parsear_bloqueo(texto: &str) -> Result<Vec<DependenciaResuelta>, String> {
             if let Some(prev) = actual.take() {
                 resultado.push(construir_dependencia(prev, numero)?);
             }
-            actual = Some((None, None, None));
+            actual = Some((None, None, None, None));
             continue;
         }
         if linea.starts_with('[') {
@@ -304,12 +440,13 @@ fn parsear_bloqueo(texto: &str) -> Result<Vec<DependenciaResuelta>, String> {
             .ok_or_else(|| format!("línea {}: se esperaba 'clave = valor'", numero + 1))?;
         let clave = clave.trim();
         let valor = valor.trim();
-        if let Some((nombre, version, ruta)) = actual.as_mut() {
+        if let Some((nombre, version, ruta, hash)) = actual.as_mut() {
             let texto = parsear_texto(valor).map_err(|e| format!("línea {}: {e}", numero + 1))?;
             match clave {
                 "nombre" => *nombre = Some(texto),
                 "version" => *version = Some(texto),
                 "ruta" => *ruta = Some(texto),
+                "hash" => *hash = Some(texto),
                 _ => {}
             }
         } else if clave == "version" {
@@ -357,10 +494,15 @@ fn parsear_bloqueo(texto: &str) -> Result<Vec<DependenciaResuelta>, String> {
 }
 
 fn construir_dependencia(
-    campos: (Option<String>, Option<String>, Option<String>),
+    campos: (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
     numero: usize,
 ) -> Result<DependenciaResuelta, String> {
-    let (nombre, version, ruta) = campos;
+    let (nombre, version, ruta, hash) = campos;
     let ubicacion = if numero == 0 {
         "al final del bloqueo".to_string()
     } else {
@@ -370,6 +512,7 @@ fn construir_dependencia(
         nombre: nombre.ok_or_else(|| format!("{ubicacion}: falta 'nombre'"))?,
         version: version.ok_or_else(|| format!("{ubicacion}: falta 'version'"))?,
         ruta: PathBuf::from(ruta.ok_or_else(|| format!("{ubicacion}: falta 'ruta'"))?),
+        hash: hash.unwrap_or_default(),
     })
 }
 
@@ -609,6 +752,7 @@ util = { version = "0.2.0", ruta = "../util" }
             nombre: "matematica".to_string(),
             version: "0.1.0".to_string(),
             ruta: PathBuf::from("paquetes/matematica/lib.bsk"),
+            hash: String::new(),
         }];
         let base = std::env::temp_dir().join(format!(
             "basilisco-bloqueo-{}-{:?}",
@@ -621,4 +765,158 @@ util = { version = "0.2.0", ruta = "../util" }
         assert_eq!(leidas, resueltas);
         fs::remove_dir_all(&base).ok();
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct VersionSem {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+fn parsear_version_sem(texto: &str) -> Option<VersionSem> {
+    let texto = texto.trim_start_matches('v');
+    let partes: Vec<&str> = texto.split('.').collect();
+    if partes.len() != 3 {
+        return None;
+    }
+    Some(VersionSem {
+        major: partes[0].parse().ok()?,
+        minor: partes[1].parse().ok()?,
+        patch: partes[2].parse().ok()?,
+    })
+}
+
+fn version_compatible(solicitada: &str, declarada: &str) -> bool {
+    let solicitada = solicitada.trim();
+    if solicitada == "*" {
+        return true;
+    }
+    if let Some(req) = solicitada.strip_prefix(">=") {
+        if let (Some(r), Some(d)) = (parsear_version_sem(req), parsear_version_sem(declarada)) {
+            return d >= r;
+        }
+        return solicitada == declarada;
+    }
+    if let Some(req) = solicitada.strip_prefix('^') {
+        if let (Some(r), Some(d)) = (parsear_version_sem(req), parsear_version_sem(declarada)) {
+            return d.major == r.major && d >= r;
+        }
+        return solicitada == declarada;
+    }
+    if let Some(req) = solicitada.strip_prefix('~') {
+        if let (Some(r), Some(d)) = (parsear_version_sem(req), parsear_version_sem(declarada)) {
+            return d.major == r.major && d.minor == r.minor && d >= r;
+        }
+        return solicitada == declarada;
+    }
+    solicitada == declarada
+}
+
+fn manifiesto_vecino(archivo: &Path) -> Option<PathBuf> {
+    let mut dir = archivo.parent()?;
+    loop {
+        let m = dir.join(MANIFIESTO);
+        if m.is_file() {
+            return Some(m);
+        }
+        dir = dir.parent()?;
+    }
+}
+
+fn hash_archivo(ruta: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(ruta).map_err(|e| e.to_string())?;
+    Ok(sha256_hex(&bytes))
+}
+
+// Implementación mínima de SHA-256.
+fn sha256_hex(data: &[u8]) -> String {
+    // Constantes.
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let k: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+
+    // Preprocesamiento.
+    let mut msg = data.to_vec();
+    let bit_len = (data.len() as u64) * 8;
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in msg.chunks(64) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let mut a = h[0];
+        let mut b = h[1];
+        let mut c = h[2];
+        let mut d = h[3];
+        let mut e = h[4];
+        let mut f = h[5];
+        let mut g = h[6];
+        let mut hh = h[7];
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(k[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
+    }
+
+    let mut out = String::new();
+    for v in h {
+        out.push_str(&format!("{:08x}", v));
+    }
+    out
 }

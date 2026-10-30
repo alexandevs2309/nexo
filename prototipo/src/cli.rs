@@ -620,6 +620,10 @@ fn instalar_paquetes(ruta: Option<PathBuf>) -> ExitCode {
         }
     };
 
+    if let Err(e) = paquetes::verificar_integridad(&base, &resueltas) {
+        eprintln!("error: {e}");
+        return ExitCode::from(3);
+    }
     if let Err(e) = paquetes::escribir_bloqueo(&base, &resueltas) {
         eprintln!("error: {e}");
         return ExitCode::from(3);
