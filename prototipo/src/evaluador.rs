@@ -2026,13 +2026,19 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             nombre,
             linea,
             columna,
-        } => env.buscar(nombre).ok_or_else(|| {
-            error(
-                CausaError::VariableNoDefinida(nombre.clone()),
-                *linea,
-                *columna,
-            )
-        }),
+        } => {
+            if let Some(v) = env.buscar(nombre) {
+                Ok(v)
+            } else if env.funciones.contains_key(nombre) {
+                Ok(Valor::Funcion(nombre.clone()))
+            } else {
+                Err(error(
+                    CausaError::VariableNoDefinida(nombre.clone()),
+                    *linea,
+                    *columna,
+                ))
+            }
+        }
         Expresion::Suma(a, b) => binaria(a, b, env, |x, y| x.suma(y)),
         Expresion::Resta(a, b) => binaria(a, b, env, |x, y| x.resta(y)),
         Expresion::Multiplicacion(a, b) => binaria(a, b, env, |x, y| x.multiplicacion(y)),
@@ -2157,13 +2163,23 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                 return evaluar_builtin(nombre, &vals, *linea, *columna, env);
             }
 
-            let fdef = env.funciones.get(nombre).cloned().ok_or_else(|| {
-                error(
+            let fdef = if let Some(f) = env.funciones.get(nombre).cloned() {
+                f
+            } else if let Some(Valor::Funcion(fn_name)) = env.buscar(nombre) {
+                env.funciones.get(&fn_name).cloned().ok_or_else(|| {
+                    error(
+                        CausaError::VariableNoDefinida(nombre.clone()),
+                        *linea,
+                        *columna,
+                    )
+                })?
+            } else {
+                return Err(error(
                     CausaError::VariableNoDefinida(nombre.clone()),
                     *linea,
                     *columna,
-                )
-            })?;
+                ));
+            };
             let mut vals = Vec::new();
             for a in argumentos {
                 vals.push(evaluar_con(a, env)?);
@@ -2515,6 +2531,17 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             linea,
             columna,
         } => {
+            // Funciones de primera clase (solo si no es acceso a miembro de módulo).
+            if !matches!(callee.as_ref(), Expresion::Acceso { .. }) {
+                let callee_val = evaluar_con(callee, env)?;
+                if let Valor::Funcion(fn_name) = callee_val {
+                    let mut vals = Vec::new();
+                    for a in argumentos {
+                        vals.push(evaluar_con(a, env)?);
+                    }
+                    return env.llamar_funcion_por_nombre(&fn_name, &vals, *linea, *columna);
+                }
+            }
             // Evaluate callee: should be Acceso → Modulo.
             let (modulo, miembro) = match callee.as_ref() {
                 Expresion::Acceso {
@@ -4248,10 +4275,11 @@ fn evaluar_builtin(
             }
             let func_name = match &args[1] {
                 Valor::Texto(s) => s.clone(),
+                Valor::Funcion(s) => s.clone(),
                 _ => {
                     return Err(err_builtin(
                         CausaError::AsignacionIncompatible {
-                            esperado: "texto".to_string(),
+                            esperado: "texto o función".to_string(),
                             obtenido: args[1].nombre_tipo().to_string(),
                         },
                         linea,
@@ -4310,10 +4338,11 @@ fn evaluar_builtin(
             }
             let func_name = match &args[1] {
                 Valor::Texto(s) => s.clone(),
+                Valor::Funcion(s) => s.clone(),
                 _ => {
                     return Err(err_builtin(
                         CausaError::AsignacionIncompatible {
-                            esperado: "texto".to_string(),
+                            esperado: "texto o función".to_string(),
                             obtenido: args[1].nombre_tipo().to_string(),
                         },
                         linea,
@@ -4398,10 +4427,11 @@ fn evaluar_builtin(
             }
             let func_name = match &args[1] {
                 Valor::Texto(s) => s.clone(),
+                Valor::Funcion(s) => s.clone(),
                 _ => {
                     return Err(err_builtin(
                         CausaError::AsignacionIncompatible {
-                            esperado: "texto".to_string(),
+                            esperado: "texto o función".to_string(),
                             obtenido: args[1].nombre_tipo().to_string(),
                         },
                         linea,

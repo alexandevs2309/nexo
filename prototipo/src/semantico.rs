@@ -28,6 +28,7 @@ pub enum TipoSem {
     /// Tipo estático aproximado para literales `[...]` cuyo contenedor
     /// concreto (arreglo o lista) se resuelve en ejecución.
     Coleccion(Box<TipoSem>),
+    Funcion,
     Nulo,
     Desconocido,
 }
@@ -43,6 +44,7 @@ impl TipoSem {
             TipoSem::Arreglo(t, n) => format!("arreglo<{}, {}>", t.nombre(), n),
             TipoSem::Lista(t) => format!("lista<{}>", t.nombre()),
             TipoSem::Coleccion(t) => format!("colección<{}>", t.nombre()),
+            TipoSem::Funcion => "función".to_string(),
             TipoSem::Nulo => "nulo".to_string(),
             TipoSem::Desconocido => "desconocido".to_string(),
         }
@@ -391,6 +393,12 @@ impl ContextoSemantico {
                 for st in &cuerpo {
                     self.analizar_sentencia(st.clone());
                 }
+                if tipo_retorno.is_none()
+                    && let Some(inf) = &self.retorno_inferido
+                    && let Some(sig) = self.funciones.get_mut(&nombre)
+                {
+                    sig.retorno = Some(inf.clone());
+                }
                 self.funcion_actual = prev_func;
                 self.retorno_esperado = prev_ret;
                 self.retorno_inferido = prev_inf;
@@ -598,9 +606,12 @@ impl ContextoSemantico {
                 linea,
                 columna,
                 ..
-            } => match self.buscar_variable(nombre) {
-                Some(info) => info.tipo,
-                None => {
+            } => {
+                if let Some(info) = self.buscar_variable(nombre) {
+                    info.tipo
+                } else if self.funciones.contains_key(nombre) {
+                    TipoSem::Funcion
+                } else {
                     self.error(
                         CausaError::VariableNoDefinida(nombre.clone()),
                         *linea,
@@ -608,7 +619,7 @@ impl ContextoSemantico {
                     );
                     TipoSem::Desconocido
                 }
-            },
+            }
             Expresion::Suma(a, b) => {
                 let ta = self.analizar_expresion(a);
                 let tb = self.analizar_expresion(b);
@@ -751,7 +762,11 @@ impl ContextoSemantico {
             } => {
                 let sig = self.funciones.get(nombre).cloned();
                 let builtin = crate::evaluador::NOMBRES_RESERVADOS.contains(&nombre.as_str());
-                if sig.is_none() && !builtin {
+                let var_funcion = self
+                    .buscar_variable(nombre)
+                    .map(|v| matches!(v.tipo, TipoSem::Funcion))
+                    .unwrap_or(false);
+                if sig.is_none() && !builtin && !var_funcion {
                     self.error(
                         CausaError::VariableNoDefinida(nombre.clone()),
                         *linea,
@@ -1120,6 +1135,7 @@ fn compatible(a: &TipoSem, b: &TipoSem) -> bool {
         (TipoSem::Arreglo(te, _), TipoSem::Coleccion(to)) => compatible(te, to),
         (TipoSem::Lista(te), TipoSem::Coleccion(to)) => compatible(te, to),
         (TipoSem::Coleccion(te), TipoSem::Coleccion(to)) => compatible(te, to),
+        (TipoSem::Funcion, TipoSem::Funcion) => true,
         _ => false,
     }
 }

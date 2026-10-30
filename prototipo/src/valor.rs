@@ -45,6 +45,8 @@ pub enum Valor {
     Archivo(Arc<Mutex<ArchivoInterno>>),
     /// Módulo cargado (ADR-0017). Referencia opaca al módulo.
     Modulo(Arc<crate::cargador::ModuloCargado>),
+    /// Función de primera clase (referencia por nombre).
+    Funcion(String),
 }
 
 /// Estado interno de un archivo abierto (ADR-0013 §3.5). Opaco para el código BASILISCO.
@@ -75,6 +77,7 @@ impl Clone for Valor {
             Valor::Nulo => Valor::Nulo,
             Valor::Archivo(arc) => Valor::Archivo(Arc::clone(arc)),
             Valor::Modulo(rc) => Valor::Modulo(Arc::clone(rc)),
+            Valor::Funcion(s) => Valor::Funcion(s.clone()),
         }
     }
 }
@@ -92,6 +95,7 @@ impl std::fmt::Debug for Valor {
             Valor::Nulo => write!(f, "Nulo"),
             Valor::Archivo(_) => write!(f, "Archivo(<opaco>)"),
             Valor::Modulo(m) => write!(f, "Modulo({})", m.ruta.display()),
+            Valor::Funcion(s) => write!(f, "Funcion({s})"),
         }
     }
 }
@@ -218,6 +222,7 @@ impl Valor {
             Valor::Nulo => "nulo",
             Valor::Archivo(_) => "archivo",
             Valor::Modulo(_) => "modulo",
+            Valor::Funcion(_) => "función",
         }
     }
 }
@@ -496,6 +501,7 @@ impl Valor {
             Valor::Nulo => false,
             Valor::Archivo(_) => false,
             Valor::Modulo(_) => false,
+            Valor::Funcion(_) => false,
         }
     }
 
@@ -517,6 +523,8 @@ impl Valor {
             Valor::Archivo(_) => f64::NAN,
             // Módulo no tiene representación numérica.
             Valor::Modulo(_) => f64::NAN,
+            // Función no tiene representación numérica.
+            Valor::Funcion(_) => f64::NAN,
         }
     }
 }
@@ -568,6 +576,7 @@ impl fmt::Display for Valor {
             Valor::Nulo => write!(f, "nulo"),
             Valor::Archivo(_) => write!(f, "<archivo>"),
             Valor::Modulo(m) => write!(f, "<modulo: {}>", m.ruta.display()),
+            Valor::Funcion(s) => write!(f, "<función: {s}>"),
         }
     }
 }

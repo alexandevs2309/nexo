@@ -1547,10 +1547,7 @@ impl Parser {
         while matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
             let t = &self.tokens[self.pos];
             let (linea, columna) = (t.linea, t.columna);
-            // Solo permitir si expr es un Acceso.
-            if !matches!(expr, Expresion::Acceso { .. }) {
-                return Err(self.error("llamada indirecta solo válida sobre acceso a miembro"));
-            }
+            // Permitir llamada sobre cualquier expresión que evalúe a una función.
             self.pos += 1; // '('
             self.omitir_finales_de_linea();
             let mut args = Vec::new();
