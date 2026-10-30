@@ -130,6 +130,10 @@ fn expr_str(e: &Expresion) -> String {
             let args: Vec<String> = argumentos.iter().map(expr_str).collect();
             format!("{}({})", expr_str(callee), args.join(", "))
         }
+        Expresion::Lambda { parametros, .. } => {
+            let params: Vec<String> = parametros.iter().map(|(n, _)| n.clone()).collect();
+            format!("funcion({}) {{ ... }}", params.join(", "))
+        }
         Expresion::Rango {
             inicio,
             fin,

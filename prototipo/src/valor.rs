@@ -47,6 +47,12 @@ pub enum Valor {
     Modulo(Arc<crate::cargador::ModuloCargado>),
     /// Función de primera clase (referencia por nombre).
     Funcion(String),
+    /// Clausura: función anidada con entorno léxico capturado.
+    FuncionClausura {
+        parametros: Vec<(String, Option<crate::parser::TipoAnotacion>)>,
+        cuerpo: Vec<crate::parser::Sentencia>,
+        entorno: Arc<Mutex<crate::evaluador::Entorno>>,
+    },
 }
 
 /// Estado interno de un archivo abierto (ADR-0013 §3.5). Opaco para el código BASILISCO.
@@ -78,6 +84,15 @@ impl Clone for Valor {
             Valor::Archivo(arc) => Valor::Archivo(Arc::clone(arc)),
             Valor::Modulo(rc) => Valor::Modulo(Arc::clone(rc)),
             Valor::Funcion(s) => Valor::Funcion(s.clone()),
+            Valor::FuncionClausura {
+                parametros,
+                cuerpo,
+                entorno,
+            } => Valor::FuncionClausura {
+                parametros: parametros.clone(),
+                cuerpo: cuerpo.clone(),
+                entorno: Arc::clone(entorno),
+            },
         }
     }
 }
@@ -96,6 +111,7 @@ impl std::fmt::Debug for Valor {
             Valor::Archivo(_) => write!(f, "Archivo(<opaco>)"),
             Valor::Modulo(m) => write!(f, "Modulo({})", m.ruta.display()),
             Valor::Funcion(s) => write!(f, "Funcion({s})"),
+            Valor::FuncionClausura { .. } => write!(f, "FuncionClausura"),
         }
     }
 }
@@ -223,6 +239,7 @@ impl Valor {
             Valor::Archivo(_) => "archivo",
             Valor::Modulo(_) => "modulo",
             Valor::Funcion(_) => "función",
+            Valor::FuncionClausura { .. } => "función",
         }
     }
 }
@@ -502,6 +519,7 @@ impl Valor {
             Valor::Archivo(_) => false,
             Valor::Modulo(_) => false,
             Valor::Funcion(_) => false,
+            Valor::FuncionClausura { .. } => false,
         }
     }
 
@@ -525,6 +543,7 @@ impl Valor {
             Valor::Modulo(_) => f64::NAN,
             // Función no tiene representación numérica.
             Valor::Funcion(_) => f64::NAN,
+            Valor::FuncionClausura { .. } => f64::NAN,
         }
     }
 }
@@ -577,6 +596,7 @@ impl fmt::Display for Valor {
             Valor::Archivo(_) => write!(f, "<archivo>"),
             Valor::Modulo(m) => write!(f, "<modulo: {}>", m.ruta.display()),
             Valor::Funcion(s) => write!(f, "<función: {s}>"),
+            Valor::FuncionClausura { .. } => write!(f, "<clausura>"),
         }
     }
 }

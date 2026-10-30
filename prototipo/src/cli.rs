@@ -636,7 +636,21 @@ fn instalar_paquetes(ruta: Option<PathBuf>) -> ExitCode {
         resueltas.len()
     );
     for dep in &resueltas {
-        println!("  {} {} -> {}", dep.nombre, dep.version, dep.ruta.display());
+        if dep.verificado {
+            println!(
+                "  {} {} -> {} (hash verificado)",
+                dep.nombre,
+                dep.version,
+                dep.ruta.display()
+            );
+        } else {
+            println!(
+                "  {} {} -> {} (hash no verificado)",
+                dep.nombre,
+                dep.version,
+                dep.ruta.display()
+            );
+        }
     }
     println!("bloqueo escrito: {}", base.join(BLOQUEO).display());
     ExitCode::SUCCESS

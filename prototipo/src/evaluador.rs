@@ -471,6 +471,8 @@ pub struct Entorno {
     pub cargador: Option<Arc<Mutex<CargadorModulos>>>,
     /// Archivo de origen asociado a este entorno (para diagnósticos).
     pub archivo: Option<String>,
+    /// Indica si se está ejecutando dentro de una función.
+    pub en_funcion: bool,
 }
 
 impl Entorno {
@@ -481,6 +483,7 @@ impl Entorno {
             exportaciones: HashSet::new(),
             cargador: None,
             archivo: None,
+            en_funcion: false,
         }
     }
 
@@ -492,6 +495,7 @@ impl Entorno {
             exportaciones: HashSet::new(),
             cargador: Some(cargador),
             archivo,
+            en_funcion: false,
         }
     }
 
@@ -563,6 +567,132 @@ impl Entorno {
         }
     }
 
+    /// Llama a un valor función (global o clausura).
+    pub fn llamar_valor(
+        &mut self,
+        func_val: Valor,
+        args: &[Valor],
+        linea: usize,
+        columna: usize,
+    ) -> Result<Valor, ErrorEjecucion> {
+        match func_val {
+            Valor::Funcion(nombre) => self.llamar_funcion_por_nombre(&nombre, args, linea, columna),
+            Valor::FuncionClausura {
+                parametros,
+                cuerpo,
+                entorno,
+            } => {
+                if args.len() != parametros.len() {
+                    return Err(error(
+                        CausaError::FirmaInvalida {
+                            funcion: "clausura".to_string(),
+                            esperado: parametros.len(),
+                            obtenido: args.len(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+                let mut captured = entorno.lock().unwrap();
+                captured.ambitos.push(HashMap::new());
+                for ((pname, _), val) in parametros.iter().zip(args.iter()) {
+                    captured.insertar_variable(
+                        pname.clone(),
+                        VariableInfo {
+                            valor: val.clone(),
+                            tipo_declarado: None,
+                            mutable: true,
+                            es_const: false,
+                        },
+                    );
+                }
+                let result = captured.ejecutar_funcion_sentencias(&cuerpo, "clausura");
+                captured.ambitos.pop();
+                match result? {
+                    Some(v) => Ok(v),
+                    None => Err(error(
+                        CausaError::RetornoAusente {
+                            funcion: "clausura".to_string(),
+                        },
+                        linea,
+                        columna,
+                    )),
+                }
+            }
+            otro => Err(error(
+                CausaError::AsignacionIncompatible {
+                    esperado: "función".to_string(),
+                    obtenido: otro.nombre_tipo().to_string(),
+                },
+                linea,
+                columna,
+            )),
+        }
+    }
+
+    /// Llama a un valor función (global o clausura).
+    pub fn llamar_por_valor(
+        &mut self,
+        func_val: Valor,
+        args: &[Valor],
+        linea: usize,
+        columna: usize,
+    ) -> Result<Valor, ErrorEjecucion> {
+        match func_val {
+            Valor::Funcion(nombre) => self.llamar_funcion_por_nombre(&nombre, args, linea, columna),
+            Valor::FuncionClausura {
+                parametros,
+                cuerpo,
+                entorno,
+            } => {
+                if args.len() != parametros.len() {
+                    return Err(error(
+                        CausaError::FirmaInvalida {
+                            funcion: "clausura".to_string(),
+                            esperado: parametros.len(),
+                            obtenido: args.len(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+                let mut captured = entorno.lock().unwrap();
+                captured.ambitos.push(HashMap::new());
+                for ((pname, _), val) in parametros.iter().zip(args.iter()) {
+                    captured.insertar_variable(
+                        pname.clone(),
+                        VariableInfo {
+                            valor: val.clone(),
+                            tipo_declarado: None,
+                            mutable: true,
+                            es_const: false,
+                        },
+                    );
+                }
+                let result = captured.ejecutar_funcion_sentencias(&cuerpo, "clausura");
+                captured.ambitos.pop();
+                match result? {
+                    Some(v) => Ok(v),
+                    None => Err(error(
+                        CausaError::RetornoAusente {
+                            funcion: "clausura".to_string(),
+                        },
+                        linea,
+                        columna,
+                    )),
+                }
+            }
+            otro => Err(error(
+                CausaError::AsignacionIncompatible {
+                    esperado: "función".to_string(),
+                    obtenido: otro.nombre_tipo().to_string(),
+                },
+                linea,
+                columna,
+            )),
+        }
+    }
+
     /// Ejecuta un programa sentencia a sentencia.
     /// Devuelve el valor de la última sentencia de expresión **del nivel superior**, si la hay.
     /// Las sentencias internas de bloques, ramas o ciclos no producen valor hacia fuera
@@ -589,7 +719,10 @@ impl Entorno {
         nombre_funcion: &str,
     ) -> Result<Option<Valor>, ErrorEjecucion> {
         self.ambitos.push(HashMap::new());
+        let prev = self.en_funcion;
+        self.en_funcion = true;
         let r = self.ejecutar_funcion_sentencias(sentencias, nombre_funcion);
+        self.en_funcion = prev;
         self.ambitos.pop();
         r
     }
@@ -891,7 +1024,6 @@ impl Entorno {
                         Err(e) => return Err(e),
                     };
                 }
-                Sentencia::Funcion { .. } => {}
                 Sentencia::Importar {
                     ruta,
                     alias,
@@ -1016,6 +1148,37 @@ impl Entorno {
                 Sentencia::MostrarSinSalto { valor, .. } => {
                     let v = evaluar_con(&valor, self)?;
                     print!("{v}");
+                }
+                Sentencia::Funcion {
+                    nombre,
+                    parametros,
+                    tipo_retorno: _,
+                    cuerpo,
+                    linea,
+                    columna,
+                    publico: _,
+                } => {
+                    if self.existe_en_ambito_actual(&nombre) {
+                        return Err(error(
+                            CausaError::DeclaracionDuplicada(nombre.clone()),
+                            linea,
+                            columna,
+                        ));
+                    }
+                    let capturado = Arc::new(Mutex::new(self.clone()));
+                    self.insertar_variable(
+                        nombre.clone(),
+                        VariableInfo {
+                            valor: Valor::FuncionClausura {
+                                parametros: parametros.clone(),
+                                cuerpo: cuerpo.clone(),
+                                entorno: capturado,
+                            },
+                            tipo_declarado: None,
+                            mutable: true,
+                            es_const: false,
+                        },
+                    );
                 }
                 Sentencia::Retorno {
                     valor,
@@ -1343,26 +1506,51 @@ impl Entorno {
                             columna,
                         ));
                     }
-                    if self.funciones.contains_key(&nombre) {
-                        return Err(error(
-                            CausaError::DeclaracionDuplicada(nombre.clone()),
-                            linea,
-                            columna,
-                        ));
+                    if self.en_funcion {
+                        // Función anidada: crear clausura capturando el entorno actual.
+                        if self.existe_en_ambito_actual(&nombre) {
+                            return Err(error(
+                                CausaError::DeclaracionDuplicada(nombre.clone()),
+                                linea,
+                                columna,
+                            ));
+                        }
+                        let capturado = Arc::new(Mutex::new(self.clone()));
+                        self.insertar_variable(
+                            nombre.clone(),
+                            VariableInfo {
+                                valor: Valor::FuncionClausura {
+                                    parametros: parametros.clone(),
+                                    cuerpo: cuerpo.clone(),
+                                    entorno: capturado,
+                                },
+                                tipo_declarado: None,
+                                mutable: true,
+                                es_const: false,
+                            },
+                        );
+                    } else {
+                        if self.funciones.contains_key(&nombre) {
+                            return Err(error(
+                                CausaError::DeclaracionDuplicada(nombre.clone()),
+                                linea,
+                                columna,
+                            ));
+                        }
+                        self.funciones.insert(
+                            nombre.clone(),
+                            FuncionDef {
+                                nombre: nombre.clone(),
+                                parametros: parametros.clone(),
+                                tipo_retorno_anotado: tipo_retorno.clone(),
+                                cuerpo: cuerpo.clone(),
+                                linea,
+                                columna,
+                                tipo_retorno: None,
+                                tipos_parametros_inferidos: None,
+                            },
+                        );
                     }
-                    self.funciones.insert(
-                        nombre.clone(),
-                        FuncionDef {
-                            nombre: nombre.clone(),
-                            parametros: parametros.clone(),
-                            tipo_retorno_anotado: tipo_retorno.clone(),
-                            cuerpo: cuerpo.clone(),
-                            linea,
-                            columna,
-                            tipo_retorno: None,
-                            tipos_parametros_inferidos: None,
-                        },
-                    );
                 }
                 Sentencia::Importar {
                     ruta,
@@ -2022,6 +2210,20 @@ fn localizar_info_entorno(env: &Entorno, nombre: &str) -> Option<(usize, Variabl
 fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion> {
     match e {
         Expresion::Literal { valor, .. } => Ok(valor.clone()),
+        Expresion::Lambda {
+            parametros,
+            tipo_retorno: _,
+            cuerpo,
+            linea: _,
+            columna: _,
+        } => {
+            let capturado = Arc::new(Mutex::new(env.clone()));
+            Ok(Valor::FuncionClausura {
+                parametros: parametros.clone(),
+                cuerpo: cuerpo.clone(),
+                entorno: capturado,
+            })
+        }
         Expresion::Variable {
             nombre,
             linea,
@@ -2163,6 +2365,16 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                 return evaluar_builtin(nombre, &vals, *linea, *columna, env);
             }
 
+            // Clausura almacenada en variable.
+            if let Some(Valor::FuncionClausura { .. }) = env.buscar(nombre) {
+                let mut vals = Vec::new();
+                for a in argumentos {
+                    vals.push(evaluar_con(a, env)?);
+                }
+                let fv = env.buscar(nombre).unwrap();
+                return env.llamar_por_valor(fv, &vals, *linea, *columna);
+            }
+
             let fdef = if let Some(f) = env.funciones.get(nombre).cloned() {
                 f
             } else if let Some(Valor::Funcion(fn_name)) = env.buscar(nombre) {
@@ -2228,6 +2440,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                 exportaciones: HashSet::new(),
                 cargador: env.cargador.clone(),
                 archivo: env.archivo.clone(),
+                en_funcion: false,
             };
             for ((nombre_param, tipo_param), v) in fdef.parametros.iter().zip(vals.iter()) {
                 let valor_parametro = if let Some(tipo) = tipo_param {
@@ -2257,6 +2470,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                     },
                 );
             }
+            nuevo_env.en_funcion = true;
             let resultado = match nuevo_env.ejecutar_funcion(&fdef.cuerpo, &fdef.nombre)? {
                 Some(valor) => valor,
                 None if matches!(fdef.tipo_retorno_anotado, Some(TipoAnotacion::Nulo)) => {
@@ -2534,12 +2748,27 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             // Funciones de primera clase (solo si no es acceso a miembro de módulo).
             if !matches!(callee.as_ref(), Expresion::Acceso { .. }) {
                 let callee_val = evaluar_con(callee, env)?;
-                if let Valor::Funcion(fn_name) = callee_val {
-                    let mut vals = Vec::new();
-                    for a in argumentos {
-                        vals.push(evaluar_con(a, env)?);
+                match callee_val {
+                    Valor::Funcion(fn_name) => {
+                        let mut vals = Vec::new();
+                        for a in argumentos {
+                            vals.push(evaluar_con(a, env)?);
+                        }
+                        return env.llamar_por_valor(
+                            Valor::Funcion(fn_name),
+                            &vals,
+                            *linea,
+                            *columna,
+                        );
                     }
-                    return env.llamar_funcion_por_nombre(&fn_name, &vals, *linea, *columna);
+                    Valor::FuncionClausura { .. } => {
+                        let mut vals = Vec::new();
+                        for a in argumentos {
+                            vals.push(evaluar_con(a, env)?);
+                        }
+                        return env.llamar_por_valor(callee_val, &vals, *linea, *columna);
+                    }
+                    _ => {}
                 }
             }
             // Evaluate callee: should be Acceso → Modulo.
@@ -2704,6 +2933,7 @@ fn ubicacion(e: &Expresion) -> (usize, usize) {
         | Expresion::Indice { linea, columna, .. }
         | Expresion::Acceso { linea, columna, .. }
         | Expresion::LlamadaIndirecta { linea, columna, .. }
+        | Expresion::Lambda { linea, columna, .. }
         | Expresion::Rango { linea, columna, .. } => (*linea, *columna),
     }
 }
@@ -4273,26 +4503,13 @@ fn evaluar_builtin(
                     columna,
                 ));
             }
-            let func_name = match &args[1] {
-                Valor::Texto(s) => s.clone(),
-                Valor::Funcion(s) => s.clone(),
-                _ => {
-                    return Err(err_builtin(
-                        CausaError::AsignacionIncompatible {
-                            esperado: "texto o función".to_string(),
-                            obtenido: args[1].nombre_tipo().to_string(),
-                        },
-                        linea,
-                        columna,
-                    ));
-                }
-            };
+            let func_val = args[1].clone();
             match &args[0] {
                 Valor::Arreglo(v) => {
                     let mut out = Vec::new();
                     for item in v {
-                        let r = entorno.llamar_funcion_por_nombre(
-                            &func_name,
+                        let r = entorno.llamar_por_valor(
+                            func_val.clone(),
                             std::slice::from_ref(item),
                             linea,
                             columna,
@@ -4304,8 +4521,8 @@ fn evaluar_builtin(
                 Valor::Lista(v) => {
                     let mut out = Vec::new();
                     for item in v {
-                        let r = entorno.llamar_funcion_por_nombre(
-                            &func_name,
+                        let r = entorno.llamar_por_valor(
+                            func_val.clone(),
                             std::slice::from_ref(item),
                             linea,
                             columna,
@@ -4336,26 +4553,13 @@ fn evaluar_builtin(
                     columna,
                 ));
             }
-            let func_name = match &args[1] {
-                Valor::Texto(s) => s.clone(),
-                Valor::Funcion(s) => s.clone(),
-                _ => {
-                    return Err(err_builtin(
-                        CausaError::AsignacionIncompatible {
-                            esperado: "texto o función".to_string(),
-                            obtenido: args[1].nombre_tipo().to_string(),
-                        },
-                        linea,
-                        columna,
-                    ));
-                }
-            };
+            let func_val = args[1].clone();
             match &args[0] {
                 Valor::Arreglo(v) => {
                     let mut out = Vec::new();
                     for item in v {
-                        let r = entorno.llamar_funcion_por_nombre(
-                            &func_name,
+                        let r = entorno.llamar_por_valor(
+                            func_val.clone(),
                             std::slice::from_ref(item),
                             linea,
                             columna,
@@ -4380,8 +4584,8 @@ fn evaluar_builtin(
                 Valor::Lista(v) => {
                     let mut out = Vec::new();
                     for item in v {
-                        let r = entorno.llamar_funcion_por_nombre(
-                            &func_name,
+                        let r = entorno.llamar_por_valor(
+                            func_val.clone(),
                             std::slice::from_ref(item),
                             linea,
                             columna,
@@ -4425,27 +4629,14 @@ fn evaluar_builtin(
                     columna,
                 ));
             }
-            let func_name = match &args[1] {
-                Valor::Texto(s) => s.clone(),
-                Valor::Funcion(s) => s.clone(),
-                _ => {
-                    return Err(err_builtin(
-                        CausaError::AsignacionIncompatible {
-                            esperado: "texto o función".to_string(),
-                            obtenido: args[1].nombre_tipo().to_string(),
-                        },
-                        linea,
-                        columna,
-                    ));
-                }
-            };
+            let func_val = args[1].clone();
             let mut acc = args[2].clone();
             match &args[0] {
                 Valor::Arreglo(v) | Valor::Lista(v) => {
                     for item in v {
-                        acc = entorno.llamar_funcion_por_nombre(
-                            &func_name,
-                            &[acc, item.clone()],
+                        acc = entorno.llamar_por_valor(
+                            func_val.clone(),
+                            &[acc.clone(), item.clone()],
                             linea,
                             columna,
                         )?;

@@ -130,6 +130,130 @@ fn sem_diagnostico_ubicacion() {
 }
 
 #[test]
+fn sem_indirecta_valida() {
+    let e = analizar("funcion doble(x: entero) -> entero { retornar x * 2 }\nsea f = doble\nf(5)");
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_indirecta_arity_invalida() {
+    let e = analizar(
+        "funcion doble(x: entero) -> entero { retornar x * 2 }\nfuncion obtener() { retornar doble }\nobtener()(1, 2)",
+    );
+    assert!(!e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_indirecta_tipo_invalido() {
+    let e = analizar(
+        "funcion doble(x: entero) -> entero { retornar x * 2 }\nfuncion obtener() { retornar doble }\nobtener()(\"a\")",
+    );
+    assert!(!e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_indirecta_retorno_propagado() {
+    let e =
+        analizar("funcion doble(x: entero) -> entero { retornar x * 2 }\nsea f = doble\nf(5) + 1");
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_indirecta_funcion_recibida() {
+    let e = analizar(
+        "funcion aplicar(f, x) { retornar f(x) }\nfuncion doble(n) { retornar n * 2 }\naplicar(doble, 3)",
+    );
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_indirecta_funcion_devuelta() {
+    let e = analizar(
+        "funcion doble(x) { retornar x * 2 }\nfuncion obtener() { retornar doble }\nobtener()(4)",
+    );
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_indirecta_desconocido_no_rechaza() {
+    let e = analizar("funcion f() { retornar 1 }\nsea x = f()\nx()");
+    // x no es función; puede fallar en ejecución, pero el análisis no debe panic.
+    let _ = e;
+}
+
+#[test]
+fn sem_tipo_funcion_conserva_firma() {
+    let e = analizar(
+        "funcion suma(a: entero, b: entero) -> entero { retornar a + b }\nsea f = suma\nf(1, 2)",
+    );
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_variable_funcion_conserva_tipo() {
+    let e = analizar("funcion doble(x: entero) -> entero { retornar x * 2 }\nsea f = doble\nf(5)");
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_funciones_compatibles() {
+    let e = analizar(
+        "funcion a(xx: entero) -> entero { retornar xx }\nfuncion b(yy: entero) -> entero { retornar yy }\nsea f = a\nf = b",
+    );
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_funciones_distinta_arity_incompatibles() {
+    let e = analizar(
+        "funcion a(xx: entero) -> entero { retornar xx }\nfuncion b(xx: entero, yy: entero) -> entero { retornar xx + yy }\nsea f = a\nf = b",
+    );
+    assert!(!e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_parametro_incompatible_funcion() {
+    let e = analizar("funcion f(x: entero) -> entero { retornar x }\nf(\"a\")");
+    assert!(!e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_retorno_incompatible_funcion() {
+    let e = analizar("funcion f() -> entero { retornar \"a\" }");
+    assert!(!e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_desconocido_vs_nulo() {
+    let e = analizar("funcion f() { retornar 1 }\nsea x = f()\nx");
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_funcion_recibe_funcion() {
+    let e = analizar(
+        "funcion aplicar(f, x) { retornar f(x) }\nfuncion doble(n) { retornar n * 2 }\naplicar(doble, 3)",
+    );
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_funcion_devuelve_funcion() {
+    let e = analizar(
+        "funcion doble(x) { retornar x * 2 }\nfuncion obtener() { retornar doble }\nobtener()(4)",
+    );
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_firma_anidada() {
+    let e = analizar(
+        "funcion aplicar(f, x) { retornar f(x) }\nfuncion doble(n) { retornar n * 2 }\naplicar(doble, 2)",
+    );
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
 fn sem_locales_aisladas_entre_funciones() {
     let e = analizar("funcion a() { sea xx = 1\n retornar xx }\nfuncion b() { retornar xx }");
     assert!(!e.is_empty(), "b no debe ver local de a: {:?}", e);

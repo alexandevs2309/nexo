@@ -79,6 +79,14 @@ pub enum Expresion {
         linea: usize,
         columna: usize,
     },
+    /// Función anónima (lambda) (Fase 2).
+    Lambda {
+        parametros: Vec<(String, Option<TipoAnotacion>)>,
+        tipo_retorno: Option<TipoAnotacion>,
+        cuerpo: Vec<Sentencia>,
+        linea: usize,
+        columna: usize,
+    },
     /// Rango `inicio..fin` o `inicio..=fin` (ADR-0012 §3.3).
     /// Solo válido como iterable en `para cada`; no se almacena en variable.
     Rango {
@@ -675,12 +683,11 @@ impl Parser {
     }
 
     fn sentencia_funcion(&mut self, publico: bool) -> Result<Sentencia, ErrorSintactico> {
-        if self.en_funcion {
-            return Err(self.error("funciones anidadas no están permitidas (ADR-0008)"));
-        }
+        // Las funciones anidadas están permitidas para closures (Fase 2).
         let t = &self.tokens[self.pos];
         let (linea, columna) = (t.linea, t.columna);
         self.pos += 1; // 'funcion'
+        let prev_en_funcion = self.en_funcion;
         self.en_funcion = true;
         let nombre = match self.actual() {
             Some(TipoToken::Identificador(n)) => {
@@ -755,7 +762,7 @@ impl Parser {
             return Err(self.error("el '{' debe estar en la misma línea que 'funcion'"));
         }
         let cuerpo = self.bloque()?;
-        self.en_funcion = false;
+        self.en_funcion = prev_en_funcion;
         Ok(Sentencia::Funcion {
             nombre,
             parametros,
@@ -1492,6 +1499,86 @@ impl Parser {
                     _ => Err(self.error("falta ')' de cierre")),
                 }
             }
+            Some(TipoToken::Funcion) => {
+                let t = &self.tokens[self.pos];
+                let (linea, columna) = (t.linea, t.columna);
+                self.pos += 1; // 'funcion'
+                if !matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
+                    return Err(self.error("se esperaba '(' tras 'funcion' en lambda"));
+                }
+                self.pos += 1; // '('
+                let mut parametros: Vec<(String, Option<TipoAnotacion>)> = Vec::new();
+                let mut primer_tiene_tipo: Option<bool> = None;
+                loop {
+                    self.omitir_finales_de_linea();
+                    if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                        self.pos += 1;
+                        break;
+                    }
+                    let param_nombre = match self.actual() {
+                        Some(TipoToken::Identificador(n)) => {
+                            self.pos += 1;
+                            n
+                        }
+                        _ => return Err(self.error("se esperaba un parámetro")),
+                    };
+                    let tipo_param = if matches!(self.actual(), Some(TipoToken::DosPuntos)) {
+                        let tipo = self.parsear_tipo_anotacion()?;
+                        Some(tipo)
+                    } else {
+                        None
+                    };
+                    let este_tiene_tipo = tipo_param.is_some();
+                    match primer_tiene_tipo {
+                        None => primer_tiene_tipo = Some(este_tiene_tipo),
+                        Some(pt) if pt != este_tiene_tipo => {
+                            return Err(self.error(
+                                "la firma de lambda mezcla parámetros con y sin tipo".to_string(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                    parametros.push((param_nombre, tipo_param));
+                    self.omitir_finales_de_linea();
+                    if matches!(self.actual(), Some(TipoToken::Coma)) {
+                        self.pos += 1;
+                        continue;
+                    }
+                    if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                        self.pos += 1;
+                        break;
+                    }
+                    if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                        self.pos += 1;
+                        break;
+                    }
+                    return Err(self.error("se esperaba ',' o ')'"));
+                }
+                let tipo_retorno = if matches!(self.actual(), Some(TipoToken::Flecha)) {
+                    self.pos += 1; // '->'
+                    Some(self.parsear_tipo_anotacion_cuerpo()?)
+                } else {
+                    None
+                };
+                if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+                    return Err(self.error("se esperaba '{' en la misma línea que la función"));
+                }
+                let llave = &self.tokens[self.pos];
+                if llave.linea != linea {
+                    return Err(self.error("el '{' debe estar en la misma línea que 'funcion'"));
+                }
+                let prev = self.en_funcion;
+                self.en_funcion = true;
+                let cuerpo = self.bloque()?;
+                self.en_funcion = prev;
+                Ok(Expresion::Lambda {
+                    parametros,
+                    tipo_retorno,
+                    cuerpo,
+                    linea,
+                    columna,
+                })
+            }
             Some(TipoToken::Fin) | None => {
                 Err(self.error("expresión incompleta: falta un operando"))
             }
@@ -1591,6 +1678,7 @@ fn ubicacion_expr(e: &Expresion) -> (usize, usize) {
         | Expresion::Indice { linea, columna, .. }
         | Expresion::Acceso { linea, columna, .. }
         | Expresion::LlamadaIndirecta { linea, columna, .. }
+        | Expresion::Lambda { linea, columna, .. }
         | Expresion::Rango { linea, columna, .. } => (*linea, *columna),
         Expresion::Suma(a, _)
         | Expresion::Resta(a, _)

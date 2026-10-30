@@ -28,7 +28,10 @@ pub enum TipoSem {
     /// Tipo estático aproximado para literales `[...]` cuyo contenedor
     /// concreto (arreglo o lista) se resuelve en ejecución.
     Coleccion(Box<TipoSem>),
-    Funcion,
+    Funcion {
+        params: Vec<TipoSem>,
+        retorno: Box<TipoSem>,
+    },
     Nulo,
     Desconocido,
 }
@@ -44,7 +47,10 @@ impl TipoSem {
             TipoSem::Arreglo(t, n) => format!("arreglo<{}, {}>", t.nombre(), n),
             TipoSem::Lista(t) => format!("lista<{}>", t.nombre()),
             TipoSem::Coleccion(t) => format!("colección<{}>", t.nombre()),
-            TipoSem::Funcion => "función".to_string(),
+            TipoSem::Funcion { params, retorno } => {
+                let ps: Vec<String> = params.iter().map(|t| t.nombre()).collect();
+                format!("función({}) -> {}", ps.join(", "), retorno.nombre())
+            }
             TipoSem::Nulo => "nulo".to_string(),
             TipoSem::Desconocido => "desconocido".to_string(),
         }
@@ -609,8 +615,14 @@ impl ContextoSemantico {
             } => {
                 if let Some(info) = self.buscar_variable(nombre) {
                     info.tipo
-                } else if self.funciones.contains_key(nombre) {
-                    TipoSem::Funcion
+                } else if let Some(sig) = self.funciones.get(nombre).cloned() {
+                    let params: Vec<TipoSem> = sig
+                        .parametros
+                        .iter()
+                        .map(|(_, t)| t.clone().unwrap_or(TipoSem::Desconocido))
+                        .collect();
+                    let retorno = Box::new(sig.retorno.clone().unwrap_or(TipoSem::Desconocido));
+                    TipoSem::Funcion { params, retorno }
                 } else {
                     self.error(
                         CausaError::VariableNoDefinida(nombre.clone()),
@@ -762,11 +774,8 @@ impl ContextoSemantico {
             } => {
                 let sig = self.funciones.get(nombre).cloned();
                 let builtin = crate::evaluador::NOMBRES_RESERVADOS.contains(&nombre.as_str());
-                let var_funcion = self
-                    .buscar_variable(nombre)
-                    .map(|v| matches!(v.tipo, TipoSem::Funcion))
-                    .unwrap_or(false);
-                if sig.is_none() && !builtin && !var_funcion {
+                let var_existe = self.buscar_variable(nombre).is_some();
+                if sig.is_none() && !builtin && !var_existe {
                     self.error(
                         CausaError::VariableNoDefinida(nombre.clone()),
                         *linea,
@@ -834,13 +843,102 @@ impl ContextoSemantico {
                 TipoSem::Desconocido
             }
             Expresion::LlamadaIndirecta {
-                callee, argumentos, ..
+                callee,
+                argumentos,
+                linea,
+                columna,
             } => {
-                self.analizar_expresion(callee);
+                let callee_type = self.analizar_expresion(callee);
+                let mut arg_types = Vec::new();
                 for a in argumentos {
-                    self.analizar_expresion(a);
+                    arg_types.push(self.analizar_expresion(a));
                 }
-                TipoSem::Desconocido
+                match callee_type {
+                    TipoSem::Funcion { params, retorno } => {
+                        if params.len() != argumentos.len() {
+                            self.error(
+                                CausaError::FirmaInvalida {
+                                    funcion: "<indirecta>".to_string(),
+                                    esperado: params.len(),
+                                    obtenido: argumentos.len(),
+                                },
+                                *linea,
+                                *columna,
+                            );
+                        }
+                        for (i, (pt, at)) in params.iter().zip(arg_types.iter()).enumerate() {
+                            if !compatible(pt, at)
+                                && !matches!(pt, TipoSem::Desconocido)
+                                && !matches!(at, TipoSem::Desconocido)
+                            {
+                                self.error(
+                                    CausaError::TipoParametroIncompatible {
+                                        funcion: "<indirecta>".to_string(),
+                                        parametro: format!("arg{}", i),
+                                        esperado: pt.nombre(),
+                                        obtenido: at.nombre(),
+                                    },
+                                    *linea,
+                                    *columna,
+                                );
+                            }
+                        }
+                        *retorno
+                    }
+                    TipoSem::Desconocido => TipoSem::Desconocido,
+                    otro => {
+                        self.error(
+                            CausaError::AsignacionIncompatible {
+                                esperado: "función".to_string(),
+                                obtenido: otro.nombre(),
+                            },
+                            *linea,
+                            *columna,
+                        );
+                        TipoSem::Desconocido
+                    }
+                }
+            }
+            Expresion::Lambda {
+                parametros,
+                tipo_retorno,
+                cuerpo,
+                ..
+            } => {
+                self.scopes.push(HashMap::new());
+                for (pname, pta) in parametros {
+                    let tipo = pta
+                        .as_ref()
+                        .map(tipo_anotacion_a_sem)
+                        .unwrap_or(TipoSem::Desconocido);
+                    self.scopes.last_mut().unwrap().insert(
+                        pname.clone(),
+                        VarInfo {
+                            tipo,
+                            mutable: true,
+                        },
+                    );
+                }
+                for st in cuerpo {
+                    self.analizar_sentencia(st.clone());
+                }
+                self.scopes.pop();
+                let params: Vec<TipoSem> = parametros
+                    .iter()
+                    .map(|(_, t)| {
+                        t.as_ref()
+                            .map(tipo_anotacion_a_sem)
+                            .unwrap_or(TipoSem::Desconocido)
+                    })
+                    .collect();
+                let retorno = tipo_retorno
+                    .as_ref()
+                    .map(tipo_anotacion_a_sem)
+                    .unwrap_or(TipoSem::Desconocido);
+                TipoSem::Funcion {
+                    params,
+                    retorno: Box::new(retorno),
+                }
             }
             Expresion::ArregloLiteral { elementos, .. } => {
                 if elementos.is_empty() {
@@ -1135,7 +1233,20 @@ fn compatible(a: &TipoSem, b: &TipoSem) -> bool {
         (TipoSem::Arreglo(te, _), TipoSem::Coleccion(to)) => compatible(te, to),
         (TipoSem::Lista(te), TipoSem::Coleccion(to)) => compatible(te, to),
         (TipoSem::Coleccion(te), TipoSem::Coleccion(to)) => compatible(te, to),
-        (TipoSem::Funcion, TipoSem::Funcion) => true,
+        (
+            TipoSem::Funcion {
+                params: p1,
+                retorno: r1,
+            },
+            TipoSem::Funcion {
+                params: p2,
+                retorno: r2,
+            },
+        ) => {
+            p1.len() == p2.len()
+                && p1.iter().zip(p2).all(|(a, b)| compatible(a, b))
+                && compatible(r1, r2)
+        }
         _ => false,
     }
 }
