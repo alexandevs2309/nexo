@@ -37,6 +37,10 @@ pub struct Dependencia {
     pub version: String,
     /// Ruta explícita relativa al manifiesto, si se indicó.
     pub ruta: Option<String>,
+    /// Hash SHA-256 de confianza proporcionado explícitamente, si existe.
+    pub hash: Option<String>,
+    /// Autorización explícita para rutas externas.
+    pub autorizado: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +57,8 @@ pub struct DependenciaResuelta {
     pub ruta: PathBuf,
     /// Hash SHA-256 del archivo de entrada, para verificación de integridad.
     pub hash: String,
+    /// Indica si el hash proviene de una referencia confiable explícita.
+    pub verificado: bool,
 }
 
 /// Lee y valida `basilisco.toml` en `base`.
@@ -192,9 +198,11 @@ fn resolver_recursivo(
         let resolved = resolver_dependencia(dep, base)?;
         // Hash de integridad.
         let hash = hash_archivo(&resolved.ruta).unwrap_or_default();
+        let verificado = dep.hash.is_some();
         let mut resolved = resolved;
         resolved.hash = hash;
-        let _ = asegurar_cache(base, &resolved);
+        resolved.verificado = verificado;
+        asegurar_cache(base, &resolved)?;
 
         // Dependencias transitivas.
         if let Ok(texto) = std::fs::read_to_string(&resolved.ruta) {
@@ -230,11 +238,19 @@ fn resolver_dependencia(dep: &Dependencia, base: &Path) -> Result<DependenciaRes
         let canonical = std::fs::canonicalize(candidato).ok();
         if let Some(c) = &canonical {
             if explicito {
-                let parent = base.parent().unwrap_or(base);
-                let parent_canonical =
-                    std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
-                if !c.starts_with(&parent_canonical) {
-                    continue;
+                if dep.autorizado {
+                    let parent = base.parent().unwrap_or(base);
+                    let parent_canonical =
+                        std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+                    if !c.starts_with(&parent_canonical) {
+                        continue;
+                    }
+                } else {
+                    let base_canonical =
+                        std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+                    if !c.starts_with(&base_canonical) {
+                        continue;
+                    }
                 }
             } else {
                 let base_canonical =
@@ -263,11 +279,39 @@ fn resolver_dependencia(dep: &Dependencia, base: &Path) -> Result<DependenciaRes
             let version = declarado
                 .map(|p| p.version)
                 .unwrap_or_else(|| dep.version.clone());
+            // Segunda comprobación de ruta antes de devolver (mitigación TOCTOU).
+            if let Ok(c) = std::fs::canonicalize(&archivo) {
+                let base_canonical =
+                    std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+                if dep.ruta.is_some() {
+                    let parent = base.parent().unwrap_or(base);
+                    let parent_canonical =
+                        std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+                    if !c.starts_with(&parent_canonical) {
+                        return Err(format!("ruta no permitida: {}", c.display()));
+                    }
+                } else if !c.starts_with(&base_canonical) {
+                    return Err(format!("ruta no permitida: {}", c.display()));
+                }
+            }
+            let hash_calculado = hash_archivo(&archivo).unwrap_or_default();
+            let verificado = if let Some(hash_esperado) = &dep.hash {
+                if hash_esperado != &hash_calculado {
+                    return Err(format!(
+                        "integridad comprometida para '{}': hash esperado {} y se obtuvo {}",
+                        dep.nombre, hash_esperado, hash_calculado
+                    ));
+                }
+                true
+            } else {
+                false
+            };
             return Ok(DependenciaResuelta {
                 nombre: dep.nombre.clone(),
                 version,
                 ruta: archivo,
-                hash: String::new(),
+                hash: hash_calculado,
+                verificado,
             });
         }
         buscados.push(candidato.display().to_string());
@@ -513,6 +557,7 @@ fn construir_dependencia(
         version: version.ok_or_else(|| format!("{ubicacion}: falta 'version'"))?,
         ruta: PathBuf::from(ruta.ok_or_else(|| format!("{ubicacion}: falta 'ruta'"))?),
         hash: hash.unwrap_or_default(),
+        verificado: false,
     })
 }
 
@@ -521,11 +566,17 @@ fn construir_dependencia(
 pub fn resolver_desde_bloqueo(nombre: &str) -> Option<PathBuf> {
     let base = std::env::current_dir().ok()?;
     let resueltas = leer_bloqueo(&base).ok()??;
-    resueltas
-        .into_iter()
-        .find(|d| d.nombre == nombre)
-        .map(|d| d.ruta)
-        .filter(|ruta| ruta.is_file())
+    let dep = resueltas.into_iter().find(|d| d.nombre == nombre)?;
+    if !dep.ruta.is_file() {
+        return None;
+    }
+    if !dep.hash.is_empty() {
+        let actual = hash_archivo(&dep.ruta).ok()?;
+        if actual != dep.hash {
+            return None;
+        }
+    }
+    Some(dep.ruta)
 }
 
 /// Comprueba si un nombre de paquete es aceptable.
@@ -561,15 +612,23 @@ fn parsear_dependencia(nombre: &str, valor: &str) -> Result<Dependencia, String>
             .trim();
         let mut version = None;
         let mut ruta = None;
+        let mut hash = None;
+        let mut autorizado = false;
         for parte in dividir_por_comas(interior) {
             let (clave, valor) = parte
                 .split_once('=')
                 .ok_or_else(|| format!("entrada inválida '{parte}' en tabla en línea"))?;
             let clave = clave.trim();
-            let texto = parsear_texto(valor.trim())?;
+            let valor = valor.trim();
+            if clave == "autorizado" {
+                autorizado = valor == "true";
+                continue;
+            }
+            let texto = parsear_texto(valor)?;
             match clave {
                 "version" => version = Some(texto),
                 "ruta" | "path" => ruta = Some(texto),
+                "hash" => hash = Some(texto),
                 otra => return Err(format!("clave desconocida '{otra}' en dependencia")),
             }
         }
@@ -581,6 +640,8 @@ fn parsear_dependencia(nombre: &str, valor: &str) -> Result<Dependencia, String>
             nombre: nombre.to_string(),
             version,
             ruta,
+            hash,
+            autorizado,
         })
     } else {
         let version = parsear_texto(valor)?;
@@ -591,6 +652,8 @@ fn parsear_dependencia(nombre: &str, valor: &str) -> Result<Dependencia, String>
             nombre: nombre.to_string(),
             version,
             ruta: None,
+            hash: None,
+            autorizado: false,
         })
     }
 }
@@ -753,6 +816,7 @@ util = { version = "0.2.0", ruta = "../util" }
             version: "0.1.0".to_string(),
             ruta: PathBuf::from("paquetes/matematica/lib.bsk"),
             hash: String::new(),
+            verificado: false,
         }];
         let base = std::env::temp_dir().join(format!(
             "basilisco-bloqueo-{}-{:?}",
@@ -824,7 +888,7 @@ fn manifiesto_vecino(archivo: &Path) -> Option<PathBuf> {
     }
 }
 
-fn hash_archivo(ruta: &Path) -> Result<String, String> {
+pub fn hash_archivo(ruta: &Path) -> Result<String, String> {
     let bytes = std::fs::read(ruta).map_err(|e| e.to_string())?;
     Ok(sha256_hex(&bytes))
 }
