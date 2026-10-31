@@ -47,6 +47,58 @@ fn e2e_alias_funcion_publica() {
     assert_eq!(stdout.trim(), "10");
 }
 
+#[test]
+fn e2e_funcion_modulo_sin_retorno_como_sentencia() {
+    let dir = tmpdir("funcion_modulo_sin_retorno");
+    escribir(
+        &dir,
+        "lib.bsk",
+        "publico funcion saludar() { mostrar \"Hola\" }\n",
+    );
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nlib.saludar()\nmostrar \"Programa terminado\"\n",
+    );
+
+    let (code, stdout, stderr) = run_bsk(&dir, &["run", "main.bsk"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "Hola\nPrograma terminado");
+}
+
+#[test]
+fn e2e_funcion_modulo_sin_retorno_como_valor_conserva_e1010() {
+    let dir = tmpdir("funcion_modulo_sin_retorno_valor");
+    escribir(
+        &dir,
+        "lib.bsk",
+        "publico funcion saludar() { mostrar \"Hola\" }\n",
+    );
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nsea resultado = lib.saludar()\n",
+    );
+
+    let (code, _stdout, stderr) = run_bsk(&dir, &["run", "main.bsk"]);
+    assert_ne!(code, 0);
+    assert!(stderr.contains("E1010"), "stderr: {stderr}");
+}
+
+#[test]
+fn e2e_funcion_sin_retorno_imprime_y_continua() {
+    let dir = tmpdir("funcion_sin_retorno_sentencia");
+    escribir(
+        &dir,
+        "main.bsk",
+        "funcion saludar() { mostrar \"Hola\" }\nsaludar()\nmostrar \"Programa terminado\"\n",
+    );
+
+    let (code, stdout, stderr) = run_bsk(&dir, &["run", "main.bsk"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "Hola\nPrograma terminado");
+}
+
 // 2. Acceso a declaración pública por alias.
 #[test]
 fn e2e_alias_variable_publica() {

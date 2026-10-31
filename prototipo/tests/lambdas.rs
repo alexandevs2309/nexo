@@ -37,3 +37,24 @@ fn lambda_captura() {
     let src = "funcion crear(x) { retornar funcion (yy) { retornar x + yy } }\ncrear(10)(5)";
     assert_eq!(ejecutar(src), Some(Valor::Entero(15)));
 }
+
+#[test]
+fn clausura_sin_retorno_como_sentencia() {
+    let src =
+        "sea saludar = funcion () { sea hecho = verdadero }\nsaludar()\nsea despues = 7\ndespues";
+    assert_eq!(ejecutar(src), Some(Valor::Entero(7)));
+}
+
+#[test]
+fn clausura_sin_retorno_como_valor_conserva_e1010() {
+    let src = "sea saludar = funcion () { sea hecho = verdadero }\nsea resultado = saludar()";
+    let tokens = Lexer::nuevo(src).tokenizar().unwrap();
+    let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+    let error = Entorno::nueva()
+        .ejecutar_programa(&ss)
+        .expect_err("usar una clausura sin retorno como valor debe fallar");
+    assert!(matches!(
+        *error.causa,
+        basilisco::CausaError::RetornoAusente { .. }
+    ));
+}

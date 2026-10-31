@@ -543,6 +543,25 @@ impl Entorno {
         linea: usize,
         columna: usize,
     ) -> Result<Valor, ErrorEjecucion> {
+        self.llamar_funcion_por_nombre_resultado(nombre, args, linea, columna)?
+            .ok_or_else(|| {
+                error(
+                    CausaError::RetornoAusente {
+                        funcion: nombre.to_string(),
+                    },
+                    linea,
+                    columna,
+                )
+            })
+    }
+
+    fn llamar_funcion_por_nombre_resultado(
+        &mut self,
+        nombre: &str,
+        args: &[Valor],
+        linea: usize,
+        columna: usize,
+    ) -> Result<Option<Valor>, ErrorEjecucion> {
         let fdef = self.funciones.get(nombre).cloned().ok_or_else(|| {
             error(
                 CausaError::VariableNoDefinida(nombre.to_string()),
@@ -576,14 +595,17 @@ impl Entorno {
         let r = self.ejecutar_funcion_sentencias(&fdef.cuerpo, nombre);
         self.ambitos.pop();
         match r? {
-            Some(v) => Ok(v),
-            None => Err(error(
+            None if matches!(fdef.tipo_retorno_anotado, Some(TipoAnotacion::Nulo)) => {
+                Ok(Some(Valor::Nulo))
+            }
+            None if fdef.tipo_retorno_anotado.is_some() => Err(error(
                 CausaError::RetornoAusente {
                     funcion: nombre.to_string(),
                 },
                 linea,
                 columna,
             )),
+            resultado => Ok(resultado),
         }
     }
 
@@ -595,8 +617,32 @@ impl Entorno {
         linea: usize,
         columna: usize,
     ) -> Result<Valor, ErrorEjecucion> {
+        let nombre = match &func_val {
+            Valor::Funcion(nombre) => nombre.clone(),
+            Valor::FuncionClausura { .. } => "clausura".to_string(),
+            otro => otro.nombre_tipo().to_string(),
+        };
+        self.llamar_valor_resultado(func_val, args, linea, columna)?
+            .ok_or_else(|| {
+                error(
+                    CausaError::RetornoAusente { funcion: nombre },
+                    linea,
+                    columna,
+                )
+            })
+    }
+
+    fn llamar_valor_resultado(
+        &mut self,
+        func_val: Valor,
+        args: &[Valor],
+        linea: usize,
+        columna: usize,
+    ) -> Result<Option<Valor>, ErrorEjecucion> {
         match func_val {
-            Valor::Funcion(nombre) => self.llamar_funcion_por_nombre(&nombre, args, linea, columna),
+            Valor::Funcion(nombre) => {
+                self.llamar_funcion_por_nombre_resultado(&nombre, args, linea, columna)
+            }
             Valor::FuncionClausura {
                 parametros,
                 cuerpo,
@@ -628,16 +674,7 @@ impl Entorno {
                 }
                 let result = captured.ejecutar_funcion_sentencias(&cuerpo, "clausura");
                 captured.ambitos.pop();
-                match result? {
-                    Some(v) => Ok(v),
-                    None => Err(error(
-                        CausaError::RetornoAusente {
-                            funcion: "clausura".to_string(),
-                        },
-                        linea,
-                        columna,
-                    )),
-                }
+                result
             }
             otro => Err(error(
                 CausaError::AsignacionIncompatible {
@@ -658,59 +695,7 @@ impl Entorno {
         linea: usize,
         columna: usize,
     ) -> Result<Valor, ErrorEjecucion> {
-        match func_val {
-            Valor::Funcion(nombre) => self.llamar_funcion_por_nombre(&nombre, args, linea, columna),
-            Valor::FuncionClausura {
-                parametros,
-                cuerpo,
-                entorno,
-            } => {
-                if args.len() != parametros.len() {
-                    return Err(error(
-                        CausaError::FirmaInvalida {
-                            funcion: "clausura".to_string(),
-                            esperado: parametros.len(),
-                            obtenido: args.len(),
-                        },
-                        linea,
-                        columna,
-                    ));
-                }
-                let mut captured = entorno.lock().unwrap();
-                captured.ambitos.push(HashMap::new());
-                for ((pname, _), val) in parametros.iter().zip(args.iter()) {
-                    captured.insertar_variable(
-                        pname.clone(),
-                        VariableInfo {
-                            valor: val.clone(),
-                            tipo_declarado: None,
-                            mutable: true,
-                            es_const: false,
-                        },
-                    );
-                }
-                let result = captured.ejecutar_funcion_sentencias(&cuerpo, "clausura");
-                captured.ambitos.pop();
-                match result? {
-                    Some(v) => Ok(v),
-                    None => Err(error(
-                        CausaError::RetornoAusente {
-                            funcion: "clausura".to_string(),
-                        },
-                        linea,
-                        columna,
-                    )),
-                }
-            }
-            otro => Err(error(
-                CausaError::AsignacionIncompatible {
-                    esperado: "función".to_string(),
-                    obtenido: otro.nombre_tipo().to_string(),
-                },
-                linea,
-                columna,
-            )),
-        }
+        self.llamar_valor(func_val, args, linea, columna)
     }
 
     /// Ejecuta un programa sentencia a sentencia.
@@ -1487,7 +1472,7 @@ impl Entorno {
                     ));
                 }
                 Sentencia::Expresion(e) => {
-                    let _ = evaluar_con(&e, self)?;
+                    let _ = evaluar_expresion_sentencia(&e, self)?;
                 }
             }
         }
@@ -2203,7 +2188,7 @@ impl Entorno {
                     }
                 }
                 Sentencia::Expresion(e) => {
-                    ultimo = Some(evaluar_con(&e, self)?);
+                    ultimo = evaluar_expresion_sentencia(&e, self)?;
                 }
             }
         }
@@ -2480,173 +2465,15 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             argumentos,
             linea,
             columna,
-        } => {
-            if es_builtin(nombre) {
-                let mut vals = Vec::new();
-                for a in argumentos {
-                    vals.push(evaluar_con(a, env)?);
-                }
-                return evaluar_builtin(nombre, &vals, *linea, *columna, env);
-            }
-
-            // Clausura almacenada en variable.
-            if let Some(Valor::FuncionClausura { .. }) = env.buscar(nombre) {
-                let mut vals = Vec::new();
-                for a in argumentos {
-                    vals.push(evaluar_con(a, env)?);
-                }
-                let fv = env.buscar(nombre).unwrap();
-                return env.llamar_por_valor(fv, &vals, *linea, *columna);
-            }
-
-            let fdef = if let Some(f) = env.funciones.get(nombre).cloned() {
-                f
-            } else if let Some(Valor::Funcion(fn_name)) = env.buscar(nombre) {
-                env.funciones.get(&fn_name).cloned().ok_or_else(|| {
-                    error(
-                        CausaError::VariableNoDefinida(nombre.clone()),
-                        *linea,
-                        *columna,
-                    )
-                })?
-            } else {
-                return Err(error(
-                    CausaError::VariableNoDefinida(nombre.clone()),
-                    *linea,
-                    *columna,
-                ));
-            };
-            let mut vals = Vec::new();
-            for a in argumentos {
-                vals.push(evaluar_con(a, env)?);
-            }
-            if vals.len() != fdef.parametros.len() {
-                return Err(error(
-                    CausaError::FirmaInvalida {
-                        funcion: nombre.clone(),
-                        esperado: fdef.parametros.len(),
-                        obtenido: vals.len(),
-                    },
-                    *linea,
-                    *columna,
-                ));
-            }
-            if fdef.parametros.iter().all(|(_, tipo)| tipo.is_none()) {
-                if let Some(tipos_esperados) = &fdef.tipos_parametros_inferidos {
-                    for ((parametro, _), (esperado, obtenido)) in fdef
-                        .parametros
-                        .iter()
-                        .zip(tipos_esperados.iter().zip(vals.iter_mut()))
-                    {
-                        let tipo_obtenido = obtenido.nombre_tipo().to_string();
-                        let Some(convertido) = convertir_para_tipo(esperado, obtenido.clone())
-                        else {
-                            return Err(error(
-                                CausaError::TipoParametroIncompatible {
-                                    funcion: nombre.clone(),
-                                    parametro: parametro.clone(),
-                                    esperado: esperado.nombre_tipo().to_string(),
-                                    obtenido: tipo_obtenido,
-                                },
-                                *linea,
-                                *columna,
-                            ));
-                        };
-                        *obtenido = convertido;
-                    }
-                } else if let Some(definicion) = env.funciones.get_mut(nombre) {
-                    definicion.tipos_parametros_inferidos = Some(vals.clone());
-                }
-            }
-            let mut nuevo_env = Entorno {
-                ambitos: vec![HashMap::new()],
-                funciones: env.funciones.clone(),
-                funciones_izadas: HashSet::new(),
-                exportaciones: HashSet::new(),
-                cargador: env.cargador.clone(),
-                archivo: env.archivo.clone(),
-                en_funcion: false,
-            };
-            for ((nombre_param, tipo_param), v) in fdef.parametros.iter().zip(vals.iter()) {
-                let valor_parametro = if let Some(tipo) = tipo_param {
-                    let obtenido = v.nombre_tipo().to_string();
-                    convertir_a_tipo_anotado(v.clone(), tipo).ok_or_else(|| {
-                        error(
-                            CausaError::TipoParametroIncompatible {
-                                funcion: nombre.clone(),
-                                parametro: nombre_param.clone(),
-                                esperado: tipo.nombre(),
-                                obtenido,
-                            },
-                            *linea,
-                            *columna,
-                        )
-                    })?
-                } else {
-                    v.clone()
-                };
-                nuevo_env.insertar_variable(
-                    nombre_param.clone(),
-                    VariableInfo {
-                        valor: valor_parametro,
-                        tipo_declarado: tipo_param.clone(),
-                        mutable: true, // Parámetros son mutables como `var`
-                        es_const: false,
-                    },
-                );
-            }
-            nuevo_env.en_funcion = true;
-            let resultado = match nuevo_env.ejecutar_funcion(&fdef.cuerpo, &fdef.nombre)? {
-                Some(valor) => valor,
-                None if matches!(fdef.tipo_retorno_anotado, Some(TipoAnotacion::Nulo)) => {
-                    Valor::Nulo
-                }
-                None => {
-                    return Err(error(
-                        CausaError::RetornoAusente {
-                            funcion: fdef.nombre,
-                        },
-                        *linea,
-                        *columna,
-                    ));
-                }
-            };
-            if let Some(tipo_esperado) = fdef.tipo_retorno_anotado.as_ref() {
-                let obtenido = resultado.nombre_tipo().to_string();
-                return convertir_a_tipo_anotado(resultado, tipo_esperado).ok_or_else(|| {
-                    error(
-                        CausaError::RetornoIncompatibleConAnotacion {
-                            funcion: nombre.clone(),
-                            esperado: tipo_esperado.nombre(),
-                            obtenido,
-                        },
-                        *linea,
-                        *columna,
-                    )
-                });
-            }
-
-            // Validar/guardar tipo de retorno inferido (ADR-0008).
-            let tipo_obtenido = resultado.nombre_tipo();
-            if let Some(tipo_esperado) = fdef.tipo_retorno {
-                if tipo_obtenido != tipo_esperado {
-                    return Err(error(
-                        CausaError::TipoDeRetornoIncompatible {
-                            esperado: tipo_esperado,
-                            obtenido: tipo_obtenido,
-                        },
-                        *linea,
-                        *columna,
-                    ));
-                }
-            } else {
-                // Primera llamada exitosa: guardar el tipo de retorno en la función original
-                if let Some(fdef_mut) = env.funciones.get_mut(nombre) {
-                    fdef_mut.tipo_retorno = Some(tipo_obtenido);
-                }
-            }
-            Ok(resultado)
-        }
+        } => evaluar_llamada_directa(nombre, argumentos, *linea, *columna, env)?.ok_or_else(|| {
+            error(
+                CausaError::RetornoAusente {
+                    funcion: nombre.clone(),
+                },
+                *linea,
+                *columna,
+            )
+        }),
         Expresion::ArregloLiteral { elementos, .. } => {
             let mut valores = Vec::new();
             for elem in elementos {
@@ -2870,161 +2697,349 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             linea,
             columna,
         } => {
-            // Funciones de primera clase (solo si no es acceso a miembro de módulo).
-            if !matches!(callee.as_ref(), Expresion::Acceso { .. }) {
-                let callee_val = evaluar_con(callee, env)?;
-                match callee_val {
-                    Valor::Funcion(fn_name) => {
-                        let mut vals = Vec::new();
-                        for a in argumentos {
-                            vals.push(evaluar_con(a, env)?);
-                        }
-                        return env.llamar_por_valor(
-                            Valor::Funcion(fn_name),
-                            &vals,
-                            *linea,
-                            *columna,
-                        );
-                    }
-                    Valor::FuncionClausura { .. } => {
-                        let mut vals = Vec::new();
-                        for a in argumentos {
-                            vals.push(evaluar_con(a, env)?);
-                        }
-                        return env.llamar_por_valor(callee_val, &vals, *linea, *columna);
-                    }
-                    _ => {}
-                }
-            }
-            // Evaluate callee: should be Acceso → Modulo.
-            let (modulo, miembro) = match callee.as_ref() {
-                Expresion::Acceso {
-                    objeto, miembro, ..
-                } => {
-                    let obj = evaluar_con(objeto, env)?;
-                    match obj {
-                        Valor::Modulo(m) => (m, miembro.clone()),
-                        _ => {
-                            return Err(error(
-                                CausaError::AsignacionIncompatible {
-                                    esperado: "modulo".into(),
-                                    obtenido: obj.nombre_tipo().to_string(),
-                                },
-                                *linea,
-                                *columna,
-                            ));
-                        }
-                    }
-                }
-                _ => {
-                    return Err(error(
-                        CausaError::AsignacionIncompatible {
-                            esperado: "acceso a miembro".into(),
-                            obtenido: "expresión".into(),
-                        },
-                        *linea,
-                        *columna,
-                    ));
-                }
-            };
+            let resultado = evaluar_llamada_indirecta(callee, argumentos, *linea, *columna, env)?;
+            resultado.ok_or_else(|| {
+                error(
+                    CausaError::RetornoAusente {
+                        funcion: nombre_llamada_indirecta(callee, env),
+                    },
+                    *linea,
+                    *columna,
+                )
+            })
+        }
+    }
+}
 
-            // Look up function in module.
-            let fdef =
-                if let Some(SimbodoExportado::Funcion(f)) = modulo.exportaciones.get(&miembro) {
-                    f.clone()
-                } else if modulo.entorno.lock().unwrap().funcion(&miembro).is_some() {
+fn evaluar_llamada_directa(
+    nombre: &str,
+    argumentos: &[Expresion],
+    linea: usize,
+    columna: usize,
+    env: &mut Entorno,
+) -> Result<Option<Valor>, ErrorEjecucion> {
+    if es_builtin(nombre) {
+        let mut vals = Vec::new();
+        for argumento in argumentos {
+            vals.push(evaluar_con(argumento, env)?);
+        }
+        return evaluar_builtin(nombre, &vals, linea, columna, env).map(Some);
+    }
+
+    if let Some(valor @ Valor::FuncionClausura { .. }) = env.buscar(nombre) {
+        let mut vals = Vec::new();
+        for argumento in argumentos {
+            vals.push(evaluar_con(argumento, env)?);
+        }
+        return env.llamar_valor_resultado(valor, &vals, linea, columna);
+    }
+
+    let fdef = if let Some(f) = env.funciones.get(nombre).cloned() {
+        f
+    } else if let Some(Valor::Funcion(fn_name)) = env.buscar(nombre) {
+        env.funciones.get(&fn_name).cloned().ok_or_else(|| {
+            error(
+                CausaError::VariableNoDefinida(nombre.to_string()),
+                linea,
+                columna,
+            )
+        })?
+    } else {
+        return Err(error(
+            CausaError::VariableNoDefinida(nombre.to_string()),
+            linea,
+            columna,
+        ));
+    };
+    let mut vals = Vec::new();
+    for argumento in argumentos {
+        vals.push(evaluar_con(argumento, env)?);
+    }
+    if vals.len() != fdef.parametros.len() {
+        return Err(error(
+            CausaError::FirmaInvalida {
+                funcion: nombre.to_string(),
+                esperado: fdef.parametros.len(),
+                obtenido: vals.len(),
+            },
+            linea,
+            columna,
+        ));
+    }
+    if fdef.parametros.iter().all(|(_, tipo)| tipo.is_none()) {
+        if let Some(tipos_esperados) = &fdef.tipos_parametros_inferidos {
+            for ((parametro, _), (esperado, obtenido)) in fdef
+                .parametros
+                .iter()
+                .zip(tipos_esperados.iter().zip(vals.iter_mut()))
+            {
+                let tipo_obtenido = obtenido.nombre_tipo().to_string();
+                let Some(convertido) = convertir_para_tipo(esperado, obtenido.clone()) else {
                     return Err(error(
-                        CausaError::SimbodoPrivado {
-                            nombre: miembro.clone(),
-                            modulo: modulo.ruta.display().to_string(),
+                        CausaError::TipoParametroIncompatible {
+                            funcion: nombre.to_string(),
+                            parametro: parametro.clone(),
+                            esperado: esperado.nombre_tipo().to_string(),
+                            obtenido: tipo_obtenido,
                         },
-                        *linea,
-                        *columna,
-                    ));
-                } else {
-                    return Err(error(
-                        CausaError::SimbodoNoExportado {
-                            nombre: miembro.clone(),
-                            modulo: modulo.ruta.display().to_string(),
-                        },
-                        *linea,
-                        *columna,
+                        linea,
+                        columna,
                     ));
                 };
-
-            // Evaluate arguments.
-            let mut vals = Vec::new();
-            for a in argumentos {
-                vals.push(evaluar_con(a, env)?);
+                *obtenido = convertido;
             }
-
-            if vals.len() != fdef.parametros.len() {
-                return Err(error(
-                    CausaError::FirmaInvalida {
-                        funcion: miembro.clone(),
-                        esperado: fdef.parametros.len(),
-                        obtenido: vals.len(),
+        } else if let Some(definicion) = env.funciones.get_mut(nombre) {
+            definicion.tipos_parametros_inferidos = Some(vals.clone());
+        }
+    }
+    let mut nuevo_env = Entorno {
+        ambitos: vec![HashMap::new()],
+        funciones: env.funciones.clone(),
+        funciones_izadas: HashSet::new(),
+        exportaciones: HashSet::new(),
+        cargador: env.cargador.clone(),
+        archivo: env.archivo.clone(),
+        en_funcion: false,
+    };
+    for ((nombre_param, tipo_param), valor) in fdef.parametros.iter().zip(vals.iter()) {
+        let valor_parametro = if let Some(tipo) = tipo_param {
+            let obtenido = valor.nombre_tipo().to_string();
+            convertir_a_tipo_anotado(valor.clone(), tipo).ok_or_else(|| {
+                error(
+                    CausaError::TipoParametroIncompatible {
+                        funcion: nombre.to_string(),
+                        parametro: nombre_param.clone(),
+                        esperado: tipo.nombre(),
+                        obtenido,
                     },
-                    *linea,
-                    *columna,
+                    linea,
+                    columna,
+                )
+            })?
+        } else {
+            valor.clone()
+        };
+        nuevo_env.insertar_variable(
+            nombre_param.clone(),
+            VariableInfo {
+                valor: valor_parametro,
+                tipo_declarado: tipo_param.clone(),
+                mutable: true,
+                es_const: false,
+            },
+        );
+    }
+    nuevo_env.en_funcion = true;
+    let Some(mut resultado) = nuevo_env.ejecutar_funcion(&fdef.cuerpo, &fdef.nombre)? else {
+        if matches!(fdef.tipo_retorno_anotado, Some(TipoAnotacion::Nulo)) {
+            return Ok(Some(Valor::Nulo));
+        }
+        if fdef.tipo_retorno_anotado.is_some() {
+            return Err(error(
+                CausaError::RetornoAusente {
+                    funcion: fdef.nombre,
+                },
+                linea,
+                columna,
+            ));
+        }
+        return Ok(None);
+    };
+
+    if let Some(tipo_esperado) = fdef.tipo_retorno_anotado.as_ref() {
+        let obtenido = resultado.nombre_tipo().to_string();
+        resultado = convertir_a_tipo_anotado(resultado, tipo_esperado).ok_or_else(|| {
+            error(
+                CausaError::RetornoIncompatibleConAnotacion {
+                    funcion: nombre.to_string(),
+                    esperado: tipo_esperado.nombre(),
+                    obtenido,
+                },
+                linea,
+                columna,
+            )
+        })?;
+    } else {
+        let tipo_obtenido = resultado.nombre_tipo();
+        if let Some(tipo_esperado) = fdef.tipo_retorno {
+            if tipo_obtenido != tipo_esperado {
+                return Err(error(
+                    CausaError::TipoDeRetornoIncompatible {
+                        esperado: tipo_esperado,
+                        obtenido: tipo_obtenido,
+                    },
+                    linea,
+                    columna,
                 ));
             }
-
-            // Type checking for typed params.
-            if fdef.parametros.iter().all(|(_, tipo)| tipo.is_none()) {
-                // Untyped: skip type inference persistence (simplified for Fase 3).
-            } else {
-                for ((nombre_param, tipo), (v,)) in
-                    fdef.parametros.iter().zip(vals.iter().map(|v| (v,)))
-                {
-                    if let Some(tipo) = tipo
-                        && convertir_a_tipo_anotado(v.clone(), tipo).is_none()
-                    {
-                        return Err(error(
-                            CausaError::TipoParametroIncompatible {
-                                funcion: miembro.clone(),
-                                parametro: nombre_param.clone(),
-                                esperado: tipo.nombre(),
-                                obtenido: v.nombre_tipo().to_string(),
-                            },
-                            *linea,
-                            *columna,
-                        ));
-                    }
-                }
-            }
-
-            // Execute function body in module's entorno.
-            let mut mod_env = modulo.entorno.lock().unwrap().clone();
-            // Register the function in the module env (already there).
-            // Insert parameters.
-            mod_env.ambitos.push(HashMap::new());
-            for ((nombre_param, _), v) in fdef.parametros.iter().zip(vals.iter()) {
-                mod_env.insertar_variable(
-                    nombre_param.clone(),
-                    VariableInfo {
-                        valor: v.clone(),
-                        tipo_declarado: None,
-                        mutable: true,
-                        es_const: false,
-                    },
-                );
-            }
-
-            // Execute body.
-            let result = mod_env.ejecutar_funcion_sentencias(&fdef.cuerpo, &miembro);
-            mod_env.ambitos.pop();
-
-            match result {
-                Ok(Some(v)) => Ok(v),
-                Ok(None) => Err(error(
-                    CausaError::RetornoAusente { funcion: miembro },
-                    *linea,
-                    *columna,
-                )),
-                Err(e) => Err(e),
-            }
+        } else if let Some(definicion) = env.funciones.get_mut(nombre) {
+            definicion.tipo_retorno = Some(tipo_obtenido);
         }
+    }
+    Ok(Some(resultado))
+}
+
+fn evaluar_llamada_indirecta(
+    callee: &Expresion,
+    argumentos: &[Expresion],
+    linea: usize,
+    columna: usize,
+    env: &mut Entorno,
+) -> Result<Option<Valor>, ErrorEjecucion> {
+    if !matches!(callee, Expresion::Acceso { .. }) {
+        let callee_val = evaluar_con(callee, env)?;
+        if matches!(
+            callee_val,
+            Valor::Funcion(_) | Valor::FuncionClausura { .. }
+        ) {
+            let mut vals = Vec::new();
+            for argumento in argumentos {
+                vals.push(evaluar_con(argumento, env)?);
+            }
+            return env.llamar_valor_resultado(callee_val, &vals, linea, columna);
+        }
+    }
+
+    let (modulo, miembro) = match callee {
+        Expresion::Acceso {
+            objeto, miembro, ..
+        } => match evaluar_con(objeto, env)? {
+            Valor::Modulo(modulo) => (modulo, miembro.clone()),
+            otro => {
+                return Err(error(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "modulo".into(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+        },
+        _ => {
+            return Err(error(
+                CausaError::AsignacionIncompatible {
+                    esperado: "acceso a miembro".into(),
+                    obtenido: "expresión".into(),
+                },
+                linea,
+                columna,
+            ));
+        }
+    };
+
+    let fdef = if let Some(SimbodoExportado::Funcion(f)) = modulo.exportaciones.get(&miembro) {
+        f.clone()
+    } else if modulo.entorno.lock().unwrap().funcion(&miembro).is_some() {
+        return Err(error(
+            CausaError::SimbodoPrivado {
+                nombre: miembro.clone(),
+                modulo: modulo.ruta.display().to_string(),
+            },
+            linea,
+            columna,
+        ));
+    } else {
+        return Err(error(
+            CausaError::SimbodoNoExportado {
+                nombre: miembro.clone(),
+                modulo: modulo.ruta.display().to_string(),
+            },
+            linea,
+            columna,
+        ));
+    };
+
+    let mut vals = Vec::new();
+    for argumento in argumentos {
+        vals.push(evaluar_con(argumento, env)?);
+    }
+    if vals.len() != fdef.parametros.len() {
+        return Err(error(
+            CausaError::FirmaInvalida {
+                funcion: miembro.clone(),
+                esperado: fdef.parametros.len(),
+                obtenido: vals.len(),
+            },
+            linea,
+            columna,
+        ));
+    }
+    for ((nombre_param, tipo), valor) in fdef.parametros.iter().zip(vals.iter()) {
+        if let Some(tipo) = tipo
+            && convertir_a_tipo_anotado(valor.clone(), tipo).is_none()
+        {
+            return Err(error(
+                CausaError::TipoParametroIncompatible {
+                    funcion: miembro.clone(),
+                    parametro: nombre_param.clone(),
+                    esperado: tipo.nombre(),
+                    obtenido: valor.nombre_tipo().to_string(),
+                },
+                linea,
+                columna,
+            ));
+        }
+    }
+
+    let mut mod_env = modulo.entorno.lock().unwrap().clone();
+    mod_env.ambitos.push(HashMap::new());
+    for ((nombre_param, _), valor) in fdef.parametros.iter().zip(vals.iter()) {
+        mod_env.insertar_variable(
+            nombre_param.clone(),
+            VariableInfo {
+                valor: valor.clone(),
+                tipo_declarado: None,
+                mutable: true,
+                es_const: false,
+            },
+        );
+    }
+    let resultado = mod_env.ejecutar_funcion_sentencias(&fdef.cuerpo, &miembro);
+    mod_env.ambitos.pop();
+    match resultado? {
+        Some(valor) => Ok(Some(valor)),
+        None if matches!(fdef.tipo_retorno_anotado, Some(TipoAnotacion::Nulo)) => {
+            Ok(Some(Valor::Nulo))
+        }
+        None if fdef.tipo_retorno_anotado.is_some() => Err(error(
+            CausaError::RetornoAusente { funcion: miembro },
+            linea,
+            columna,
+        )),
+        None => Ok(None),
+    }
+}
+
+fn nombre_llamada_indirecta(callee: &Expresion, env: &Entorno) -> String {
+    match callee {
+        Expresion::Acceso { miembro, .. } => miembro.clone(),
+        Expresion::Variable { nombre, .. } => match env.buscar(nombre) {
+            Some(Valor::Funcion(funcion)) => funcion,
+            _ => "clausura".to_string(),
+        },
+        _ => "clausura".to_string(),
+    }
+}
+
+fn evaluar_expresion_sentencia(
+    expresion: &Expresion,
+    env: &mut Entorno,
+) -> Result<Option<Valor>, ErrorEjecucion> {
+    match expresion {
+        Expresion::Llamada {
+            nombre,
+            argumentos,
+            linea,
+            columna,
+        } => evaluar_llamada_directa(nombre, argumentos, *linea, *columna, env),
+        Expresion::LlamadaIndirecta {
+            callee,
+            argumentos,
+            linea,
+            columna,
+        } => evaluar_llamada_indirecta(callee, argumentos, *linea, *columna, env),
+        _ => evaluar_con(expresion, env).map(Some),
     }
 }
 

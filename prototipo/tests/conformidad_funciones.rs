@@ -149,10 +149,59 @@ fn func_error_retorno_ausente() {
         funcion sin_retorno() {
             sea x = 1
         }
-        sin_retorno()
+        sea resultado = sin_retorno()
     "#,
     );
     assert!(err.contains("RetornoAusente") || err.contains("retornar"));
+}
+
+#[test]
+fn func_sin_retorno_como_sentencia_y_continuacion() {
+    let resultado = run_program(
+        "funcion saludar() {\n  sea hecho = verdadero\n}\nsaludar()\nsea resultado = 30\nresultado",
+    )
+    .unwrap();
+    assert_eq!(resultado, Some(basilisco::Valor::Entero(30)));
+}
+
+#[test]
+fn func_retorno_se_propaga_desde_bloques_con_llamada_sin_retorno() {
+    let resultado = run_program(
+        "funcion sin_retorno() {\n  sea hecho = verdadero\n}\nfuncion con_retorno() {\n  {\n    sin_retorno()\n    retornar 41\n  }\n}\ncon_retorno()",
+    )
+    .unwrap();
+    assert_eq!(resultado, Some(basilisco::Valor::Entero(41)));
+}
+
+#[test]
+fn func_con_retorno_como_valor_y_como_sentencia() {
+    let resultado = run_program(
+        "funcion sumar(a, b) {\n  retornar a + b\n}\nsea resultado = sumar(10, 20)\nsumar(1, 2)\nresultado",
+    )
+    .unwrap();
+    assert_eq!(resultado, Some(basilisco::Valor::Entero(30)));
+}
+
+#[test]
+fn func_sin_retorno_en_argumento_sigue_generando_e1010() {
+    let err = error_ejecucion(
+        "funcion sin_retorno() {\n  sea hecho = verdadero\n}\nfuncion consumir(valor) {\n  retornar valor\n}\nconsumir(sin_retorno())",
+    );
+    assert!(matches!(*err.causa, CausaError::RetornoAusente { .. }));
+}
+
+#[test]
+fn func_llamada_como_sentencia_conserva_errores_de_firma_y_retorno() {
+    let firma = error_ejecucion("funcion f(a) {\n  retornar a\n}\nf()");
+    assert!(matches!(*firma.causa, CausaError::FirmaInvalida { .. }));
+
+    let retorno = error_ejecucion(
+        "funcion id(x) {\n  si x == 0 { retornar 1 }\n  retornar 2.5\n}\nid(0)\nid(1)",
+    );
+    assert!(matches!(
+        *retorno.causa,
+        CausaError::TipoDeRetornoIncompatible { .. }
+    ));
 }
 
 #[test]

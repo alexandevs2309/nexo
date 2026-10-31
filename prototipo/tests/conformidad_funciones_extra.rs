@@ -17,7 +17,7 @@ fn aridad_incorrecta_es_error() {
 
 #[test]
 fn retorno_ausente_es_error() {
-    let fuente = "funcion f() { 1 + 2 }\nf()";
+    let fuente = "funcion f() { 1 + 2 }\nsea resultado = f()";
     let e = ejecutar(fuente).unwrap_err();
     assert!(matches!(*e.causa, CausaError::RetornoAusente { .. }));
 }
