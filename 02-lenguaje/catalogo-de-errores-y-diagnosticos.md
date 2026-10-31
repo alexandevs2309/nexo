@@ -70,6 +70,16 @@ El prototipo asigna códigos estables `E1xxx` a `CausaError`:
 | E1027 | ConversionTextoInvalida |
 | E1028 | SeparadorVacio |
 | E1029 | ReasignacionInmutable |
+| E1030 | ModuloNoEncontrado |
+| E1031 | CicloDeImportacion |
+| E1032 | SimbodoPrivado |
+| E1033 | SimbodoNoExportado |
+| E1034 | ImportacionDuplicada |
+| E1035 | ExtensionNoSoportada |
+| E1036 | RutaNoPermitida |
+| E1037 | SentenciaNoPermitidaEnModulo |
+| E1038 | ImportacionesNoDisponibles |
+| E1040 | FFIInvalido |
 
 Los códigos se emiten en el mensaje de `ErrorEjecucion` como `[E1xxx]`.
 
@@ -104,7 +114,13 @@ pub enum CausaError {
     AsignacionIncompatible {
         esperado: &'static str,
         obtenido: &'static str,
-    }
+    /// Sentencia no permitida en el nivel superior de un módulo (ADR-0017 D4).
+    SentenciaNoPermitidaEnModulo { sentencia: String },
+    /// Importaciones no disponibles (sin cargador configurado) (ADR-0017 D12).
+    ImportacionesNoDisponibles,
+    /// Error al cargar o llamar una biblioteca dinámica (FFI básico).
+    FFIInvalido { detalle: String },
+}
 ```
 
 **Regla:** Cualquier nueva causa en el evaluador debe reflejarse aquí con código estable, mensaje, ubicación y acción sugerida.

@@ -39,5 +39,5 @@
 | Biblioteca estándar | PARCIAL | evaluador.rs | conformidad_* | cobertura limitada | Media |
 | IR/VM | AUSENTE | - | - | arquitectura | Baja |
 | Nativo/WASM | AUSENTE | - | - | backends | Baja |
-| FFI | AUSENTE | - | - | diseño | Baja |
+| FFI | PARCIAL | evaluador.rs (FFI) | ffi.rs | solo ABI C: escalares y texto; sin callbacks/structs | Alta |
 | Concurrencia | PARCIAL | evaluador.rs (tareas) | - | robustez | Media |

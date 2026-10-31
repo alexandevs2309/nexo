@@ -18,7 +18,7 @@ Este registro es el backlog de especificación. Las prioridades son recomendacio
 | GAP-012 | Runtime/modelo de ejecución | P1 | Arquitectura difícil de cambiar | ADR con benchmarks y contratos de runtime |
 | GAP-013 | Entrada/salida y permisos | P1 | APIs inseguras o no portables | API, errores, encoding, rutas, timeout y permisos |
 | GAP-014 | Concurrencia y cancelación | P2 | Deadlocks y comportamiento no determinista | Modelo de tareas, cancelación, sincronización y tests |
-| GAP-015 | FFI/ABI e interoperabilidad | P2 | Integración nativa insegura | ABI, ownership, callbacks, errores y compatibilidad |
+| GAP-015 | FFI/ABI e interoperabilidad | P2 | Integración nativa insegura | **Parcial** (prototipo 2026-10-31): puente ABI C básico con pruebas; restan callbacks, structs, variádicos y design review de seguridad |
 | GAP-016 | Paquetes y dependencias | P1 | Builds inseguros/no reproducibles | Formato manifiesto, lockfile, integridad y política |
 | GAP-017 | CLI, formatter, linter, debugger | P1 | Mala experiencia de desarrollo | Contratos de comandos, formatos de salida y tests |
 | GAP-018 | Biblioteca estándar | P1 | Cada proyecto reinventa utilidades | Módulos mínimos, estabilidad, documentación y pruebas |
@@ -60,11 +60,13 @@ Una brecha no se cierra porque exista un documento. Debe tener decisión aprobad
 | Paquetes y dependencias | Implementado localmente: manifiesto `basilisco.toml`, resolución en `paquetes/`/`vendor/`, bloqueo `basilisco.lock`, comandos `instalar` y `paquetes` | Suite `tests/paquetes.rs` (resolución, versiones, bloqueo, importación end-to-end) | GAP-016 / sin red, integridad ni dependencias transitivas |
 | Concurrencia | Implementado mínimamente: `iniciar_tarea`/`esperar_tarea` sobre hilos, sin cancelación ni canales | Prueba manual; pendiente suite dedicada | GAP-014 / no apto para producción |
 | Formateador | Implementado sobre AST para el subconjunto v0.5 | Pruebas CLI de formato | GAP-017 / sin preservación de comentarios |
-| FFI/ABI | No disponible | Sin suite | GAP-015 / fuera de alcance |
+| FFI/ABI | Implementado básicamente: `cargar_ffi`/`llamar_ffi`/`descargar_ffi` sobre ABI C (libffi + libloading); tipos escalar y texto; retorno `entero`/`logico`/`real`/`decimal`/`texto`/`nulo` | Suite `tests/ffi.rs`: enteros, lógico, reales, mixtos, decimal escalado, texto, nulo, errores de carga/símbolo/retorno/argumento/descarga | GAP-015 / parcial: sin callbacks, structs ni variádicos; especificación en `10-especificacion/ffi-abi.md` |
 | Análisis semántico estático | No disponible como pase separado; `analizar` solo ejecuta lexer y parser | La CLI prueba sintaxis válida/inválida; validaciones semánticas ocurren principalmente al evaluar | GAP-026 / pendiente |
 | IR/VM | No encontradas en el árbol actual | Sin módulo, binario ni pruebas de ejecución para IR/VM | GAP-027 / no implementado en este repositorio |
 | Backends nativos/WASM y bindings | No encontrados en el árbol actual | Sin backends ni pruebas de interoperabilidad | GAP-015 y GAP-022 / pendientes |
 
 **Verificación local (2026-10-28):** `cargo test --manifest-path prototipo/Cargo.toml` pasa en el árbol actual. La suite incluye pruebas de paquetes (resolución, bloqueo, versiones, ruta explícita e importación de extremo a extremo) y de cargador de módulos. Esta ejecución no certifica otras plataformas ni declara conformidad con Core 0.3 o superación de puertas de distribución. `cargo clippy` y `cargo fmt --check` no se ejecutaron en esta revisión.
+
+**Verificación local (2026-10-31):** con FFI básico incluido: 578 pruebas, 0 fallos; `cargo clippy --all-targets -- -D warnings` limpio; `cargo fmt --check` OK (prototipo/Cargo.toml).
 
 **Brechas que permanecen abiertas:** GAP-001 a GAP-009 siguen requiriendo cierre por separado en norma, pruebas y código; GAP-008 se cierra parcialmente para los casos básicos de arreglos/listas, no para iteración completa. GAP-010, GAP-014, GAP-016 y GAP-017 tienen implementación prototipal, no cierre completo. GAP-026 (análisis semántico estático) y GAP-027 (IR/VM) no están implementados. Las extensiones prototipales necesitan criterios de límite y conformidad antes de entrar en una garantía de versión.

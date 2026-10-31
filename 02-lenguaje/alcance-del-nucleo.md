@@ -21,6 +21,7 @@ No añadir al núcleo una función solo porque sea útil en una plataforma.
 - Análisis: `analizar` comprueba léxico y sintaxis. No hay un pase semántico estático general; los errores semánticos se detectan principalmente al evaluar.
 - Modelo de ejecución: intérprete del AST. No hay una IR ni una VM implementadas en este repositorio.
 - Concurrencia: primitivas `iniciar_tarea`/`esperar_tarea`; sin canales, cancelación ni sincronización de usuario.
+- FFI básico: `cargar_ffi`/`llamar_ffi`/`descargar_ffi` sobre ABI C (extensión prototipal; ver `10-especificacion/ffi-abi.md`).
 
 ## Fuera del núcleo v0.5
 - Paquetes remotos, firmas e integridad; dependencias transitivas y rangos semver.
