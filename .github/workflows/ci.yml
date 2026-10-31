@@ -32,13 +32,13 @@ jobs:
         run: cargo fmt --check
         working-directory: prototipo
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
         working-directory: prototipo
       - name: Compilar
         run: cargo build --bins --verbose
         working-directory: prototipo
       - name: Ejecutar pruebas
-        run: cargo test --verbose
+        run: cargo test --workspace --verbose
         working-directory: prototipo
       - name: Instalar y ejecutar los binarios (Unix)
         if: runner.os != 'Windows'
@@ -59,4 +59,37 @@ jobs:
           & (Join-Path $installRoot 'bin/basilisco.exe') --version
           & (Join-Path $installRoot 'bin/bsk.exe') --version
           cargo uninstall --root $installRoot basilisco
+        working-directory: prototipo
+
+  e2e-postgres:
+    name: E2E PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: basilisco
+          POSTGRES_PASSWORD: basilisco_dev_password
+          POSTGRES_DB: basilisco
+        options: >-
+          --health-cmd "pg_isready -U basilisco -d basilisco"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      DATABASE_URL: postgres://basilisco:basilisco_dev_password@localhost:5432/basilisco
+      BASILISCO_REGISTRY_ID: test-reg
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar Rust (estable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Compilar servidor
+        run: cargo build --bin basilisco-registry --verbose
+        working-directory: prototipo
+      - name: Ejecutar E2E PostgreSQL
+        run: cargo test --test registry_integration -- --ignored --nocapture
         working-directory: prototipo

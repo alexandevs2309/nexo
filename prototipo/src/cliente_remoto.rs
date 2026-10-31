@@ -65,8 +65,29 @@ pub fn validar_bpk(bytes: &[u8]) -> Result<(), String> {
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        if file.encrypted() {
+            return Err(format!(
+                "entrada cifrada no permitida: {}",
+                file.name().map(|s| s.to_string()).unwrap_or_default()
+            ));
+        }
+        match file.compression() {
+            zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated => {}
+            other => return Err(format!("método de compresión no permitido: {:?}", other)),
+        }
+        if file.name().map(|n| n.ends_with('/')).unwrap_or(false) {
+            if !file.is_dir() {
+                return Err("entrada de directorio inválida".to_string());
+            }
+        } else if file.is_dir() {
+            return Err("entrada de archivo inválida (es directorio)".to_string());
+        }
         let name_raw = file.name().map_err(|e| e.to_string())?.to_string();
-        let name: String = name_raw.nfc().collect();
+        let normalized: String = name_raw.nfc().collect();
+        if normalized != name_raw {
+            return Err(format!("nombre no normalizado en NFC: {name_raw}"));
+        }
+        let name = name_raw;
 
         // Seguridad de rutas.
         if name.is_empty()
@@ -88,7 +109,8 @@ pub fn validar_bpk(bytes: &[u8]) -> Result<(), String> {
                 "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
                 "LPT9",
             ];
-            if reserved.contains(&upper.as_str()) {
+            let stem = upper.split('.').next().unwrap_or("");
+            if reserved.contains(&upper.as_str()) || reserved.contains(&stem) {
                 return Err(format!("nombre reservado de plataforma: {name}"));
             }
             if comp.ends_with(' ') || comp.ends_with('.') {
@@ -263,7 +285,11 @@ pub fn extraer_bpk(bytes: &[u8], destino: &Path) -> Result<PathBuf, String> {
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
         let name_raw = file.name().map_err(|e| e.to_string())?.to_string();
-        let name: String = name_raw.nfc().collect();
+        let normalized: String = name_raw.nfc().collect();
+        if normalized != name_raw {
+            return Err(format!("nombre no normalizado en NFC: {name_raw}"));
+        }
+        let name = name_raw;
         if name.is_empty() || name.contains("..") || name.starts_with('/') || name.contains('\\') {
             return Err("ruta inválida en BPK".to_string());
         }

@@ -1414,9 +1414,30 @@ pub fn instalar_paquete_remoto_completo(
     // Validación BPK completa
     crate::cliente_remoto::validar_bpk(&bytes)?;
 
-    // Extraer en directorio temporal
-    let tmp_dir = std::env::temp_dir().join(format!("basilisco_remoto_{}", std::process::id()));
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    // Extraer en directorio temporal exclusivo (sin sobrescribir ni eliminar otros).
+    let mut tmp_dir = None;
+    for attempt in 0..10 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let candidate = std::env::temp_dir().join(format!(
+            "basilisco_remoto_{}_{}_{}",
+            std::process::id(),
+            nanos,
+            attempt
+        ));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => {
+                tmp_dir = Some(candidate);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    let tmp_dir =
+        tmp_dir.ok_or_else(|| "no se pudo crear directorio temporal exclusivo".to_string())?;
     let extraido = crate::cliente_remoto::extraer_bpk(&bytes, &tmp_dir)?;
     let archivo = archivo_de_paquete(&extraido)
         .ok_or_else(|| "no se encontró archivo de paquete".to_string())?;

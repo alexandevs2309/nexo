@@ -649,6 +649,24 @@ async fn publicar(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
+    // Serializar publicaciones de la misma identidad (advisory lock transaccional).
+    let identidad = format!(
+        "{}/{}@{}",
+        req.meta.namespace, req.meta.name, req.meta.version
+    );
+    // Clave de 64 bits derivada con FNV-1a estable (no depende de hashtext).
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in identidad.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let key = hash as i64;
+    sqlx::query("SELECT pg_advisory_xact_lock($1::bigint)")
+        .bind(key)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
     // upsert package
     let pkg_id: Uuid = match sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO packages (id, namespace, name, description) VALUES ($1,$2,$3,$4) \
@@ -775,14 +793,15 @@ async fn publicar(
         return Err(ApiError::internal("error de persistencia"));
     }
 
-    let _ = sqlx::query(
-        "INSERT INTO audit (id, action, actor, detail) VALUES ($1,'publish',$2,$3)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(user.user_id)
-    .bind(json!({"namespace":req.meta.namespace,"name":req.meta.name,"version":req.meta.version}))
-    .execute(&mut *tx)
-    .await;
+    sqlx::query("INSERT INTO audit (id, action, actor, detail) VALUES ($1,'publish',$2,$3)")
+        .bind(Uuid::new_v4())
+        .bind(user.user_id)
+        .bind(
+            json!({"namespace":req.meta.namespace,"name":req.meta.name,"version":req.meta.version}),
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     tx.commit()
         .await
@@ -832,7 +851,6 @@ async fn authorize_namespace(state: &AppState, user: &AuthUser, ns: &str) -> Api
 }
 
 fn validate_manifest_identity(bytes: &[u8], meta: &MetadatosPublicacion) -> ApiResult<()> {
-    // reuse cliente_remoto validar already called; parse manifest
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor)
         .map_err(|_| ApiError::bad_request("INVALID_PACKAGE", "zip inválido"))?;
@@ -853,70 +871,45 @@ fn validate_manifest_identity(bytes: &[u8], meta: &MetadatosPublicacion) -> ApiR
             "falta manifiesto",
         ));
     }
-    // check name/version appear
-    let mut m_name = None;
-    let mut m_version = None;
-    for line in manifest.lines() {
-        let l = line.trim();
-        if l.starts_with("name") && l.contains('=') {
-            m_name = Some(
-                l.split('=')
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .trim_matches('"')
-                    .to_string(),
-            );
-        }
-        if l.starts_with("version") && l.contains('=') {
-            m_version = Some(
-                l.split('=')
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .trim_matches('"')
-                    .to_string(),
-            );
-        }
-    }
-    if let Some(n) = m_name
-        && n != meta.name
-    {
-        return Err(ApiError::bad_request(
-            "INVALID_MANIFEST",
-            "nombre no coincide",
-        ));
-    }
-    if let Some(v) = m_version
-        && v != meta.version
-    {
-        return Err(ApiError::bad_request(
-            "INVALID_MANIFEST",
-            "versión no coincide",
-        ));
-    }
-    let mut m_namespace: Option<String> = None;
-    for line in manifest.lines() {
-        let l = line.trim();
-        if l.starts_with("namespace") && l.contains('=') {
-            m_namespace = Some(
-                l.split('=')
-                    .nth(1)
-                    .unwrap_or("")
-                    .trim()
-                    .trim_matches('"')
-                    .to_string(),
-            );
-        }
-    }
-    if let Some(ns_m) = m_namespace
-        && ns_m != meta.namespace
-    {
+    let parsed: toml::Value = toml::from_str(&manifest)
+        .map_err(|_| ApiError::bad_request("INVALID_MANIFEST", "TOML inválido"))?;
+    let package = parsed
+        .get("package")
+        .ok_or_else(|| ApiError::bad_request("INVALID_MANIFEST", "falta sección [package]"))?;
+    let ns = package
+        .get("namespace")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ApiError::bad_request("INVALID_MANIFEST", "package.namespace obligatorio")
+        })?;
+    let name = package
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ApiError::bad_request("INVALID_MANIFEST", "package.name obligatorio"))?;
+    let version = package
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ApiError::bad_request("INVALID_MANIFEST", "package.version obligatorio"))?;
+    if ns != meta.namespace {
         return Err(ApiError::bad_request(
             "INVALID_MANIFEST",
             "namespace no coincide",
         ));
     }
+    if name != meta.name {
+        return Err(ApiError::bad_request(
+            "INVALID_MANIFEST",
+            "nombre no coincide",
+        ));
+    }
+    if version != meta.version {
+        return Err(ApiError::bad_request(
+            "INVALID_MANIFEST",
+            "versión no coincide",
+        ));
+    }
+    semver::Version::parse(version)
+        .map_err(|_| ApiError::bad_request("INVALID_MANIFEST", "versión SemVer inválida"))?;
     Ok(())
 }
 
