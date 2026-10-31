@@ -571,19 +571,24 @@ async fn publicar(
         return Err(ApiError::bad_request("INVALID_HASH", "hash inválido"));
     }
 
-    // verify signature if provided (R3): firma requerida
-    if req.meta.firma.is_empty() || req.meta.clave.is_empty() {
-        return Err(ApiError::bad_request(
-            "INVALID_SIGNATURE",
-            "firma requerida",
-        ));
-    }
-    let firma = req.meta.firma.clone();
-    let clave_bytes =
-        hex_decode(&req.meta.clave).map_err(|e| ApiError::bad_request("INVALID_SIGNATURE", e))?;
-    if clave_bytes.len() != 32 {
-        return Err(ApiError::bad_request("INVALID_SIGNATURE", "clave inválida"));
-    }
+    // El servidor firma los metadatos con su propia clave (cadena de confianza).
+    // La clave privada se genera en el arranque y se guarda en artifacts/registry.key.
+    let key_path = std::path::PathBuf::from(&state.artifacts_dir).join("registry.key");
+    let key_bytes = std::fs::read(&key_path)
+        .map_err(|_| ApiError::internal("clave de registro no disponible"))?;
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(
+        key_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| ApiError::internal("clave de registro inválida"))?,
+    );
+    let verifying_key = signing_key.verifying_key();
+    let server_key_hex: String = verifying_key
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
+
     let mp = crate::paquetes::MetadatosPaquete {
         namespace: req.meta.namespace.clone(),
         name: req.meta.name.clone(),
@@ -591,16 +596,24 @@ async fn publicar(
         sha256: req.meta.sha256.clone(),
         published_at: req.meta.published_at.clone(),
         registry_id: req.meta.registry_id.clone(),
-        key_id: req.meta.key_id.clone(),
+        key_id: "key-1".to_string(),
         nonce: req.meta.nonce.clone(),
         expires_at: req.meta.expires_at.clone(),
-        firma: Some(firma.clone()),
-        clave: Some(req.meta.clave.clone()),
+        firma: None,
+        clave: Some(server_key_hex.clone()),
     };
-    // published_at comes from meta but MetadatosPaquete uses published_at field; use provided? MetadatosPublicacion has no published_at. Keep placeholder; signature canonical uses published_at. Need match client. Use req.meta? no field. We'll use the same value client used? Client sets published_at. Server MetadatosPublicacion lacks it. TODO: add field. For now verify with placeholder would fail. Instead skip strict published_at?
-    // To keep verification working, override published_at in mp is wrong. Add field to MetadatosPublicacion instead.
-    crate::paquetes::verificar_firma_metadatos(&mp, &firma, &clave_bytes)
-        .map_err(|e| ApiError::bad_request("INVALID_SIGNATURE", e))?;
+    let server_sig = crate::paquetes::firmar_metadatos(&mp, &signing_key.to_bytes())
+        .map_err(ApiError::internal)?;
+
+    // Validación estricta de SemVer para la versión (evita separadores de ruta).
+    semver::Version::parse(&req.meta.version)
+        .map_err(|_| ApiError::bad_request("INVALID_VERSION", "versión SemVer inválida"))?;
+    if req.meta.version.contains('/')
+        || req.meta.version.contains('\\')
+        || req.meta.version.contains("..")
+    {
+        return Err(ApiError::bad_request("INVALID_VERSION", "versión inválida"));
+    }
 
     // validate registry_id matches
     if req.meta.registry_id != state.registry_id {
@@ -612,9 +625,9 @@ async fn publicar(
 
     // validate expiry not in past
     // expires_at is string; best-effort parse RFC3339
-    if let Ok(exp) = chrono::DateTime::parse_from_rfc3339(&req.meta.expires_at)
-        && exp < chrono::Utc::now()
-    {
+    let exp = chrono::DateTime::parse_from_rfc3339(&req.meta.expires_at)
+        .map_err(|_| ApiError::bad_request("INVALID_METADATA", "expires_at inválido"))?;
+    if exp < chrono::Utc::now() {
         return Err(ApiError::bad_request(
             "INVALID_METADATA",
             "publicación expirada",
@@ -690,19 +703,26 @@ async fn publicar(
         ));
     }
 
-    // store artifact atomically
+    // store artifact atomically, sin sobrescribir (create_new) frente a concurrencia.
     let artifact_path = format!(
         "{}/{}_{}_{}.bpk",
         state.artifacts_dir, req.meta.namespace, req.meta.name, req.meta.version
     );
-    let tmp_path = format!("{}.tmp", artifact_path);
-    if std::fs::write(&tmp_path, &bytes).is_err() {
+    // Reservar el archivo (falla si ya existe) antes de escribir.
+    let create = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&artifact_path);
+    if create.is_err() {
         let _ = tx.rollback().await;
-        return Err(ApiError::internal("error de almacenamiento"));
+        return Err(ApiError::conflict(
+            "VERSION_ALREADY_EXISTS",
+            "artefacto ya existe",
+        ));
     }
-    if std::fs::rename(&tmp_path, &artifact_path).is_err() {
+    if std::fs::write(&artifact_path, &bytes).is_err() {
         let _ = tx.rollback().await;
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = std::fs::remove_file(&artifact_path);
         return Err(ApiError::internal("error de almacenamiento"));
     }
 
@@ -717,15 +737,15 @@ async fn publicar(
     .bind(&req.meta.version)
     .bind(&req.meta.sha256)
     .bind(&req.meta.registry_id)
-    .bind(&req.meta.key_id)
-    .bind(&req.meta.firma)
+    .bind("key-1")
+    .bind(&server_sig)
     .bind(&req.meta.nonce)
     .bind(&req.meta.expires_at)
     .bind(&artifact_path)
     .bind(bytes.len() as i64)
     .bind(deps)
     .bind(user.user_id)
-    .bind(&req.meta.clave)
+    .bind(&server_key_hex)
     .bind(&req.meta.published_at)
     .execute(&mut *tx)
     .await;
@@ -876,16 +896,4 @@ async fn listar_claves(State(state): State<AppState>) -> ApiResult<impl IntoResp
         json!({"registry_id": rid, "key_id": kid, "public_key": hex, "valid_from": vf, "valid_until": vu, "revoked_at": rv})
     }).collect();
     Ok(erros_ok(json!({"keys": items})))
-}
-
-fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
-        return Err("hex inválido".to_string());
-    }
-    let mut out = Vec::new();
-    for i in (0..s.len()).step_by(2) {
-        let byte = u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| "hex inválido".to_string())?;
-        out.push(byte);
-    }
-    Ok(out)
 }

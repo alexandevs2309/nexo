@@ -14,7 +14,7 @@ fn hacer_bpk() -> Vec<u8> {
         let opts = SimpleFileOptions::default();
         zip.start_file("BPK-MANIFEST.toml", opts).unwrap();
         zip.write_all(
-            b"[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[[files]]\npath = \"lib.bsk\"\n",
+            b"[format]\nname = \"BASILISCO_PACKAGE\"\nversion = \"1.0\"\n\n[package]\nnamespace = \"demo\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"demo\"\nlicense = \"Apache-2.0\"\nauthors = [\"demo\"]\n\n[compatibility]\nbasilisco = \">=0.6.0\"\n\n[dependencies]\n\n[[files]]\npath = \"lib.bsk\"\nsize = 9\nsha256 = \"de0fcd91c7f11f05a86c414de64cb7f44e421b4c165475f46157ebeeb3e9efe9\"\n",
         )
         .unwrap();
         zip.start_file("payload/lib.bsk", opts).unwrap();

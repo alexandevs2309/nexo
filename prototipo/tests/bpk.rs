@@ -11,7 +11,7 @@ fn bpk_valido() {
         let opts = SimpleFileOptions::default();
         zip.start_file("BPK-MANIFEST.toml", opts).unwrap();
         zip.write_all(
-            b"[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[[files]]\npath = \"lib.bsk\"\n",
+            b"[format]\nname = \"BASILISCO_PACKAGE\"\nversion = \"1.0\"\n\n[package]\nnamespace = \"demo\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"demo\"\nlicense = \"Apache-2.0\"\nauthors = [\"demo\"]\n\n[compatibility]\nbasilisco = \">=0.6.0\"\n\n[dependencies]\n\n[[files]]\npath = \"lib.bsk\"\nsize = 2\nsha256 = \"4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865\"\n",
         )
         .unwrap();
         zip.start_file("payload/lib.bsk", opts).unwrap();
@@ -26,7 +26,7 @@ fn bpk_valido() {
         let opts = SimpleFileOptions::default();
         zip.start_file("BPK-MANIFEST.toml", opts).unwrap();
         zip.write_all(
-            b"[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[[files]]\npath = \"lib.bsk\"\n",
+            b"[format]\nname = \"BASILISCO_PACKAGE\"\nversion = \"1.0\"\n\n[package]\nnamespace = \"demo\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"demo\"\nlicense = \"Apache-2.0\"\nauthors = [\"demo\"]\n\n[compatibility]\nbasilisco = \">=0.6.0\"\n\n[dependencies]\n\n[[files]]\npath = \"lib.bsk\"\nsize = 2\nsha256 = \"4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865\"\n",
         )
         .unwrap();
         zip.start_file("payload/lib.bsk", opts).unwrap();

@@ -4,6 +4,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use crate::paquetes::MetadatosPaquete;
+use unicode_normalization::UnicodeNormalization;
 
 pub fn obtener_metadatos(url: &str) -> Result<MetadatosPaquete, String> {
     let resp = ureq::get(url).call().map_err(|e| e.to_string())?;
@@ -36,61 +37,173 @@ pub fn verificar_artefacto(bytes: &[u8], sha256_esperado: &str) -> Result<(), St
 }
 
 pub fn validar_bpk(bytes: &[u8]) -> Result<(), String> {
+    // Límites globales.
+    if bytes.is_empty() {
+        return Err("BPK vacío".to_string());
+    }
+    if bytes.len() > 50 * 1024 * 1024 {
+        return Err("BPK demasiado grande".to_string());
+    }
+
     let cursor = Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
 
+    const MAX_FILES: usize = 1000;
+    const MAX_TOTAL: u64 = 100 * 1024 * 1024;
+    const MAX_FILE: u64 = 10 * 1024 * 1024;
+
+    if archive.len() > MAX_FILES {
+        return Err("demasiados archivos en BPK".to_string());
+    }
+
     let mut manifest_text = String::new();
-    let mut entries: Vec<(String, u64)> = Vec::new();
+    // relative path (normalizado NFC) -> (size, sha256 calculado)
+    let mut archivos: std::collections::BTreeMap<String, (u64, String)> =
+        std::collections::BTreeMap::new();
+    let mut visto = std::collections::HashSet::new();
+    let mut total = 0u64;
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let name = file.name().map(|s| s.to_string()).unwrap_or_default();
+        let name_raw = file.name().map_err(|e| e.to_string())?.to_string();
+        let name: String = name_raw.nfc().collect();
+
+        // Seguridad de rutas.
+        if name.is_empty()
+            || name.contains("..")
+            || name.starts_with('/')
+            || name.contains('\\')
+            || name.contains('\0')
+        {
+            return Err(format!("ruta inválida en BPK: {name}"));
+        }
+        if !visto.insert(name.clone()) {
+            return Err(format!("entrada duplicada en BPK: {name}"));
+        }
+
+        // Rechazar entradas especiales/symlinks.
+        if let Some(mode) = file.unix_mode() {
+            let tipo = mode & 0o170000;
+            if tipo != 0 && tipo != 0o100000 {
+                return Err(format!("archivo especial no permitido: {name}"));
+            }
+        }
+
+        let size = file.size();
+        if size > MAX_FILE {
+            return Err(format!("archivo demasiado grande en BPK: {name}"));
+        }
+        total += size;
+        if total > MAX_TOTAL {
+            return Err("BPK demasiado grande".to_string());
+        }
+
         if name == "BPK-MANIFEST.toml" {
+            if file.is_dir() {
+                return Err("BPK-MANIFEST.toml no puede ser directorio".to_string());
+            }
             file.read_to_string(&mut manifest_text)
                 .map_err(|e| e.to_string())?;
-        } else if !name.ends_with('/') {
+        } else {
             let relative = name
                 .strip_prefix("payload/")
                 .ok_or_else(|| format!("archivo fuera de payload/: {name}"))?;
             if relative.is_empty() {
                 return Err("ruta vacía en payload".to_string());
             }
-            entries.push((relative.to_string(), file.size()));
+            // sha256 del contenido
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+            let hash = crate::paquetes::sha256_hex(&buf);
+            archivos.insert(relative.to_string(), (size, hash));
         }
     }
+
     if manifest_text.is_empty() {
         return Err("falta BPK-MANIFEST.toml".to_string());
     }
-    if !manifest_text.contains("[package]") {
-        return Err("manifiesto BPK inválido".to_string());
+
+    // Parseo estricto de TOML.
+    let manifest: toml::Value =
+        toml::from_str(&manifest_text).map_err(|e| format!("TOML inválido: {e}"))?;
+
+    let format_sec = manifest.get("format").ok_or("falta sección [format]")?;
+    if format_sec.get("name").and_then(|v| v.as_str()) != Some("BASILISCO_PACKAGE") {
+        return Err("format.name inválido".to_string());
     }
-    if !manifest_text.contains("name =") || !manifest_text.contains("version =") {
-        return Err("manifiesto BPK incompleto".to_string());
+    if format_sec.get("version").and_then(|v| v.as_str()) != Some("1.0") {
+        return Err("format.version inválido".to_string());
     }
 
-    let mut declared: Vec<String> = Vec::new();
-    for line in manifest_text.lines() {
-        let line = line.trim();
-        if line.starts_with("path =") {
-            let val = line.trim_start_matches("path =").trim().trim_matches('"');
-            declared.push(val.to_string());
+    let package = manifest.get("package").ok_or("falta sección [package]")?;
+    let ns = package
+        .get("namespace")
+        .and_then(|v| v.as_str())
+        .ok_or("package.namespace obligatorio")?;
+    let pname = package
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("package.name obligatorio")?;
+    let version = package
+        .get("version")
+        .and_then(|v| v.as_str())
+        .ok_or("package.version obligatorio")?;
+    if ns.is_empty() || pname.is_empty() {
+        return Err("namespace/name vacíos".to_string());
+    }
+    semver::Version::parse(version).map_err(|_| "version SemVer inválida".to_string())?;
+
+    // files
+    let files = manifest
+        .get("files")
+        .and_then(|v| v.as_array())
+        .ok_or("falta [[files]]")?;
+    if files.is_empty() {
+        return Err("lista de archivos vacía".to_string());
+    }
+
+    let mut declarados: Vec<String> = Vec::new();
+    for f in files {
+        let path = f
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or("file.path obligatorio")?;
+        let path_norm: String = path.nfc().collect();
+        if path_norm.is_empty()
+            || path_norm.contains("..")
+            || path_norm.starts_with('/')
+            || path_norm.contains('\\')
+        {
+            return Err(format!("ruta inválida en manifiesto: {path}"));
         }
-    }
-
-    for (name, _) in &entries {
-        if name.is_empty() || name.contains("..") || name.starts_with('/') || name.contains('\\') {
-            return Err("ruta inválida en BPK".to_string());
+        let size = f
+            .get("size")
+            .and_then(|v| v.as_integer())
+            .ok_or("file.size obligatorio")?;
+        let sha = f
+            .get("sha256")
+            .and_then(|v| v.as_str())
+            .ok_or("file.sha256 obligatorio")?;
+        if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("file.sha256 inválido".to_string());
         }
-    }
-
-    for d in &declared {
-        if !entries.iter().any(|(n, _)| n == d) {
-            return Err(format!("archivo declarado no encontrado: {}", d));
+        // verificar contra archivo real
+        let (real_size, real_sha) = archivos
+            .get(&path_norm)
+            .ok_or_else(|| format!("archivo declarado no encontrado: {path}"))?;
+        if *real_size as i64 != size {
+            return Err(format!("tamaño no coincide: {path}"));
         }
+        if real_sha != sha {
+            return Err(format!("sha256 no coincide: {path}"));
+        }
+        declarados.push(path_norm);
     }
 
-    for (name, _) in &entries {
-        if !declared.iter().any(|d| d == name) {
-            return Err(format!("archivo no declarado: {}", name));
+    // todos los archivos reales deben estar declarados
+    for n in archivos.keys() {
+        if !declarados.iter().any(|d| d == n) {
+            return Err(format!("archivo no declarado: {n}"));
         }
     }
 
@@ -99,12 +212,12 @@ pub fn validar_bpk(bytes: &[u8]) -> Result<(), String> {
 
 pub fn extraer_bpk(bytes: &[u8], destino: &Path) -> Result<PathBuf, String> {
     validar_bpk(bytes)?;
+    // (resto igual que antes)
     let cursor = Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
     let out_dir = destino.to_path_buf();
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
 
-    // Límites contra ZIP bombs.
     const MAX_FILES: usize = 1000;
     const MAX_TOTAL: u64 = 100 * 1024 * 1024;
     const MAX_FILE: u64 = 10 * 1024 * 1024;
@@ -117,15 +230,13 @@ pub fn extraer_bpk(bytes: &[u8], destino: &Path) -> Result<PathBuf, String> {
     let mut seen = std::collections::HashSet::new();
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let name = file.name().map(|s| s.to_string()).unwrap_or_default();
+        let name_raw = file.name().map_err(|e| e.to_string())?.to_string();
+        let name: String = name_raw.nfc().collect();
         if name.is_empty() || name.contains("..") || name.starts_with('/') || name.contains('\\') {
             return Err("ruta inválida en BPK".to_string());
         }
         if !seen.insert(name.clone()) {
             return Err("entrada duplicada en BPK".to_string());
-        }
-        if file.is_dir() && name == "payload/" {
-            continue;
         }
         let size = file.size();
         if size > MAX_FILE {

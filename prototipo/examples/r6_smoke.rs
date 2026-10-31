@@ -1,5 +1,4 @@
 use basilisco::paquetes::{self};
-use ed25519_dalek::SigningKey;
 use std::io::{Read, Write};
 
 fn main() {
@@ -42,15 +41,14 @@ fn main() {
         .to_string();
     println!("key_id={} pk={}", key_id, &pk_hex[..16]);
 
-    // signing key (publisher). Fixed seed for reproducibility.
-    let sk = SigningKey::from_bytes(&[7u8; 32]);
-    let vk = sk.verifying_key();
-    let vk_hex: String = vk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
-
-    // trust store: register publisher public key
+    // trust store: register server public key (trust anchor)
+    let pk_bytes: Vec<u8> = (0..pk_hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&pk_hex[i..i + 2], 16).unwrap())
+        .collect();
     let mut almacen = paquetes::AlmacenClaves::default();
     almacen
-        .agregar_seguro("registro-local", &key_id, vk.to_bytes().to_vec())
+        .agregar_seguro("registro-local", &key_id, pk_bytes.clone())
         .unwrap();
     almacen.guardar(base).unwrap();
 
@@ -69,27 +67,21 @@ fn main() {
         nonce: "nonce-smoke-1".to_string(),
         expires_at: "2027-10-31T00:00:00Z".to_string(),
         firma: None,
-        clave: Some(vk_hex.clone()),
+        clave: None,
     };
-    let firma = paquetes::firmar_metadatos(&meta, &sk.to_bytes()).unwrap();
-    let meta2 = paquetes::MetadatosPaquete {
-        firma: Some(firma.clone()),
-        ..meta
-    };
-
-    // server MetadatosPublicacion requires published_at field (added). Build JSON matching server model.
+    // server MetadatosPublicacion: server re-signs, client values ignored.
     let pub_meta = serde_json::json!({
-        "namespace": meta2.namespace,
-        "name": meta2.name,
-        "version": meta2.version,
-        "sha256": meta2.sha256,
-        "registry_id": meta2.registry_id,
-        "key_id": meta2.key_id,
-        "nonce": meta2.nonce,
-        "expires_at": meta2.expires_at,
-        "published_at": meta2.published_at,
-        "firma": meta2.firma.clone().unwrap(),
-        "clave": meta2.clave.clone().unwrap(),
+        "namespace": meta.namespace,
+        "name": meta.name,
+        "version": meta.version,
+        "sha256": meta.sha256,
+        "registry_id": meta.registry_id,
+        "key_id": meta.key_id,
+        "nonce": meta.nonce,
+        "expires_at": meta.expires_at,
+        "published_at": meta.published_at,
+        "firma": "",
+        "clave": "",
     });
     let b64 = base64_encode(&bpk);
     let pub_body = serde_json::json!({"meta": pub_meta, "artifact_b64": b64});
@@ -151,17 +143,20 @@ fn main() {
 fn make_bpk() -> Vec<u8> {
     use zip::ZipWriter;
     use zip::write::SimpleFileOptions;
+    let content = b"lib demo\n";
+    let sha = "de0fcd91c7f11f05a86c414de64cb7f44e421b4c165475f46157ebeeb3e9efe9";
+    let manifest = format!(
+        "[format]\nname = \"BASILISCO_PACKAGE\"\nversion = \"1.0\"\n\n[package]\nnamespace = \"demo\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"demo\"\nlicense = \"Apache-2.0\"\nauthors = [\"demo\"]\n\n[compatibility]\nbasilisco = \">=0.6.0\"\n\n[dependencies]\n\n[[files]]\npath = \"lib.bsk\"\nsize = 9\nsha256 = \"{}\"\n",
+        sha
+    );
     let mut buf = Vec::new();
     {
         let mut zip = ZipWriter::new(std::io::Cursor::new(&mut buf));
         let opts = SimpleFileOptions::default();
         zip.start_file("BPK-MANIFEST.toml", opts).unwrap();
-        zip.write_all(
-            b"[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[[files]]\npath = \"lib.bsk\"\n",
-        )
-        .unwrap();
+        zip.write_all(manifest.as_bytes()).unwrap();
         zip.start_file("payload/lib.bsk", opts).unwrap();
-        zip.write_all(b"lib demo\n").unwrap();
+        zip.write_all(content).unwrap();
         zip.finish().unwrap();
     }
     buf
