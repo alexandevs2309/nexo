@@ -493,10 +493,9 @@ pub fn escribir_bloqueo(base: &Path, resueltas: &[DependenciaResuelta]) -> Resul
         salida.push_str("\n[[dependencia]]\n");
         salida.push_str(&format!("nombre = \"{}\"\n", escapar(&dep.nombre)));
         salida.push_str(&format!("version = \"{}\"\n", escapar(&dep.version)));
-        salida.push_str(&format!(
-            "ruta = \"{}\"\n",
-            escapar(&ruta.to_string_lossy())
-        ));
+        // El archivo de bloqueo usa separadores portables, también en Windows.
+        let ruta_portable = ruta.to_string_lossy().replace('\\', "/");
+        salida.push_str(&format!("ruta = \"{}\"\n", escapar(&ruta_portable)));
         salida.push_str(&format!("hash = \"{}\"\n", escapar(&dep.hash)));
     }
     let ruta = base.join(BLOQUEO);
