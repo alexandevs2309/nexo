@@ -370,3 +370,67 @@ fn sem_dato_const_reasignacion() {
     let e2 = analizar("const X: entero = 1\nX = 2");
     assert!(!e2.is_empty(), "errores: {:?}", e2);
 }
+
+#[test]
+fn sem_lambda_con_retorno_es_valido() {
+    let e = analizar("sea doble = funcion (x) { retornar x * 2 }");
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_lambda_retorno_anotado_incorrecto_es_error() {
+    let e = analizar("sea f = funcion (x) -> entero { retornar \"t\" }");
+    assert!(e.iter().any(|err| err.mensaje.contains("retorno")), "{e:?}");
+}
+
+#[test]
+fn sem_function_anidada_es_valido() {
+    let e = analizar(
+        "funcion externa() {\n  funcion interna() { retornar 1 }\n  retornar interna()\n}",
+    );
+    assert!(e.is_empty(), "errores: {:?}", e);
+}
+
+#[test]
+fn sem_function_anidada_duplicada_es_error() {
+    let e = analizar(
+        "funcion externa() {\n  funcion interna() { retornar 1 }\n  funcion interna() { retornar 2 }\n}",
+    );
+    assert!(
+        e.iter().any(|err| err.mensaje.contains("duplicada")),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn sem_function_anidada_antes_de_declarar_es_error() {
+    let e = analizar(
+        "funcion externa() {\n  retornar interna()\n  funcion interna() { retornar 1 }\n}",
+    );
+    assert!(
+        e.iter()
+            .any(|err| err.mensaje.contains("no definida: interna")),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn sem_function_duplicada_nivel_superior_es_error() {
+    let e = analizar("funcion f() { retornar 1 }\nfuncion f() { retornar 2 }");
+    assert!(
+        e.iter().any(|err| err.mensaje.contains("duplicada")),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn sem_lambda_ariodad_incorrecta_es_error() {
+    let e = analizar("sea f = funcion (x) { retornar x }\nf()  \nf(1, 2)");
+    assert!(!e.is_empty(), "{e:?}");
+}
+
+#[test]
+fn sem_lambda_como_valor_y_llamada_valida() {
+    let e = analizar("sea f = funcion (x) { retornar x }\nf(3)");
+    assert!(e.is_empty(), "errores: {:?}", e);
+}

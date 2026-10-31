@@ -1,10 +1,12 @@
 # Auditoría técnica integral de BASILISCO
 
-## 1. Resumen ejecutivo (Fase 1 - auditoría final)
+## 1. Resumen ejecutivo (sincronizado 2026-10-30)
 
-BASILISCO 0.6.0 cuenta con lexer, parser, evaluador, análisis semántico parcial, módulos, CLI y biblioteca estándar básica. Validación reportada: 498 pruebas aprobadas, 0 fallidas. `cargo fmt --check` y `cargo clippy --all-targets --all-features -- -D warnings` correctos. Funciones de primera clase parciales (`Valor::Funcion(String)`). No hay closures, lambdas ni captura de entorno léxico. Funciones anidadas rechazadas por el parser. `Expresion::LlamadaIndirecta` todavía no valida estáticamente firma/argumentos/retorno y devuelve `TipoSem::Desconocido` (deuda técnica para Fase 2). Inferencia de funciones no anotadas limitada. Sin IR, VM, nativo ni WASM. Gestor de paquetes local.
+BASILISCO 0.6.0 cuenta con lexer, parser, evaluador, análisis semántico, módulos, CLI y biblioteca estándar básica. Validación: 551 pruebas aprobadas, 0 fallidas; `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` correctos. Funciones de primera clase con closures, lambdas y captura de entorno léxico; funciones anidadas soportadas por parser, evaluador y análisis semántico. `Expresion::LlamadaIndirecta` valida estáticamente firma, parámetros y retorno. El izado de funciones de nivel superior es consistente entre `analizar` y `run` (llamadas anticipadas, recursión mutua y detección de duplicados). Inferencia de funciones no anotadas limitada. Sin IR, VM, nativo ni WASM. Gestor de paquetes local.
 
-## 1. Resumen ejecutivo
+## 1. Resumen ejecutivo (Fase 1, histórico)
+
+Sesión de auditoría con 498 pruebas y funciones de primera clase parciales; los puntos "sin closures, lambdas" y "funciones anidada rechazadas por el parser" quedaron superados por los cambios del 2026-10-27 al 2026-10-30 (commits de funciones de primera clase y consolidación).
 
 BASILISCO 0.6.0 es un lenguaje implementado en Rust con lexer, parser, AST, evaluador de árbol, sistema de tipos estático parcial, análisis semántico, módulos, CLI y biblioteca estándar básica. No existe IR, VM, compilación nativa ni WebAssembly. La ejecución real se realiza mediante evaluador de árbol en `prototipo/src/evaluador.rs`.
 
@@ -49,11 +51,11 @@ Estado general: **núcleo funcional con capacidades avanzadas parciales**. La im
 ## 6. Hallazgos por área
 
 ### A. Funciones
-- Funciones nombradas, recursión, llamadas anticipadas: implementadas.
-- Funciones de primera clase: implementadas parcialmente (sin clausuras).
-- Lambdas/anónimas: ausentes.
-- Callbacks: posibles vía nombres de función.
-- Funciones anidadas: no verificadas.
+- Funciones nombradas, recursión, llamadas anticipadas: implementadas en parser, evaluador y semántico con la misma estructura (izado de nivel superior, E1003 en duplicados).
+- Funciones de primera clase: implementadas (closures con captura de entorno, transferencia y devolución).
+- Lambdas/anónimas: implementadas (`funcion (x) { ... }` con `retornar` válido y anotación de retorno).
+- Callbacks: posibles por valor de función y por nombre.
+- Funciones anidada: implementadas y verificadas en las tres capas; el uso anticipado dentro de una función es error E1002 coherente.
 
 ### B. Tipos
 - Primitivos y compuestos básicos: implementados.
@@ -82,7 +84,7 @@ Estado general: **núcleo funcional con capacidades avanzadas parciales**. La im
 - Alias `bsk`.
 
 ### H. Calidad
-- ~498 tests.
+- 551 pruebas (2026-10-30).
 - Fuzzing básico.
 - Portabilidad: Linux verificado; Windows/macOS no verificados.
 

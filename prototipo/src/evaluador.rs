@@ -465,6 +465,9 @@ pub struct FuncionDef {
 pub struct Entorno {
     ambitos: Vec<HashMap<String, VariableInfo>>,
     funciones: HashMap<String, FuncionDef>,
+    /// Funciones de nivel superior ya izadas al inicio de la ejecución
+    /// (`ejecutar_programa`). Evita duplicar registros en el pase principal.
+    funciones_izadas: HashSet<String>,
     /// Nombres exportados por el módulo en ejecución.
     exportaciones: HashSet<String>,
     /// Cargador de módulos compartido (ADR-0017, Fase 3).
@@ -480,6 +483,7 @@ impl Entorno {
         Entorno {
             ambitos: vec![HashMap::new()],
             funciones: HashMap::new(),
+            funciones_izadas: HashSet::new(),
             exportaciones: HashSet::new(),
             cargador: None,
             archivo: None,
@@ -492,6 +496,7 @@ impl Entorno {
         Entorno {
             ambitos: vec![HashMap::new()],
             funciones: HashMap::new(),
+            funciones_izadas: HashSet::new(),
             exportaciones: HashSet::new(),
             cargador: Some(cargador),
             archivo,
@@ -701,7 +706,108 @@ impl Entorno {
         &mut self,
         sentencias: &[Sentencia],
     ) -> Result<Option<Valor>, ErrorEjecucion> {
+        // Primer pase: izar las funciones de nivel superior. Así el evaluador
+        // coincide con el analizador semántico (llamadas anticipadas y
+        // recursión entre funciones declaradas después).
+        self.izar_funciones(sentencias)?;
         self.ejecutar_sentencias(sentencias)
+    }
+
+    /// Registra las funciones declaradas en el nivel superior de un programa o
+    /// módulo. Ignora duplicados: el segundo registro detecta el error igual
+    /// que el primero (se marca en `funciones_izadas` en orden de declaración).
+    fn izar_funciones(&mut self, sentencias: &[Sentencia]) -> Result<(), ErrorEjecucion> {
+        for s in sentencias {
+            match s {
+                Sentencia::Funcion {
+                    nombre,
+                    parametros,
+                    tipo_retorno,
+                    cuerpo,
+                    linea,
+                    columna,
+                    ..
+                } => {
+                    if NOMBRES_RESERVADOS.contains(&nombre.as_str()) {
+                        return Err(error(
+                            CausaError::NombreReservado {
+                                nombre: nombre.clone(),
+                            },
+                            *linea,
+                            *columna,
+                        ));
+                    }
+                    if self.funciones.contains_key(nombre) {
+                        return Err(error(
+                            CausaError::DeclaracionDuplicada(nombre.clone()),
+                            *linea,
+                            *columna,
+                        ));
+                    }
+                    self.funciones_izadas.insert(nombre.clone());
+                    self.funciones.insert(
+                        nombre.clone(),
+                        FuncionDef {
+                            nombre: nombre.clone(),
+                            parametros: parametros.clone(),
+                            tipo_retorno_anotado: tipo_retorno.clone(),
+                            cuerpo: cuerpo.clone(),
+                            linea: *linea,
+                            columna: *columna,
+                            tipo_retorno: None,
+                            tipos_parametros_inferidos: None,
+                        },
+                    );
+                }
+                Sentencia::Exportar { sentencia, .. } => {
+                    let (nombre, parametros, tipo_retorno, cuerpo, linea, columna) =
+                        match sentencia.as_ref() {
+                            Sentencia::Funcion {
+                                nombre,
+                                parametros,
+                                tipo_retorno,
+                                cuerpo,
+                                linea,
+                                columna,
+                                ..
+                            } => (nombre, parametros, tipo_retorno, cuerpo, *linea, *columna),
+                            _ => continue,
+                        };
+                    if NOMBRES_RESERVADOS.contains(&nombre.as_str()) {
+                        return Err(error(
+                            CausaError::NombreReservado {
+                                nombre: nombre.clone(),
+                            },
+                            linea,
+                            columna,
+                        ));
+                    }
+                    if self.funciones.contains_key(nombre) {
+                        return Err(error(
+                            CausaError::DeclaracionDuplicada(nombre.clone()),
+                            linea,
+                            columna,
+                        ));
+                    }
+                    self.funciones_izadas.insert(nombre.clone());
+                    self.funciones.insert(
+                        nombre.clone(),
+                        FuncionDef {
+                            nombre: nombre.clone(),
+                            parametros: parametros.clone(),
+                            tipo_retorno_anotado: tipo_retorno.clone(),
+                            cuerpo: cuerpo.clone(),
+                            linea,
+                            columna,
+                            tipo_retorno: None,
+                            tipos_parametros_inferidos: None,
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Ejecuta el cuerpo de un bloque en un ámbito propio (ADR-0007 §1.6).
@@ -1093,7 +1199,7 @@ impl Entorno {
                                 }
                             };
                             let mut env_mod = Entorno::nueva();
-                            let resultado = env_mod.ejecutar_sentencias(&sentencias);
+                            let resultado = env_mod.ejecutar_programa(&sentencias);
                             IMPORTANDO.lock().unwrap().remove(&ruta_path);
                             resultado?;
                             let mut cache = CACHE_MODULOS.lock().unwrap();
@@ -1530,7 +1636,10 @@ impl Entorno {
                             },
                         );
                     } else {
-                        if self.funciones.contains_key(&nombre) {
+                        if self.funciones_izadas.remove(&nombre) {
+                            // Función ya izada al inicio del programa; el
+                            // registro en este pase es idempotente.
+                        } else if self.funciones.contains_key(&nombre) {
                             return Err(error(
                                 CausaError::DeclaracionDuplicada(nombre.clone()),
                                 linea,
@@ -1621,7 +1730,7 @@ impl Entorno {
                                 }
                             };
                             let mut env_mod = Entorno::nueva();
-                            let resultado = env_mod.ejecutar_sentencias(&sentencias);
+                            let resultado = env_mod.ejecutar_programa(&sentencias);
                             IMPORTANDO.lock().unwrap().remove(&ruta_path);
                             resultado?;
                             let mut cache = CACHE_MODULOS.lock().unwrap();
@@ -2437,6 +2546,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             let mut nuevo_env = Entorno {
                 ambitos: vec![HashMap::new()],
                 funciones: env.funciones.clone(),
+                funciones_izadas: HashSet::new(),
                 exportaciones: HashSet::new(),
                 cargador: env.cargador.clone(),
                 archivo: env.archivo.clone(),

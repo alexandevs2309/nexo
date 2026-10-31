@@ -372,8 +372,51 @@ impl ContextoSemantico {
                 parametros,
                 tipo_retorno,
                 cuerpo,
+                linea,
+                columna,
                 ..
             } => {
+                // Consistente con el evaluador: redeclarar una función en el
+                // mismo ámbito es error (E1003).
+                if self.existe_en_ambito_actual(&nombre) {
+                    self.error(
+                        CausaError::DeclaracionDuplicada(nombre.clone()),
+                        linea,
+                        columna,
+                    );
+                }
+                // Registrar la firma en las funciones para validar llamadas y,
+                // si es anidada (dentro de otra función), también en el ámbito
+                // actual, tal como hace el evaluador al ejecutar la declaración.
+                let params: Vec<(String, Option<TipoSem>)> = parametros
+                    .iter()
+                    .map(|(n, t)| (n.clone(), t.as_ref().map(tipo_anotacion_a_sem)))
+                    .collect();
+                let firma = FuncionSig {
+                    parametros: params.clone(),
+                    retorno: tipo_retorno.as_ref().map(tipo_anotacion_a_sem),
+                };
+                let firma_previa = self.funciones.get(&nombre).cloned();
+                self.funciones.insert(nombre.clone(), firma.clone());
+                let es_anidada = self.en_funcion;
+                self.scopes.last_mut().unwrap().insert(
+                    nombre.clone(),
+                    VarInfo {
+                        tipo: TipoSem::Funcion {
+                            params: params
+                                .iter()
+                                .map(|(_, t)| t.clone().unwrap_or(TipoSem::Desconocido))
+                                .collect(),
+                            retorno: Box::new(
+                                tipo_retorno
+                                    .as_ref()
+                                    .map(tipo_anotacion_a_sem)
+                                    .unwrap_or(TipoSem::Desconocido),
+                            ),
+                        },
+                        mutable: false,
+                    },
+                );
                 self.scopes.push(HashMap::new());
                 for (pname, pta) in &parametros {
                     let tipo = pta
@@ -410,6 +453,19 @@ impl ContextoSemantico {
                 self.retorno_inferido = prev_inf;
                 self.en_funcion = prev_en;
                 self.scopes.pop();
+                // Al salir de una función anidada, devolver la firma global
+                // anterior: el alcance de una función anidada es el cuerpo de
+                // la función que la contiene, no todo el programa.
+                if es_anidada {
+                    match firma_previa {
+                        Some(f) => {
+                            self.funciones.insert(nombre, f);
+                        }
+                        None => {
+                            self.funciones.remove(&nombre);
+                        }
+                    }
+                }
             }
             Sentencia::Retorno {
                 valor,
@@ -786,6 +842,8 @@ impl ContextoSemantico {
                 for a in argumentos {
                     arg_types.push(self.analizar_expresion(a));
                 }
+                // Una función valor (anidada asignada en ámbito o lambda) da
+                // su firma; validarla como lo hace el evaluador en tiempo real.
                 if let Some(sig) = sig {
                     if sig.parametros.len() != argumentos.len() {
                         self.error(
@@ -815,6 +873,38 @@ impl ContextoSemantico {
                         }
                     }
                     sig.retorno.clone().unwrap_or(TipoSem::Desconocido)
+                } else if let Some(VarInfo { tipo, .. }) = self.buscar_variable(nombre)
+                    && let TipoSem::Funcion { params, retorno } = tipo
+                {
+                    if params.len() != argumentos.len() {
+                        self.error(
+                            CausaError::FirmaInvalida {
+                                funcion: nombre.clone(),
+                                esperado: params.len(),
+                                obtenido: argumentos.len(),
+                            },
+                            *linea,
+                            *columna,
+                        );
+                    }
+                    for (i, (pt, at)) in params.iter().zip(arg_types.iter()).enumerate() {
+                        if !compatible(pt, at)
+                            && !matches!(pt, TipoSem::Desconocido)
+                            && !matches!(at, TipoSem::Desconocido)
+                        {
+                            self.error(
+                                CausaError::TipoParametroIncompatible {
+                                    funcion: nombre.clone(),
+                                    parametro: format!("arg{i}"),
+                                    esperado: pt.nombre(),
+                                    obtenido: at.nombre(),
+                                },
+                                *linea,
+                                *columna,
+                            );
+                        }
+                    }
+                    *retorno
                 } else {
                     TipoSem::Desconocido
                 }
@@ -905,6 +995,16 @@ impl ContextoSemantico {
                 cuerpo,
                 ..
             } => {
+                // El cuerpo de una lambda es contexto de función: `retornar`
+                // es válido y el retorno anotado debe cumplir su anotación.
+                let prev_func = self.funcion_actual.clone();
+                let prev_ret = self.retorno_esperado.clone();
+                let prev_inf = self.retorno_inferido.clone();
+                let prev_en = self.en_funcion;
+                self.funcion_actual = Some("<lambda>".to_string());
+                self.retorno_esperado = tipo_retorno.as_ref().map(tipo_anotacion_a_sem);
+                self.retorno_inferido = None;
+                self.en_funcion = true;
                 self.scopes.push(HashMap::new());
                 for (pname, pta) in parametros {
                     let tipo = pta
@@ -923,6 +1023,10 @@ impl ContextoSemantico {
                     self.analizar_sentencia(st.clone());
                 }
                 self.scopes.pop();
+                self.funcion_actual = prev_func;
+                self.retorno_esperado = prev_ret;
+                self.retorno_inferido = prev_inf;
+                self.en_funcion = prev_en;
                 let params: Vec<TipoSem> = parametros
                     .iter()
                     .map(|(_, t)| {
