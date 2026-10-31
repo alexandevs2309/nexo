@@ -18,6 +18,7 @@ pub struct MetadatosPublicacion {
     pub key_id: String,
     pub nonce: String,
     pub expires_at: String,
+    pub published_at: String,
     pub firma: String,
     pub clave: String,
 }

@@ -11,7 +11,10 @@ pub fn obtener_metadatos(url: &str) -> Result<MetadatosPaquete, String> {
         .into_body()
         .read_to_string()
         .map_err(|e| e.to_string())?;
-    serde_json::from_str(&texto).map_err(|e| e.to_string())
+    // El registro responde con {success, data, error}; extraer `data`.
+    let valor: serde_json::Value = serde_json::from_str(&texto).map_err(|e| e.to_string())?;
+    let data = valor.get("data").cloned().unwrap_or(valor);
+    serde_json::from_value(data).map_err(|e| e.to_string())
 }
 
 pub fn descargar_artefacto(url: &str) -> Result<Vec<u8>, String> {
