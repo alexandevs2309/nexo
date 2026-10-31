@@ -480,16 +480,19 @@ pub fn escribir_bloqueo(base: &Path, resueltas: &[DependenciaResuelta]) -> Resul
     salida.push_str(&format!("version = {VERSION_BLOQUEO}\n"));
     for dep in resueltas {
         let base_canonical = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
-        let ruta = dep
-            .ruta
-            .strip_prefix(&base_canonical)
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|_| {
+        let ruta_absoluta = std::fs::canonicalize(&dep.ruta)
+            .or_else(|_| std::fs::canonicalize(base.join(&dep.ruta)));
+        let ruta = ruta_absoluta
+            .ok()
+            .and_then(|destino| ruta_relativa(&base_canonical, &destino))
+            .or_else(|| {
                 dep.ruta
-                    .strip_prefix(base)
+                    .strip_prefix(&base_canonical)
                     .map(Path::to_path_buf)
-                    .unwrap_or_else(|_| dep.ruta.clone())
-            });
+                    .ok()
+                    .or_else(|| dep.ruta.strip_prefix(base).map(Path::to_path_buf).ok())
+            })
+            .unwrap_or_else(|| dep.ruta.clone());
         salida.push_str("\n[[dependencia]]\n");
         salida.push_str(&format!("nombre = \"{}\"\n", escapar(&dep.nombre)));
         salida.push_str(&format!("version = \"{}\"\n", escapar(&dep.version)));
@@ -500,6 +503,51 @@ pub fn escribir_bloqueo(base: &Path, resueltas: &[DependenciaResuelta]) -> Resul
     }
     let ruta = base.join(BLOQUEO);
     fs::write(&ruta, salida).map_err(|e| format!("no se pudo escribir '{}': {e}", ruta.display()))
+}
+
+fn ruta_relativa(base: &Path, destino: &Path) -> Option<PathBuf> {
+    let base_componentes: Vec<_> = base.components().collect();
+    let destino_componentes: Vec<_> = destino.components().collect();
+    if !base.is_absolute() || !destino.is_absolute() {
+        return None;
+    }
+
+    let comun = base_componentes
+        .iter()
+        .zip(&destino_componentes)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let raiz = base_componentes
+        .iter()
+        .take_while(|componente| {
+            matches!(
+                componente,
+                std::path::Component::Prefix(_) | std::path::Component::RootDir
+            )
+        })
+        .count();
+    if raiz == 0 || comun < raiz {
+        return None;
+    }
+
+    let mut relativa = PathBuf::new();
+    for componente in &base_componentes[comun..] {
+        if !matches!(componente, std::path::Component::Normal(_)) {
+            return None;
+        }
+        relativa.push("..");
+    }
+    for componente in &destino_componentes[comun..] {
+        if !matches!(componente, std::path::Component::Normal(_)) {
+            return None;
+        }
+        relativa.push(componente.as_os_str());
+    }
+    Some(if relativa.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        relativa
+    })
 }
 
 /// Lee `basilisco.lock`; devuelve `None` si no existe.
