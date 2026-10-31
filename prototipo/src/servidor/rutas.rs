@@ -633,6 +633,8 @@ async fn publicar(
             "publicación expirada",
         ));
     }
+    chrono::DateTime::parse_from_rfc3339(&req.meta.published_at)
+        .map_err(|_| ApiError::bad_request("INVALID_METADATA", "published_at inválido"))?;
 
     // namespace authorization
     authorize_namespace(&state, &user, &req.meta.namespace).await?;
@@ -708,6 +710,24 @@ async fn publicar(
         "{}/{}_{}_{}.bpk",
         state.artifacts_dir, req.meta.namespace, req.meta.name, req.meta.version
     );
+    // Recuperación: si el archivo existe pero no hay fila en BD, eliminarlo.
+    if std::path::Path::new(&artifact_path).exists() {
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM versions WHERE artifact_path=$1)")
+                .bind(&artifact_path)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap_or(false);
+        if !exists {
+            let _ = std::fs::remove_file(&artifact_path);
+        } else {
+            let _ = tx.rollback().await;
+            return Err(ApiError::conflict(
+                "VERSION_ALREADY_EXISTS",
+                "artefacto ya existe",
+            ));
+        }
+    }
     // Reservar el archivo (falla si ya existe) antes de escribir.
     let create = std::fs::OpenOptions::new()
         .write(true)
@@ -875,7 +895,28 @@ fn validate_manifest_identity(bytes: &[u8], meta: &MetadatosPublicacion) -> ApiR
             "versión no coincide",
         ));
     }
-    // namespace not in manifest typically; skip
+    let mut m_namespace: Option<String> = None;
+    for line in manifest.lines() {
+        let l = line.trim();
+        if l.starts_with("namespace") && l.contains('=') {
+            m_namespace = Some(
+                l.split('=')
+                    .nth(1)
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"')
+                    .to_string(),
+            );
+        }
+    }
+    if let Some(ns_m) = m_namespace
+        && ns_m != meta.namespace
+    {
+        return Err(ApiError::bad_request(
+            "INVALID_MANIFEST",
+            "namespace no coincide",
+        ));
+    }
     Ok(())
 }
 

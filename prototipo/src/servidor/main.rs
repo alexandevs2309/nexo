@@ -31,8 +31,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Identidad criptográfica del registro: generar clave si no existe.
-    bootstrap_registry_key(&pool, &cfg).await;
+    // Identidad criptográfica del registro.
+    bootstrap_registry_key(&pool, &cfg).await?;
 
     let state = AppState {
         pool,
@@ -50,16 +50,48 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn bootstrap_registry_key(pool: &PgPool, cfg: &ConfigServidor) {
+async fn bootstrap_registry_key(
+    pool: &PgPool,
+    cfg: &ConfigServidor,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let key_path = std::path::PathBuf::from(&cfg.artifacts_dir).join("registry.key");
+
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM keys WHERE registry_id=$1")
         .bind(&cfg.registry_id)
         .fetch_one(pool)
         .await
         .unwrap_or(0);
-    if count > 0 {
-        return;
+
+    if key_path.exists() {
+        // sincronizar clave pública si no está en BD
+        if count == 0 {
+            use ed25519_dalek::SigningKey;
+            let bytes = std::fs::read(&key_path)?;
+            let sk =
+                SigningKey::from_bytes(bytes.as_slice().try_into().map_err(|_| "clave inválida")?);
+            let vk = sk.verifying_key();
+            let _ = sqlx::query(
+                "INSERT INTO keys (id, registry_id, key_id, public_key, valid_from) VALUES ($1,$2,$3,$4,now()) ON CONFLICT DO NOTHING",
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(&cfg.registry_id)
+            .bind("key-1")
+            .bind(vk.to_bytes().to_vec())
+            .execute(pool)
+            .await;
+        }
+        return Ok(());
     }
-    // generar par Ed25519
+
+    // archivo no existe
+    if count > 0 {
+        return Err(
+            "clave privada registry.key ausente pero la BD tiene claves; restaure el archivo"
+                .into(),
+        );
+    }
+
+    // generar nueva clave
     use ed25519_dalek::SigningKey;
     let mut seed = [0u8; 32];
     let u1 = uuid::Uuid::new_v4();
@@ -69,7 +101,7 @@ async fn bootstrap_registry_key(pool: &PgPool, cfg: &ConfigServidor) {
     let sk = SigningKey::from_bytes(&seed);
     let vk = sk.verifying_key();
     let key_id = "key-1".to_string();
-    let _ = sqlx::query(
+    sqlx::query(
         "INSERT INTO keys (id, registry_id, key_id, public_key, valid_from) VALUES ($1,$2,$3,$4,now())",
     )
     .bind(uuid::Uuid::new_v4())
@@ -77,14 +109,13 @@ async fn bootstrap_registry_key(pool: &PgPool, cfg: &ConfigServidor) {
     .bind(&key_id)
     .bind(vk.to_bytes().to_vec())
     .execute(pool)
-    .await;
-    // guardar clave privada en archivo (no en git)
-    let path = std::path::PathBuf::from(&cfg.artifacts_dir).join("registry.key");
-    let _ = std::fs::write(&path, sk.to_bytes());
+    .await?;
+    std::fs::write(&key_path, sk.to_bytes())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
     }
     tracing::info!("clave de registro generada: {}", key_id);
+    Ok(())
 }

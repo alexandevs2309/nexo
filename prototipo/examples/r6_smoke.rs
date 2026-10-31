@@ -25,20 +25,12 @@ fn main() {
         .send(ns_body.to_string());
     println!("ns create: {:?}", r.map(|x| x.status()));
 
-    // 3. keys
-    let keys_resp = ureq::get("http://127.0.0.1:8099/api/v1/keys")
-        .call()
-        .unwrap();
-    let txt = keys_resp.into_body().read_to_string().unwrap();
-    let kv: serde_json::Value = serde_json::from_str(&txt).unwrap();
-    let key_id = kv["data"]["keys"][0]["key_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let pk_hex = kv["data"]["keys"][0]["public_key"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    // Bootstrap de confianza fuera de banda: leer la clave pública del archivo local.
+    let key_bytes = std::fs::read("/tmp/opencode/artifacts/registry.key").unwrap();
+    let sk = ed25519_dalek::SigningKey::from_bytes(key_bytes.as_slice().try_into().unwrap());
+    let vk = sk.verifying_key();
+    let pk_hex: String = vk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+    let key_id = "key-1".to_string();
     println!("key_id={} pk={}", key_id, &pk_hex[..16]);
 
     // trust store: register server public key (trust anchor)

@@ -6,10 +6,10 @@ use std::io::{Read, Write};
 use std::process::{Child, Command};
 use std::time::Duration;
 
-fn start_server(port: u16) -> Child {
+fn start_server(port: u16, artifact_dir: &str) -> Child {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_basilisco-registry"));
     cmd.env("BASILISCO_BIND", format!("127.0.0.1:{}", port));
-    cmd.env("BASILISCO_ARTIFACTS", "/tmp/opencode/reg-artifacts-e2e");
+    cmd.env("BASILISCO_ARTIFACTS", artifact_dir);
     cmd.env("BASILISCO_BOOTSTRAP_ADMIN_USERNAME", "admin");
     cmd.env("BASILISCO_BOOTSTRAP_ADMIN_PASSWORD", "adminpass123");
     cmd.stdout(std::process::Stdio::null());
@@ -27,8 +27,9 @@ fn ciclo_publicacion_descarga_instalacion() {
         std::env::set_var("BASILISCO_REGISTRY_ID", "test-reg");
     }
 
-    let _ = std::fs::remove_dir_all("/tmp/opencode/reg-artifacts-e2e");
-    std::fs::create_dir_all("/tmp/opencode/reg-artifacts-e2e").unwrap();
+    let artifact_dir = format!("/tmp/opencode/reg-artifacts-e2e-{}", std::process::id());
+    let _ = std::fs::remove_dir_all(&artifact_dir);
+    std::fs::create_dir_all(&artifact_dir).unwrap();
 
     // reset schema
     let psql = std::process::Command::new("psql")
@@ -46,8 +47,8 @@ fn ciclo_publicacion_descarga_instalacion() {
         .output();
     let _ = psql;
 
-    let port = 8123u16;
-    let mut child = start_server(port);
+    let port = (20000 + (std::process::id() as u16 % 10000)) as u16;
+    let mut child = start_server(port, &artifact_dir);
     // wait for health
     let mut ready = false;
     for _ in 0..50 {
@@ -119,23 +120,16 @@ sha256 = "de0fcd91c7f11f05a86c414de64cb7f44e421b4c165475f46157ebeeb3e9efe9"
     let artifact_sha = paquetes::sha256_hex(&buf);
     let b64 = base64_encode(&buf);
 
-    // server public key
-    let keys_resp = ureq::get(&format!("{}/api/v1/keys", base_url))
-        .call()
-        .unwrap();
-    let kv: serde_json::Value =
-        serde_json::from_str(&keys_resp.into_body().read_to_string().unwrap()).unwrap();
-    let key_id = kv["data"]["keys"][0]["key_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let pk_hex = kv["data"]["keys"][0]["public_key"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    // Bootstrap de confianza fuera de banda: leer la clave pública del archivo local.
+    let key_bytes = std::fs::read(format!("{}/registry.key", artifact_dir)).unwrap();
+    let sk = ed25519_dalek::SigningKey::from_bytes(key_bytes.as_slice().try_into().unwrap());
+    let vk = sk.verifying_key();
+    let pk_hex: String = vk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+    let key_id = "key-1".to_string();
 
     // trust store
-    let base = std::path::Path::new("/tmp/opencode/e2e-client");
+    let base_dir = format!("/tmp/opencode/e2e-client-{}", std::process::id());
+    let base = std::path::Path::new(&base_dir);
     let _ = std::fs::remove_dir_all(base);
     std::fs::create_dir_all(base).unwrap();
     let pk_bytes: Vec<u8> = (0..pk_hex.len())
@@ -182,9 +176,35 @@ sha256 = "de0fcd91c7f11f05a86c414de64cb7f44e421b4c165475f46157ebeeb3e9efe9"
     assert_eq!(res.nombre, "demo");
     assert!(res.verificado);
 
-    // cleanup
+    // Restart: matar y volver a arrancar, verificar descarga persistente.
     let _ = child.kill();
     let _ = child.wait();
+    std::thread::sleep(Duration::from_secs(1));
+    let mut child2 = start_server(port, &artifact_dir);
+    let mut ready = false;
+    for _ in 0..50 {
+        if ureq::get(&format!("http://127.0.0.1:{}/health", port))
+            .call()
+            .is_ok()
+        {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(ready, "servidor no arrancó tras reinicio");
+    let dl2 = ureq::get(&format!(
+        "{}/api/v1/packages/demo/demo/0.1.0/download",
+        base_url
+    ))
+    .call()
+    .unwrap();
+    let mut buf3 = Vec::new();
+    dl2.into_body().as_reader().read_to_end(&mut buf3).unwrap();
+    assert_eq!(paquetes::sha256_hex(&buf3), artifact_sha);
+
+    let _ = child2.kill();
+    let _ = child2.wait();
 }
 
 fn base64_encode(data: &[u8]) -> String {

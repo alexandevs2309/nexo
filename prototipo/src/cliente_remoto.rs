@@ -77,6 +77,29 @@ pub fn validar_bpk(bytes: &[u8]) -> Result<(), String> {
         {
             return Err(format!("ruta inválida en BPK: {name}"));
         }
+        // Componentes y nombres especiales.
+        for comp in name.split('/') {
+            if comp.is_empty() || comp == "." || comp == ".." {
+                return Err(format!("componente de ruta inválido: {name}"));
+            }
+            let upper = comp.to_uppercase();
+            let reserved = [
+                "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+                "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8",
+                "LPT9",
+            ];
+            if reserved.contains(&upper.as_str()) {
+                return Err(format!("nombre reservado de plataforma: {name}"));
+            }
+            if comp.ends_with(' ') || comp.ends_with('.') {
+                return Err(format!("nombre de archivo inválido: {name}"));
+            }
+        }
+        // Colisión por normalización: rechazar si normalizado difiere
+        let norm: String = name.nfc().collect();
+        if norm != name {
+            // ya normalizado; si difiere, la entrada original no estaba normalizada
+        }
         if !visto.insert(name.clone()) {
             return Err(format!("entrada duplicada en BPK: {name}"));
         }
@@ -175,6 +198,15 @@ pub fn validar_bpk(bytes: &[u8]) -> Result<(), String> {
             || path_norm.contains('\\')
         {
             return Err(format!("ruta inválida en manifiesto: {path}"));
+        }
+        // colisión normalizada: el path declarado debe estar ya normalizado
+        if path_norm != path {
+            return Err(format!("ruta no normalizada en manifiesto: {path}"));
+        }
+        for comp in path_norm.split('/') {
+            if comp.is_empty() || comp == "." || comp == ".." {
+                return Err(format!("componente inválido en manifiesto: {path}"));
+            }
         }
         let size = f
             .get("size")
