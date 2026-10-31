@@ -5,8 +5,9 @@
 //! compilador C, las pruebas se omiten con un aviso por stderr.
 
 use basilisco::{CausaError, Entorno, ErrorEjecucion, Lexer, Parser, Valor};
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const CODIGO_C: &str = r#"
@@ -32,14 +33,21 @@ fn directorio_temporal(nombre: &str) -> PathBuf {
 }
 
 /// Compila la biblioteca de ejemplo; devuelve `None` si no hay compilador C.
-fn compilar_libreria(nombre: &str) -> Option<String> {
+fn nombre_libreria() -> String {
+    format!("{DLL_PREFIX}basilisco_ffi{DLL_SUFFIX}")
+}
+
+fn compilar_libreria(nombre: &str) -> Option<PathBuf> {
     let base = directorio_temporal(nombre);
     let fuente = base.join("ejemplo.c");
     fs::write(&fuente, CODIGO_C).unwrap();
-    let salida = base.join("libbasilisco_ffi.so");
-    let estado = Command::new("cc")
-        .arg("-shared")
-        .arg("-fPIC")
+    let salida = base.join(nombre_libreria());
+    let mut compilador = Command::new("cc");
+    compilador.arg("-shared");
+    if !cfg!(windows) {
+        compilador.arg("-fPIC");
+    }
+    let estado = compilador
         .arg("-o")
         .arg(&salida)
         .arg(&fuente)
@@ -52,7 +60,7 @@ fn compilar_libreria(nombre: &str) -> Option<String> {
         );
         return None;
     }
-    Some(salida.to_string_lossy().into_owned())
+    Some(salida)
 }
 
 fn ejecutar(fuente: &str) -> Result<Option<Valor>, ErrorEjecucion> {
@@ -63,10 +71,31 @@ fn ejecutar(fuente: &str) -> Result<Option<Valor>, ErrorEjecucion> {
     Entorno::nueva().ejecutar_programa(&sentencias)
 }
 
+fn escapar_ruta(ruta: &Path) -> String {
+    ruta.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
+fn declaracion_biblioteca(ruta: &Path) -> String {
+    format!("sea lib = cargar_ffi(\"{}\")\n", escapar_ruta(ruta))
+}
+
 /// Programa que carga la biblioteca y termina en una expresión llamada,
 /// para que `ejecutar` devuelva su valor.
-fn programa(ruta: &str, ultima_expresion: &str) -> String {
-    format!("sea lib = cargar_ffi(\"{ruta}\")\n{ultima_expresion}\n")
+fn programa(ruta: &Path, ultima_expresion: &str) -> String {
+    format!("{}{}\n", declaracion_biblioteca(ruta), ultima_expresion)
+}
+
+#[test]
+fn rutas_windows_se_escapan_como_literales_basilisco() {
+    let ruta = PathBuf::from(r#"C:\a\biblioteca "ffi".dll"#);
+    let fuente = programa(&ruta, "0");
+    let tokens = Lexer::nuevo(&fuente).tokenizar().expect("léxico válido");
+    Parser::nuevo(tokens)
+        .parsear_programa()
+        .expect("sintaxis válida");
+    assert!(fuente.contains(r#"C:\\a\\biblioteca \"ffi\".dll"#));
 }
 
 #[test]
@@ -189,7 +218,8 @@ fn nulo() {
 
 #[test]
 fn cargar_ruta_inexistente_es_error() {
-    let e = ejecutar("cargar_ffi(\"/no/existe/libreria.so\")").unwrap_err();
+    let ruta_inexistente = directorio_temporal("inexistente").join(nombre_libreria());
+    let e = ejecutar(&programa(&ruta_inexistente, "0")).unwrap_err();
     match *e.causa {
         CausaError::FFIInvalido { detalle } => {
             assert!(detalle.contains("no se pudo cargar"), "{detalle}");
@@ -234,12 +264,11 @@ fn descargar_y_llamar_es_error() {
     let Some(ruta) = compilar_libreria("descarga") else {
         return;
     };
-    let e = ejecutar(&format!(
-        "sea lib = cargar_ffi(\"{ruta}\")\n\
-         descargar_ffi(lib)\n\
-         llamar_ffi(lib, \"sumar\", [1, 2], \"entero\")\n"
-    ))
-    .unwrap_err();
+    let fuente = format!(
+        "{}descargar_ffi(lib)\nllamar_ffi(lib, \"sumar\", [1, 2], \"entero\")\n",
+        declaracion_biblioteca(&ruta)
+    );
+    let e = ejecutar(&fuente).unwrap_err();
     match *e.causa {
         CausaError::FFIInvalido { detalle } => {
             assert!(detalle.contains("no hay biblioteca cargada"), "{detalle}");
