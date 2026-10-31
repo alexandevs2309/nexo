@@ -593,3 +593,264 @@ fn paquete_primera_instalacion_sin_referencia() {
 
     fs::remove_dir_all(&base).ok();
 }
+
+#[test]
+fn paquete_firma_valida_invalida() {
+    use basilisco::paquetes::{MetadatosPaquete, firmar_metadatos, verificar_firma_metadatos};
+
+    let meta = MetadatosPaquete {
+        namespace: "auron".to_string(),
+        name: "http".to_string(),
+        version: "1.2.0".to_string(),
+        sha256: "abc".to_string(),
+        published_at: "2026-10-31T00:00:00Z".to_string(),
+        registry_id: "official".to_string(),
+        key_id: "key1".to_string(),
+        nonce: "nonce1".to_string(),
+        expires_at: "2027-10-31T00:00:00Z".to_string(),
+        firma: None,
+        clave: None,
+    };
+
+    let seed = [1u8; 32];
+    let firma = firmar_metadatos(&meta, &seed).unwrap();
+    let clave_publica = ed25519_dalek::SigningKey::from_bytes(&seed)
+        .verifying_key()
+        .to_bytes();
+
+    assert!(verificar_firma_metadatos(&meta, &firma, &clave_publica).is_ok());
+
+    // Metadatos alterados
+    let mut meta2 = meta.clone();
+    meta2.version = "1.2.1".to_string();
+    assert!(verificar_firma_metadatos(&meta2, &firma, &clave_publica).is_err());
+}
+
+#[test]
+fn paquete_remoto_integracion_valida() {
+    let base = raiz("remotovalido");
+    // Crear paquete.
+    crear_dependencia(
+        &base,
+        "remote",
+        "0.1.0",
+        "exportar funcion f() { retornar 1 }\n",
+    );
+
+    // Generar clave y firma.
+    let seed = [7u8; 32];
+    let clave_publica = ed25519_dalek::SigningKey::from_bytes(&seed)
+        .verifying_key()
+        .to_bytes();
+    let hash = basilisco::paquetes::hash_archivo(&base.join("paquetes/remote/lib.bsk")).unwrap();
+
+    let meta = basilisco::paquetes::MetadatosPaquete {
+        namespace: "remote".to_string(),
+        name: "remote".to_string(),
+        version: "0.1.0".to_string(),
+        sha256: hash.clone(),
+        published_at: "2026-10-31T00:00:00Z".to_string(),
+        registry_id: "local".to_string(),
+        key_id: "key1".to_string(),
+        nonce: "nonce-valido".to_string(),
+        expires_at: "2027-10-31T00:00:00Z".to_string(),
+        firma: None,
+        clave: None,
+    };
+    let firma = basilisco::paquetes::firmar_metadatos(&meta, &seed).unwrap();
+
+    // Registrar clave confiable.
+    let mut almacen = basilisco::paquetes::AlmacenClaves::default();
+    almacen.agregar("local", "key1", clave_publica.to_vec());
+    almacen.guardar(&base).unwrap();
+
+    // Manifiesto con firma.
+    let hex_clave = clave_publica
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    escribir(
+        &base,
+        "basilisco.toml",
+        &format!(
+            "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nremote = {{ version = \"0.1.0\", ruta = \"paquetes/remote\", firma = \"{}\", clave = \"{}\", registro = \"local\", nonce = \"nonce-valido\" }}\n",
+            firma, hex_clave
+        ),
+    );
+
+    let salida = ejecutar(&base, &["instalar"]);
+    assert!(salida.status.success(), "{}", texto(&salida.stderr));
+
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn paquete_remoto_firma_invalida() {
+    let base = raiz("remotoinvalido");
+    crear_dependencia(
+        &base,
+        "remote",
+        "0.1.0",
+        "exportar funcion f() { retornar 1 }\n",
+    );
+
+    let seed = [7u8; 32];
+    let clave_publica = ed25519_dalek::SigningKey::from_bytes(&seed)
+        .verifying_key()
+        .to_bytes();
+    let hash = basilisco::paquetes::hash_archivo(&base.join("paquetes/remote/lib.bsk")).unwrap();
+
+    let meta = basilisco::paquetes::MetadatosPaquete {
+        namespace: "remote".to_string(),
+        name: "remote".to_string(),
+        version: "0.1.0".to_string(),
+        sha256: hash.clone(),
+        published_at: "2026-10-31T00:00:00Z".to_string(),
+        registry_id: "local".to_string(),
+        key_id: "key1".to_string(),
+        nonce: "nonce-invalido".to_string(),
+        expires_at: "2027-10-31T00:00:00Z".to_string(),
+        firma: None,
+        clave: None,
+    };
+    let firma = basilisco::paquetes::firmar_metadatos(&meta, &seed).unwrap();
+
+    // Alterar firma (cambiar un carácter).
+    let firma_invalida = format!("{}X", &firma[..firma.len() - 1]);
+
+    let hex_clave = clave_publica
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    let mut almacen = basilisco::paquetes::AlmacenClaves::default();
+    almacen.agregar("local", "key1", clave_publica.to_vec());
+    almacen.guardar(&base).unwrap();
+
+    escribir(
+        &base,
+        "basilisco.toml",
+        &format!(
+            "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nremote = {{ version = \"0.1.0\", ruta = \"paquetes/remote\", firma = \"{}\", clave = \"{}\", registro = \"local\", nonce = \"nonce-invalido\" }}\n",
+            firma_invalida, hex_clave
+        ),
+    );
+
+    let salida = ejecutar(&base, &["instalar"]);
+    assert!(!salida.status.success(), "debe fallar por firma inválida");
+
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn paquete_remoto_clave_desconocida() {
+    let base = raiz("remotoclavedesconocida");
+    crear_dependencia(
+        &base,
+        "remote",
+        "0.1.0",
+        "exportar funcion f() { retornar 1 }\n",
+    );
+
+    let seed = [7u8; 32];
+    let clave_publica = ed25519_dalek::SigningKey::from_bytes(&seed)
+        .verifying_key()
+        .to_bytes();
+    let hash = basilisco::paquetes::hash_archivo(&base.join("paquetes/remote/lib.bsk")).unwrap();
+
+    let meta = basilisco::paquetes::MetadatosPaquete {
+        namespace: "remote".to_string(),
+        name: "remote".to_string(),
+        version: "0.1.0".to_string(),
+        sha256: hash.clone(),
+        published_at: "2026-10-31T00:00:00Z".to_string(),
+        registry_id: "local".to_string(),
+        key_id: "key1".to_string(),
+        nonce: "nonce-desconocida".to_string(),
+        expires_at: "2027-10-31T00:00:00Z".to_string(),
+        firma: None,
+        clave: None,
+    };
+    let firma = basilisco::paquetes::firmar_metadatos(&meta, &seed).unwrap();
+
+    // No registrar la clave en el almacén.
+
+    let hex_clave = clave_publica
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    escribir(
+        &base,
+        "basilisco.toml",
+        &format!(
+            "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nremote = {{ version = \"0.1.0\", ruta = \"paquetes/remote\", firma = \"{}\", clave = \"{}\", registro = \"local\", nonce = \"nonce-desconocida\" }}\n",
+            firma, hex_clave
+        ),
+    );
+
+    let salida = ejecutar(&base, &["instalar"]);
+    assert!(
+        !salida.status.success(),
+        "debe fallar por clave desconocida"
+    );
+
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn paquete_remoto_nonce_repetido() {
+    let base = raiz("remotononce");
+    crear_dependencia(
+        &base,
+        "remote",
+        "0.1.0",
+        "exportar funcion f() { retornar 1 }\n",
+    );
+
+    let seed = [7u8; 32];
+    let clave_publica = ed25519_dalek::SigningKey::from_bytes(&seed)
+        .verifying_key()
+        .to_bytes();
+    let hash = basilisco::paquetes::hash_archivo(&base.join("paquetes/remote/lib.bsk")).unwrap();
+
+    let meta = basilisco::paquetes::MetadatosPaquete {
+        namespace: "remote".to_string(),
+        name: "remote".to_string(),
+        version: "0.1.0".to_string(),
+        sha256: hash.clone(),
+        published_at: "2026-10-31T00:00:00Z".to_string(),
+        registry_id: "local".to_string(),
+        key_id: "key1".to_string(),
+        nonce: "nonce-repetido".to_string(),
+        expires_at: "2027-10-31T00:00:00Z".to_string(),
+        firma: None,
+        clave: None,
+    };
+    let firma = basilisco::paquetes::firmar_metadatos(&meta, &seed).unwrap();
+
+    let mut almacen = basilisco::paquetes::AlmacenClaves::default();
+    almacen.agregar("local", "key1", clave_publica.to_vec());
+    almacen.guardar(&base).unwrap();
+
+    // Registrar nonce previamente.
+    let mut nonces = basilisco::paquetes::RegistroNonces::default();
+    nonces.aceptar("local", "nonce-repetido").unwrap();
+    nonces.guardar(&base).unwrap();
+
+    let hex_clave = clave_publica
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
+    escribir(
+        &base,
+        "basilisco.toml",
+        &format!(
+            "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nremote = {{ version = \"0.1.0\", ruta = \"paquetes/remote\", firma = \"{}\", clave = \"{}\", registro = \"local\", nonce = \"nonce-repetido\" }}\n",
+            firma, hex_clave
+        ),
+    );
+
+    let salida = ejecutar(&base, &["instalar"]);
+    assert!(!salida.status.success(), "debe fallar por nonce repetido");
+
+    fs::remove_dir_all(&base).ok();
+}

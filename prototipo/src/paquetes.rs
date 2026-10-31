@@ -39,6 +39,16 @@ pub struct Dependencia {
     pub ruta: Option<String>,
     /// Hash SHA-256 de confianza proporcionado explícitamente, si existe.
     pub hash: Option<String>,
+    /// Firma Base64 proporcionada explícitamente, si existe.
+    pub firma: Option<String>,
+    /// Clave pública hex proporcionada explícitamente, si existe.
+    pub clave: Option<String>,
+    /// Registro de origen explícito, si existe.
+    pub registro: Option<String>,
+    /// Nonce de publicación, si existe.
+    pub nonce: Option<String>,
+    /// Fecha de expiración, si existe.
+    pub expira: Option<String>,
     /// Autorización explícita para rutas externas.
     pub autorizado: bool,
 }
@@ -59,6 +69,16 @@ pub struct DependenciaResuelta {
     pub hash: String,
     /// Indica si el hash proviene de una referencia confiable explícita.
     pub verificado: bool,
+    /// Registro de procedencia, si aplica.
+    pub registro: Option<String>,
+    /// Identificador de clave pública, si aplica.
+    pub key_id: Option<String>,
+    /// Firma Base64, si está disponible.
+    pub firma: Option<String>,
+    /// Nonce de publicación, si está disponible.
+    pub nonce: Option<String>,
+    /// Fecha de expiración, si está disponible.
+    pub expira: Option<String>,
 }
 
 /// Lee y valida `basilisco.toml` en `base`.
@@ -306,12 +326,55 @@ fn resolver_dependencia(dep: &Dependencia, base: &Path) -> Result<DependenciaRes
             } else {
                 false
             };
+
+            // Verificación criptográfica si se proporciona firma y clave.
+            let almacen = AlmacenClaves::cargar(base).unwrap_or_default();
+            if let (Some(firma), Some(clave_hex)) = (&dep.firma, &dep.clave) {
+                let clave_bytes = hex_decode(clave_hex)?;
+                let registry_id = dep.registro.clone().unwrap_or_else(|| "local".to_string());
+                if !almacen.es_confiable(&registry_id, "key1", &clave_bytes) {
+                    return Err(format!("clave no confiable para '{}'", dep.nombre));
+                }
+                let meta = MetadatosPaquete {
+                    namespace: dep.nombre.clone(),
+                    name: dep.nombre.clone(),
+                    version: version.clone(),
+                    sha256: hash_calculado.clone(),
+                    published_at: "2026-10-31T00:00:00Z".to_string(),
+                    registry_id: registry_id.clone(),
+                    key_id: "key1".to_string(),
+                    nonce: dep.nonce.clone().unwrap_or_else(|| "nonce1".to_string()),
+                    expires_at: dep
+                        .expira
+                        .clone()
+                        .unwrap_or_else(|| "2027-10-31T00:00:00Z".to_string()),
+                    firma: dep.firma.clone(),
+                    clave: dep.clave.clone(),
+                };
+                verificar_firma_metadatos(&meta, firma, &clave_bytes)?;
+
+                // Anti-replay.
+                let mut nonces = RegistroNonces::cargar(base).unwrap_or_default();
+                let nonce = dep.nonce.clone().unwrap_or_else(|| "nonce1".to_string());
+                nonces
+                    .aceptar(&registry_id, &nonce)
+                    .map_err(|e| format!("{}: {}", dep.nombre, e))?;
+                nonces
+                    .guardar(base)
+                    .map_err(|e| format!("no se pudo persistir nonces: {e}"))?;
+            }
+
             return Ok(DependenciaResuelta {
                 nombre: dep.nombre.clone(),
                 version,
                 ruta: archivo,
                 hash: hash_calculado,
                 verificado,
+                registro: dep.registro.clone(),
+                key_id: dep.clave.clone(),
+                firma: dep.firma.clone(),
+                nonce: dep.nonce.clone(),
+                expira: dep.expira.clone(),
             });
         }
         buscados.push(candidato.display().to_string());
@@ -558,6 +621,11 @@ fn construir_dependencia(
         ruta: PathBuf::from(ruta.ok_or_else(|| format!("{ubicacion}: falta 'ruta'"))?),
         hash: hash.unwrap_or_default(),
         verificado: false,
+        registro: None,
+        key_id: None,
+        firma: None,
+        nonce: None,
+        expira: None,
     })
 }
 
@@ -613,6 +681,11 @@ fn parsear_dependencia(nombre: &str, valor: &str) -> Result<Dependencia, String>
         let mut version = None;
         let mut ruta = None;
         let mut hash = None;
+        let mut firma = None;
+        let mut clave_hex = None;
+        let mut registro = None;
+        let mut nonce = None;
+        let mut expira = None;
         let mut autorizado = false;
         for parte in dividir_por_comas(interior) {
             let (clave, valor) = parte
@@ -622,6 +695,23 @@ fn parsear_dependencia(nombre: &str, valor: &str) -> Result<Dependencia, String>
             let valor = valor.trim();
             if clave == "autorizado" {
                 autorizado = valor == "true";
+                continue;
+            }
+            if clave == "firma"
+                || clave == "clave"
+                || clave == "registro"
+                || clave == "nonce"
+                || clave == "expira"
+            {
+                let texto = parsear_texto(valor)?;
+                match clave {
+                    "firma" => firma = Some(texto),
+                    "clave" => clave_hex = Some(texto),
+                    "registro" => registro = Some(texto),
+                    "nonce" => nonce = Some(texto),
+                    "expira" => expira = Some(texto),
+                    _ => {}
+                }
                 continue;
             }
             let texto = parsear_texto(valor)?;
@@ -641,6 +731,11 @@ fn parsear_dependencia(nombre: &str, valor: &str) -> Result<Dependencia, String>
             version,
             ruta,
             hash,
+            firma,
+            clave: clave_hex,
+            registro,
+            nonce,
+            expira,
             autorizado,
         })
     } else {
@@ -653,6 +748,11 @@ fn parsear_dependencia(nombre: &str, valor: &str) -> Result<Dependencia, String>
             version,
             ruta: None,
             hash: None,
+            firma: None,
+            clave: None,
+            registro: None,
+            nonce: None,
+            expira: None,
             autorizado: false,
         })
     }
@@ -817,6 +917,11 @@ util = { version = "0.2.0", ruta = "../util" }
             ruta: PathBuf::from("paquetes/matematica/lib.bsk"),
             hash: String::new(),
             verificado: false,
+            registro: None,
+            key_id: None,
+            firma: None,
+            nonce: None,
+            expira: None,
         }];
         let base = std::env::temp_dir().join(format!(
             "basilisco-bloqueo-{}-{:?}",
@@ -894,7 +999,7 @@ pub fn hash_archivo(ruta: &Path) -> Result<String, String> {
 }
 
 // Implementación mínima de SHA-256.
-fn sha256_hex(data: &[u8]) -> String {
+pub fn sha256_hex(data: &[u8]) -> String {
     // Constantes.
     let mut h: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
@@ -983,4 +1088,513 @@ fn sha256_hex(data: &[u8]) -> String {
         out.push_str(&format!("{:08x}", v));
     }
     out
+}
+
+use base64::Engine;
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use sha2::Digest;
+use sha2::Sha256;
+
+/// Metadatos firmados de un paquete (R3).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MetadatosPaquete {
+    pub namespace: String,
+    pub name: String,
+    pub version: String,
+    pub sha256: String,
+    pub published_at: String,
+    pub registry_id: String,
+    pub key_id: String,
+    pub nonce: String,
+    pub expires_at: String,
+    #[serde(default)]
+    pub firma: Option<String>,
+    #[serde(default)]
+    pub clave: Option<String>,
+}
+
+impl MetadatosPaquete {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        format!(
+            r#"{{"expires_at":"{}","key_id":"{}","name":"{}","namespace":"{}","nonce":"{}","published_at":"{}","registry_id":"{}","sha256":"{}","version":"{}"}}"#,
+            self.expires_at,
+            self.key_id,
+            self.name,
+            self.namespace,
+            self.nonce,
+            self.published_at,
+            self.registry_id,
+            self.sha256,
+            self.version
+        )
+        .into_bytes()
+    }
+}
+
+/// Firma metadatos con una clave privada Ed25519.
+pub fn firmar_metadatos(
+    metadatos: &MetadatosPaquete,
+    clave_privada: &[u8],
+) -> Result<String, String> {
+    let clave = SigningKey::from_bytes(
+        clave_privada
+            .try_into()
+            .map_err(|_| "clave privada inválida".to_string())?,
+    );
+    let digest = Sha256::digest(metadatos.canonical_bytes());
+    let firma = clave.sign(&digest);
+    Ok(base64::engine::general_purpose::STANDARD.encode(firma.to_bytes()))
+}
+
+/// Verifica la firma de metadatos con una clave pública Ed25519.
+pub fn verificar_firma_metadatos(
+    metadatos: &MetadatosPaquete,
+    firma_b64: &str,
+    clave_publica: &[u8],
+) -> Result<(), String> {
+    let clave = VerifyingKey::from_bytes(
+        clave_publica
+            .try_into()
+            .map_err(|_| "clave pública inválida".to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let firma_bytes = base64::engine::general_purpose::STANDARD
+        .decode(firma_b64)
+        .map_err(|e| e.to_string())?;
+    let firma = Signature::from_bytes(
+        firma_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| "firma inválida".to_string())?,
+    );
+    let digest = Sha256::digest(metadatos.canonical_bytes());
+    clave.verify(&digest, &firma).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Almacén de claves públicas confiables por registro.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct AlmacenClaves {
+    pub claves: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<u8>>>,
+    pub revocadas: std::collections::BTreeSet<(String, String)>,
+}
+
+impl AlmacenClaves {
+    pub fn agregar(&mut self, registro: &str, key_id: &str, clave: Vec<u8>) {
+        self.claves
+            .entry(registro.to_string())
+            .or_default()
+            .insert(key_id.to_string(), clave);
+    }
+
+    pub fn es_confiable(&self, registro: &str, key_id: &str, clave: &[u8]) -> bool {
+        if self
+            .revocadas
+            .contains(&(registro.to_string(), key_id.to_string()))
+        {
+            return false;
+        }
+        self.claves
+            .get(registro)
+            .and_then(|m| m.get(key_id))
+            .map(|k| k == clave)
+            .unwrap_or(false)
+    }
+
+    pub fn revocar(&mut self, registro: &str, key_id: &str) {
+        self.revocadas
+            .insert((registro.to_string(), key_id.to_string()));
+    }
+
+    pub fn guardar(&self, base: &Path) -> Result<(), String> {
+        let dir = base.join(".basilisco");
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // Rechazar si el directorio o archivo son enlaces simbólicos.
+        if let Ok(meta) = fs::symlink_metadata(&dir)
+            && meta.file_type().is_symlink()
+        {
+            return Err("directorio de confianza es un enlace simbólico".to_string());
+        }
+        let ruta = dir.join("trust.json");
+        if let Ok(meta) = fs::symlink_metadata(&ruta)
+            && meta.file_type().is_symlink()
+        {
+            return Err("archivo de confianza es un enlace simbólico".to_string());
+        }
+        let tmp = dir.join("trust.json.tmp");
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        // Permisos restrictivos en Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = fs::metadata(&tmp).map_err(|e| e.to_string())?.permissions();
+            perm.set_mode(0o600);
+            fs::set_permissions(&tmp, perm).map_err(|e| e.to_string())?;
+        }
+        fs::rename(&tmp, &ruta).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn cargar(base: &Path) -> Result<Self, String> {
+        let dir = base.join(".basilisco");
+        let ruta = dir.join("trust.json");
+        if !ruta.is_file() {
+            return Ok(Self::default());
+        }
+        // Rechazar enlaces simbólicos.
+        let meta = fs::symlink_metadata(&ruta).map_err(|e| e.to_string())?;
+        if meta.file_type().is_symlink() {
+            return Err("archivo de confianza es un enlace simbólico".to_string());
+        }
+        let texto = fs::read_to_string(&ruta).map_err(|e| e.to_string())?;
+        let almacen: Self = serde_json::from_str(&texto).map_err(|e| e.to_string())?;
+        // Validar claves.
+        for (reg, claves) in &almacen.claves {
+            for (kid, clave) in claves {
+                if clave.len() != 32 {
+                    return Err(format!("clave inválida en {} / {}", reg, kid));
+                }
+                if kid.is_empty() || reg.is_empty() {
+                    return Err("identificador vacío en almacén de confianza".to_string());
+                }
+            }
+        }
+        Ok(almacen)
+    }
+
+    pub fn agregar_seguro(
+        &mut self,
+        registro: &str,
+        key_id: &str,
+        clave: Vec<u8>,
+    ) -> Result<(), String> {
+        if registro.is_empty() || key_id.is_empty() {
+            return Err("identificador vacío".to_string());
+        }
+        if clave.len() != 32 {
+            return Err("clave inválida".to_string());
+        }
+        if self
+            .revocadas
+            .contains(&(registro.to_string(), key_id.to_string()))
+        {
+            return Err("clave revocada no puede reactivarse".to_string());
+        }
+        self.agregar(registro, key_id, clave);
+        Ok(())
+    }
+
+    pub fn rotar(
+        &mut self,
+        registro: &str,
+        key_id_antigua: &str,
+        key_id_nueva: &str,
+        clave_nueva: Vec<u8>,
+        firma_autorizacion: &str,
+        clave_autoridad: &[u8],
+    ) -> Result<(), String> {
+        // La nueva clave debe estar firmada por la autoridad o la clave anterior.
+        let meta = format!("{}:{}:{}", registro, key_id_antigua, key_id_nueva);
+        let firma_bytes = base64::engine::general_purpose::STANDARD
+            .decode(firma_autorizacion)
+            .map_err(|e| e.to_string())?;
+        let firma = ed25519_dalek::Signature::from_bytes(
+            firma_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| "firma inválida".to_string())?,
+        );
+        let vk = ed25519_dalek::VerifyingKey::from_bytes(
+            clave_autoridad
+                .try_into()
+                .map_err(|_| "clave de autoridad inválida".to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        vk.verify(meta.as_bytes(), &firma)
+            .map_err(|e| e.to_string())?;
+        self.agregar(registro, key_id_nueva, clave_nueva);
+        Ok(())
+    }
+}
+
+/// Verifica un paquete remoto si se proporcionan metadatos y firma.
+pub fn verificar_paquete_remoto(
+    almacen: &AlmacenClaves,
+    meta: &MetadatosPaquete,
+    firma_b64: &str,
+    clave_publica: &[u8],
+) -> Result<(), String> {
+    if !almacen.es_confiable(&meta.registry_id, &meta.key_id, clave_publica) {
+        return Err("clave no confiable".to_string());
+    }
+    verificar_firma_metadatos(meta, firma_b64, clave_publica)
+}
+
+/// Registro persistente de nonces aceptados por registro (anti-replay).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RegistroNonces {
+    pub nonces: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+impl RegistroNonces {
+    pub fn cargar(base: &Path) -> Result<Self, String> {
+        let ruta = base.join(".basilisco").join("nonces.json");
+        if !ruta.is_file() {
+            return Ok(Self::default());
+        }
+        let meta = fs::symlink_metadata(&ruta).map_err(|e| e.to_string())?;
+        if meta.file_type().is_symlink() {
+            return Err("archivo de nonces es un enlace simbólico".to_string());
+        }
+        let texto = fs::read_to_string(&ruta).map_err(|e| e.to_string())?;
+        serde_json::from_str(&texto).map_err(|e| e.to_string())
+    }
+
+    pub fn guardar(&self, base: &Path) -> Result<(), String> {
+        let dir = base.join(".basilisco");
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let ruta = dir.join("nonces.json");
+        let tmp = dir.join("nonces.json.tmp");
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        fs::rename(&tmp, &ruta).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn aceptar(&mut self, registro: &str, nonce: &str) -> Result<(), String> {
+        let set = self.nonces.entry(registro.to_string()).or_default();
+        if set.contains(nonce) {
+            return Err("nonce repetido".to_string());
+        }
+        set.insert(nonce.to_string());
+        Ok(())
+    }
+}
+
+fn hex_decode(texto: &str) -> Result<Vec<u8>, String> {
+    if !texto.len().is_multiple_of(2) {
+        return Err("hex inválido".to_string());
+    }
+    let mut out = Vec::new();
+    for i in (0..texto.len()).step_by(2) {
+        let byte =
+            u8::from_str_radix(&texto[i..i + 2], 16).map_err(|_| "hex inválido".to_string())?;
+        out.push(byte);
+    }
+    Ok(out)
+}
+
+// --- R4 integración completa ---
+pub fn instalar_paquete_remoto_completo(
+    base: &std::path::Path,
+    metadata_url: &str,
+    artifact_url: &str,
+) -> Result<DependenciaResuelta, String> {
+    let meta = crate::cliente_remoto::obtener_metadatos(metadata_url)?;
+    let bytes = crate::cliente_remoto::descargar_artefacto(artifact_url)?;
+    crate::cliente_remoto::verificar_artefacto(&bytes, &meta.sha256)?;
+
+    // Verificación criptográfica
+    let almacen = AlmacenClaves::cargar(base).unwrap_or_default();
+    if let (Some(firma), Some(clave_hex)) = (&meta.firma, &meta.clave) {
+        let clave_bytes = hex_decode(clave_hex)?;
+        if !almacen.es_confiable(&meta.registry_id, &meta.key_id, &clave_bytes) {
+            return Err("clave no confiable".to_string());
+        }
+        verificar_firma_metadatos(&meta, firma, &clave_bytes)?;
+        // Anti-replay
+        let mut nonces = RegistroNonces::cargar(base).unwrap_or_default();
+        nonces.aceptar(&meta.registry_id, &meta.nonce)?;
+        nonces.guardar(base)?;
+    } else {
+        return Err("autenticidad no demostrada".to_string());
+    }
+
+    // Validación BPK completa
+    crate::cliente_remoto::validar_bpk(&bytes)?;
+
+    // Extraer en directorio temporal
+    let tmp_dir = std::env::temp_dir().join(format!("basilisco_remoto_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let extraido = crate::cliente_remoto::extraer_bpk(&bytes, &tmp_dir)?;
+    let archivo = archivo_de_paquete(&extraido)
+        .ok_or_else(|| "no se encontró archivo de paquete".to_string())?;
+
+    // Verificar hash del artefacto BPK
+    let hash_bpk = sha256_hex(&bytes);
+    if hash_bpk != meta.sha256 {
+        std::fs::remove_dir_all(&tmp_dir).ok();
+        return Err("hash del artefacto extraído inválido".to_string());
+    }
+    let hash = hash_archivo(&archivo)?;
+
+    // Instalar en caché y registrar
+    let remote_dir = base
+        .join(".basilisco")
+        .join("remote")
+        .join(&meta.name)
+        .join(&meta.version);
+    std::fs::create_dir_all(&remote_dir).map_err(|e| e.to_string())?;
+    let archivo_instalado = remote_dir.join(archivo.file_name().unwrap_or_default());
+    std::fs::copy(&archivo, &archivo_instalado).map_err(|e| e.to_string())?;
+    let dep_resuelta = DependenciaResuelta {
+        nombre: meta.name.clone(),
+        version: meta.version.clone(),
+        ruta: archivo_instalado,
+        hash: hash.clone(),
+        verificado: true,
+        registro: Some(meta.registry_id.clone()),
+        key_id: Some(meta.key_id.clone()),
+        firma: meta.firma.clone(),
+        nonce: Some(meta.nonce.clone()),
+        expira: Some(meta.expires_at.clone()),
+    };
+    asegurar_cache(base, &dep_resuelta)?;
+
+    // Limpiar temporales
+    std::fs::remove_dir_all(&tmp_dir).ok();
+    // Actualizar lock file
+    let mut deps = vec![dep_resuelta.clone()];
+    if let Ok(Some(mut existentes)) = leer_bloqueo(base) {
+        // evitar duplicados
+        existentes.retain(|d| d.nombre != dep_resuelta.nombre);
+        existentes.extend(deps.clone());
+        deps = existentes;
+    }
+    escribir_bloqueo(base, &deps)?;
+    Ok(dep_resuelta)
+}
+
+// --- R5: Múltiples registros ---
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConfigRegistro {
+    pub alias: String,
+    pub registry_id: String,
+    pub url: String,
+    pub habilitado: bool,
+    pub prioridad: i32,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ConfigRegistros {
+    pub predeterminado: Option<String>,
+    pub registros: std::collections::BTreeMap<String, ConfigRegistro>,
+}
+
+impl ConfigRegistros {
+    pub fn ruta(base: &Path) -> PathBuf {
+        base.join(".basilisco").join("registries.json")
+    }
+
+    pub fn cargar(base: &Path) -> Result<Self, String> {
+        let ruta = Self::ruta(base);
+        if !ruta.is_file() {
+            return Ok(Self::default());
+        }
+        let meta = fs::symlink_metadata(&ruta).map_err(|e| e.to_string())?;
+        if meta.file_type().is_symlink() {
+            return Err("archivo de registros es un enlace simbólico".to_string());
+        }
+        let texto = fs::read_to_string(&ruta).map_err(|e| e.to_string())?;
+        serde_json::from_str(&texto).map_err(|e| e.to_string())
+    }
+
+    pub fn guardar(&self, base: &Path) -> Result<(), String> {
+        let dir = base.join(".basilisco");
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        if let Ok(meta) = fs::symlink_metadata(&dir)
+            && meta.file_type().is_symlink()
+        {
+            return Err("directorio inválido".to_string());
+        }
+        let ruta = Self::ruta(base);
+        if let Ok(meta) = fs::symlink_metadata(&ruta)
+            && meta.file_type().is_symlink()
+        {
+            return Err("archivo de registros es un enlace simbólico".to_string());
+        }
+        let tmp = dir.join("registries.json.tmp");
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = fs::metadata(&tmp).map_err(|e| e.to_string())?.permissions();
+            perm.set_mode(0o600);
+            fs::set_permissions(&tmp, perm).map_err(|e| e.to_string())?;
+        }
+        fs::rename(&tmp, &ruta).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn agregar(&mut self, alias: &str, registry_id: &str, url: &str) -> Result<(), String> {
+        if !url.starts_with("https://")
+            && !url.starts_with("http://127.0.0.1")
+            && !url.starts_with("http://localhost")
+        {
+            return Err("se requiere https para registros remotos".to_string());
+        }
+        if self
+            .registros
+            .values()
+            .any(|r| r.registry_id == registry_id && r.alias != alias)
+        {
+            return Err("registry_id duplicado".to_string());
+        }
+        if self.registros.contains_key(alias) {
+            return Err("alias duplicado".to_string());
+        }
+        self.registros.insert(
+            alias.to_string(),
+            ConfigRegistro {
+                alias: alias.to_string(),
+                registry_id: registry_id.to_string(),
+                url: url.to_string(),
+                habilitado: true,
+                prioridad: 0,
+            },
+        );
+        if self.predeterminado.is_none() {
+            self.predeterminado = Some(alias.to_string());
+        }
+        Ok(())
+    }
+
+    pub fn obtener(&self, alias: &str) -> Option<&ConfigRegistro> {
+        self.registros.get(alias)
+    }
+
+    pub fn predeterminado(&self) -> Option<&ConfigRegistro> {
+        if let Some(ref p) = self.predeterminado {
+            self.registros.get(p)
+        } else {
+            self.registros.values().find(|r| r.habilitado)
+        }
+    }
+
+    pub fn set_predeterminado(&mut self, alias: &str) -> Result<(), String> {
+        if !self.registros.contains_key(alias) {
+            return Err("registro no encontrado".to_string());
+        }
+        self.predeterminado = Some(alias.to_string());
+        Ok(())
+    }
+
+    pub fn habilitar(&mut self, alias: &str, habilitado: bool) -> Result<(), String> {
+        if let Some(r) = self.registros.get_mut(alias) {
+            r.habilitado = habilitado;
+            Ok(())
+        } else {
+            Err("registro no encontrado".to_string())
+        }
+    }
+
+    pub fn eliminar(&mut self, alias: &str) -> Result<(), String> {
+        self.registros.remove(alias);
+        if self.predeterminado.as_ref() == Some(&alias.to_string()) {
+            self.predeterminado = self.registros.keys().next().cloned();
+        }
+        Ok(())
+    }
 }

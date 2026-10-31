@@ -109,6 +109,179 @@ pub fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         }
+        "instalar-remoto" => {
+            if args.len() != 4 {
+                eprintln!("uso: {COMANDO} instalar-remoto <metadata-url> <artifact-url> <destino>");
+                return ExitCode::from(2);
+            }
+            instalar_remoto(
+                args[1].to_str().unwrap_or(""),
+                args[2].to_str().unwrap_or(""),
+                Path::new(&args[3]),
+            )
+        }
+        "registry" => {
+            if args.is_empty() {
+                eprintln!(
+                    "uso: {COMANDO} registry <add|list|remove|set-default|enable|disable|info>"
+                );
+                return ExitCode::from(2);
+            }
+            match args[0].to_str().unwrap_or("") {
+                "add" => {
+                    if args.len() < 5 {
+                        eprintln!("uso: {COMANDO} registry add <alias> <registry-id> <url>");
+                        return ExitCode::from(2);
+                    }
+                    let base = PathBuf::from(".");
+                    let mut cfg =
+                        crate::paquetes::ConfigRegistros::cargar(&base).unwrap_or_default();
+                    if let Err(e) = cfg.agregar(
+                        args[1].to_str().unwrap_or(""),
+                        args[2].to_str().unwrap_or(""),
+                        args[3].to_str().unwrap_or(""),
+                    ) {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                    if let Err(e) = cfg.guardar(&base) {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                    println!("registro añadido");
+                    ExitCode::SUCCESS
+                }
+                "list" => {
+                    let base = PathBuf::from(".");
+                    let cfg = crate::paquetes::ConfigRegistros::cargar(&base).unwrap_or_default();
+                    if cfg.registros.is_empty() {
+                        println!("sin registros");
+                        return ExitCode::SUCCESS;
+                    }
+                    for (alias, r) in &cfg.registros {
+                        let def = if cfg.predeterminado.as_ref() == Some(alias) {
+                            " (predeterminado)"
+                        } else {
+                            ""
+                        };
+                        println!(
+                            "{} [{}] {} {}{}",
+                            alias,
+                            r.registry_id,
+                            r.url,
+                            if r.habilitado {
+                                "habilitado"
+                            } else {
+                                "deshabilitado"
+                            },
+                            def
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                "remove" => {
+                    if args.len() < 2 {
+                        eprintln!("uso: {COMANDO} registry remove <alias>");
+                        return ExitCode::from(2);
+                    }
+                    let base = PathBuf::from(".");
+                    let mut cfg =
+                        crate::paquetes::ConfigRegistros::cargar(&base).unwrap_or_default();
+                    if let Err(e) = cfg.eliminar(args[1].to_str().unwrap_or("")) {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                    if let Err(e) = cfg.guardar(&base) {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                    println!("registro eliminado");
+                    ExitCode::SUCCESS
+                }
+                "set-default" => {
+                    if args.len() < 2 {
+                        eprintln!("uso: {COMANDO} registry set-default <alias>");
+                        return ExitCode::from(2);
+                    }
+                    let base = PathBuf::from(".");
+                    let mut cfg =
+                        crate::paquetes::ConfigRegistros::cargar(&base).unwrap_or_default();
+                    if let Err(e) = cfg.set_predeterminado(args[1].to_str().unwrap_or("")) {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                    if let Err(e) = cfg.guardar(&base) {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                    println!("registro predeterminado actualizado");
+                    ExitCode::SUCCESS
+                }
+                "enable" => {
+                    if args.len() < 2 {
+                        eprintln!("uso: {COMANDO} registry enable <alias>");
+                        return ExitCode::from(2);
+                    }
+                    let base = PathBuf::from(".");
+                    let mut cfg =
+                        crate::paquetes::ConfigRegistros::cargar(&base).unwrap_or_default();
+                    if let Err(e) = cfg.habilitar(args[1].to_str().unwrap_or(""), true) {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                    if let Err(e) = cfg.guardar(&base) {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                    println!("registro habilitado");
+                    ExitCode::SUCCESS
+                }
+                "disable" => {
+                    if args.len() < 2 {
+                        eprintln!("uso: {COMANDO} registry disable <alias>");
+                        return ExitCode::from(2);
+                    }
+                    let base = PathBuf::from(".");
+                    let mut cfg =
+                        crate::paquetes::ConfigRegistros::cargar(&base).unwrap_or_default();
+                    if let Err(e) = cfg.habilitar(args[1].to_str().unwrap_or(""), false) {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                    if let Err(e) = cfg.guardar(&base) {
+                        eprintln!("error: {e}");
+                        return ExitCode::from(1);
+                    }
+                    println!("registro deshabilitado");
+                    ExitCode::SUCCESS
+                }
+                "info" => {
+                    if args.len() < 2 {
+                        eprintln!("uso: {COMANDO} registry info <alias>");
+                        return ExitCode::from(2);
+                    }
+                    let base = PathBuf::from(".");
+                    let cfg = crate::paquetes::ConfigRegistros::cargar(&base).unwrap_or_default();
+                    if let Some(r) = cfg.obtener(args[1].to_str().unwrap_or("")) {
+                        println!("alias: {}", r.alias);
+                        println!("registry_id: {}", r.registry_id);
+                        println!("url: {}", r.url);
+                        println!("habilitado: {}", r.habilitado);
+                        println!("prioridad: {}", r.prioridad);
+                        ExitCode::SUCCESS
+                    } else {
+                        eprintln!("error: registro no encontrado");
+                        ExitCode::from(1)
+                    }
+                }
+                _ => {
+                    eprintln!(
+                        "uso: {COMANDO} registry <add|list|remove|set-default|enable|disable|info>"
+                    );
+                    ExitCode::from(2)
+                }
+            }
+        }
         "analizar" => {
             if args.len() != 2 {
                 eprintln!("uso: {COMANDO} analizar <archivo.bsk|archivo.nexo>");
@@ -681,4 +854,68 @@ fn listar_paquetes(ruta: Option<PathBuf>) -> ExitCode {
             ExitCode::from(3)
         }
     }
+}
+
+fn instalar_remoto(metadata_url: &str, artifact_url: &str, destino: &Path) -> ExitCode {
+    let meta = match crate::cliente_remoto::obtener_metadatos(metadata_url) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let bytes = match crate::cliente_remoto::descargar_artefacto(artifact_url) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    if let Err(e) = crate::cliente_remoto::verificar_artefacto(&bytes, &meta.sha256) {
+        eprintln!("error: {e}");
+        return ExitCode::from(1);
+    }
+    // Verificación criptográfica si hay firma y clave.
+    let base = destino.parent().unwrap_or(destino);
+    let almacen = crate::paquetes::AlmacenClaves::cargar(base).unwrap_or_default();
+    if let (Some(firma), Some(clave_hex)) = (&meta.firma, &meta.clave) {
+        let clave_bytes = match hex_decode(clave_hex) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        if !almacen.es_confiable(&meta.registry_id, &meta.key_id, &clave_bytes) {
+            eprintln!("error: clave no confiable");
+            return ExitCode::from(1);
+        }
+        if let Err(e) = crate::paquetes::verificar_firma_metadatos(&meta, firma, &clave_bytes) {
+            eprintln!("error: {e}");
+            return ExitCode::from(1);
+        }
+    }
+    match crate::cliente_remoto::extraer_bpk(&bytes, destino) {
+        Ok(_) => {
+            println!("instalado: {}", destino.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn hex_decode(texto: &str) -> Result<Vec<u8>, String> {
+    if !texto.len().is_multiple_of(2) {
+        return Err("hex inválido".to_string());
+    }
+    let mut out = Vec::new();
+    for i in (0..texto.len()).step_by(2) {
+        let byte =
+            u8::from_str_radix(&texto[i..i + 2], 16).map_err(|_| "hex inválido".to_string())?;
+        out.push(byte);
+    }
+    Ok(out)
 }
