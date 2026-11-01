@@ -1,5 +1,14 @@
 # FFI / ABI básico
 
+> **Estado: IMPLEMENTADA-PARCIAL**
+> El puente FFI/ABI C está implementado en el commit `dda5f05` y sigue activo
+> en el código actual (HEAD `db272c7`). Las dependencias `libffi` y `libloading`
+> están presentes en `Cargo.toml`. La suite `tests/ffi.rs` está activa.
+> Límites: solo ABI C con tipos escalares y texto; sin callbacks, structs ni
+> variádicos. La reimplementación con diseño de seguridad completo queda prevista
+> para **Fase 5 (interoperabilidad)** cuando exista IR estable.
+> Ver `10-especificacion/estabilizacion-basilisco-0.6.0.md` sección 8 para contexto.
+
 ## Estado y alcance
 Implementado en el prototipo (`prototipo/src/evaluador.rs`) como puente de **ABI C**
 sobre las bibliotecas `libffi` (llamadas dinámicas con tipos mixtos) y

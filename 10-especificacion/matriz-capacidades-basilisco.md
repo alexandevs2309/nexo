@@ -1,5 +1,11 @@
 # Matriz de capacidades de BASILISCO
 
+## Nota de sincronización (2026-11-01)
+
+- Corrección de race condition en tests paralelos (`semantico_modulos`, `conformidad_io`, `cli`): directorios temporales ahora usan contador atómico + ID de hilo para garantizar unicidad.
+- R6 (registro remoto) **CERRADA** con evidencia contra PostgreSQL 16 real: servidor Axum/SQLx, auth Bearer, namespaces, publicación BPK (SHA-256 + Ed25519), cadena de confianza, descarga, yank, test E2E `registry_integration.rs` automatizado, persistencia verificada ante reinicio.
+- **FFI RETIRADA DELIBERADAMENTE:** el puente ABI C (`cargar_ffi`/`llamar_ffi`/`descargar_ffi` sobre `libffi`/`libloading`) fue implementado en el commit `dda5f05` y retirado en el ciclo R6 para eliminar dependencias pesadas de compilación. La especificación técnica histórica se conserva en `10-especificacion/ffi-abi.md`. Su reimplementación está prevista en Fase 5 (interoperabilidad), sin IR estable.
+
 ## Nota de sincronización (2026-10-30)
 
 - 551 pruebas aprobadas, 0 fallidas.
@@ -34,10 +40,10 @@
 | Lambdas | IMPLEMENTADO | parser.rs, evaluador.rs, semantico.rs | lambdas.rs | - | - |
 | Sistema de tipos estático | PARCIAL | semantico.rs | semantico.rs | inferencia limitada | Alta |
 | Módulos | IMPLEMENTADO | cargador.rs, semantico.rs | modulos_e2e, semantico_modulos | ejecución en análisis | Media |
-| Paquetes | PARCIAL | paquetes.rs, cli.rs | paquetes.rs, proyectos.rs | registro remoto | Media |
+| Paquetes | IMPLEMENTADO (local + R6 remoto) | paquetes.rs, cli.rs, servidor/ | paquetes.rs, remoto_e2e.rs, server_auth.rs, registry_integration.rs | - | - |
 | CLI | IMPLEMENTADO | cli.rs | cli.rs | - | - |
 | Biblioteca estándar | PARCIAL | evaluador.rs | conformidad_* | cobertura limitada | Media |
 | IR/VM | AUSENTE | - | - | arquitectura | Baja |
 | Nativo/WASM | AUSENTE | - | - | backends | Baja |
-| FFI | PARCIAL | evaluador.rs (FFI) | ffi.rs | solo ABI C: escalares y texto; sin callbacks/structs | Alta |
+| FFI | PARCIAL | evaluador.rs (cargar/llamar/descargar_ffi), libffi, libloading | ffi.rs | ABI C: escalares y texto; sin callbacks/structs/variádicos; diseño de seguridad pendiente | Fase 5 |
 | Concurrencia | PARCIAL | evaluador.rs (tareas) | - | robustez | Media |
