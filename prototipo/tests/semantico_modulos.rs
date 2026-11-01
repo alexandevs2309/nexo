@@ -6,11 +6,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn temp_dir() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("basilisco-semmod-{}", n));
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tid = std::thread::current().id();
+    let dir = std::env::temp_dir().join(format!("basilisco-semmod-{n}-{seq}-{tid:?}"));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
