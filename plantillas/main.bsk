@@ -1,0 +1,12 @@
+# Función con retorno
+funcion sumar(a, b) {
+    retornar a + b
+}
+
+# Función sin retorno explícito
+funcion saludar() {
+    mostrar("Hola")
+}
+
+
+s

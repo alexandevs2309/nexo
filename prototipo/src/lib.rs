@@ -15,6 +15,7 @@ pub mod parser;
 pub mod proyecto;
 pub mod semantico;
 pub mod servidor;
+pub mod simbodo;
 pub mod token;
 pub mod valor;
 
@@ -22,5 +23,6 @@ pub use evaluador::{CausaError, Entorno, ErrorEjecucion, evaluar};
 pub use lexer::Lexer;
 pub use parser::{ErrorSintactico, Expresion, Parser, Sentencia};
 pub use semantico::ContextoSemantico;
+pub use simbodo::{AmbitoId, CategoriaSimbodo, GestorAmbitos, Simbodo, SimbodoId, TablaSimbodo};
 pub use token::{ErrorLexico, TipoToken, Token};
 pub use valor::{ESCALA_DECIMAL, MotivoAritmetico, PRECISION_DECIMAL, Valor};

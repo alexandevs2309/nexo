@@ -12,6 +12,7 @@ use crate::Valor;
 use crate::cargador::CargadorModulos;
 use crate::evaluador::{CausaError, ErrorEjecucion};
 use crate::parser::{Expresion, Sentencia, TipoAnotacion};
+use crate::simbodo::{AmbitoId, CategoriaSimbodo, GestorAmbitos, SimbodoId, TablaSimbodo};
 
 /// Tipo semántico determinado estáticamente. `Desconocido` representa
 /// información no disponible (por ejemplo, llamadas a funciones sin
@@ -98,6 +99,8 @@ pub struct ContextoSemantico {
     cargador: Option<Arc<Mutex<CargadorModulos>>>,
     archivo_actual: Option<PathBuf>,
     scopes: Vec<HashMap<String, VarInfo>>,
+    tabla: TablaSimbodo,
+    gestor: GestorAmbitos,
     funciones: HashMap<String, FuncionSig>,
     errores: Vec<ErrorEjecucion>,
     funcion_actual: Option<String>,
@@ -115,6 +118,8 @@ impl ContextoSemantico {
             cargador: None,
             archivo_actual: None,
             scopes: vec![HashMap::new()],
+            tabla: TablaSimbodo::nuevo(),
+            gestor: GestorAmbitos::nuevo(),
             funciones: HashMap::new(),
             errores: Vec::new(),
             funcion_actual: None,
@@ -182,6 +187,12 @@ impl ContextoSemantico {
                             retorno: tipo_retorno.as_ref().map(tipo_anotacion_a_sem),
                         },
                     );
+                    self.tabla.registrar(
+                        nombre.clone(),
+                        AmbitoId(0),
+                        CategoriaSimbodo::Funcion,
+                        false,
+                    );
                 }
                 Sentencia::Exportar { sentencia, .. } => {
                     self.registrar_funciones(std::slice::from_ref(sentencia));
@@ -236,6 +247,12 @@ impl ContextoSemantico {
                     valor_tipo
                 };
                 if !self.existe_en_ambito_actual(&nombre) {
+                    self.tabla.registrar(
+                        nombre.clone(),
+                        self.gestor.actual(),
+                        CategoriaSimbodo::Variable,
+                        mutable,
+                    );
                     self.scopes.last_mut().unwrap().insert(
                         nombre,
                         VarInfo {
@@ -349,6 +366,7 @@ impl ContextoSemantico {
             } => {
                 self.analizar_expresion(&iterable);
                 self.scopes.push(HashMap::new());
+                self.gestor.entrar();
                 self.scopes.last_mut().unwrap().insert(
                     variable,
                     VarInfo {
@@ -360,6 +378,7 @@ impl ContextoSemantico {
                     self.analizar_sentencia(st.clone());
                 }
                 self.scopes.pop();
+                self.gestor.salir();
             }
             Sentencia::Bloque(stmts) => {
                 self.analizar_bloque(&stmts);
@@ -398,6 +417,12 @@ impl ContextoSemantico {
                 };
                 let firma_previa = self.funciones.get(&nombre).cloned();
                 self.funciones.insert(nombre.clone(), firma.clone());
+                self.tabla.registrar(
+                    nombre.clone(),
+                    self.gestor.actual(),
+                    CategoriaSimbodo::Funcion,
+                    false,
+                );
                 let es_anidada = self.en_funcion;
                 self.scopes.last_mut().unwrap().insert(
                     nombre.clone(),
@@ -418,11 +443,18 @@ impl ContextoSemantico {
                     },
                 );
                 self.scopes.push(HashMap::new());
+                self.gestor.entrar();
                 for (pname, pta) in &parametros {
                     let tipo = pta
                         .as_ref()
                         .map(tipo_anotacion_a_sem)
                         .unwrap_or(TipoSem::Desconocido);
+                    self.tabla.registrar(
+                        pname.clone(),
+                        self.gestor.actual(),
+                        CategoriaSimbodo::Parametro,
+                        true,
+                    );
                     self.scopes.last_mut().unwrap().insert(
                         pname.clone(),
                         VarInfo {
@@ -453,6 +485,7 @@ impl ContextoSemantico {
                 self.retorno_inferido = prev_inf;
                 self.en_funcion = prev_en;
                 self.scopes.pop();
+                self.gestor.salir();
                 // Al salir de una función anidada, devolver la firma global
                 // anterior: el alcance de una función anidada es el cuerpo de
                 // la función que la contiene, no todo el programa.
@@ -533,6 +566,7 @@ impl ContextoSemantico {
             } => {
                 self.analizar_bloque(&cuerpo_intentar);
                 self.scopes.push(HashMap::new());
+                self.gestor.entrar();
                 if let Some(v) = variable_error {
                     self.scopes.last_mut().unwrap().insert(
                         v,
@@ -546,6 +580,7 @@ impl ContextoSemantico {
                     self.analizar_sentencia(st.clone());
                 }
                 self.scopes.pop();
+                self.gestor.salir();
             }
             Sentencia::Exportar { sentencia, .. } => {
                 self.analizar_sentencia(*sentencia);
@@ -583,6 +618,12 @@ impl ContextoSemantico {
                             columna,
                         );
                     } else {
+                        self.tabla.registrar(
+                            alias.clone(),
+                            self.gestor.actual(),
+                            CategoriaSimbodo::Variable,
+                            false,
+                        );
                         self.scopes.last_mut().unwrap().insert(
                             alias.clone(),
                             VarInfo {
@@ -610,6 +651,12 @@ impl ContextoSemantico {
                         }
                         match modulo.exports.get(&nombre) {
                             Some(ExportadoSem::Variable(t)) => {
+                                self.tabla.registrar(
+                                    nombre.clone(),
+                                    self.gestor.actual(),
+                                    CategoriaSimbodo::Variable,
+                                    false,
+                                );
                                 self.scopes.last_mut().unwrap().insert(
                                     nombre.clone(),
                                     VarInfo {
@@ -619,6 +666,12 @@ impl ContextoSemantico {
                                 );
                             }
                             Some(ExportadoSem::Funcion(sig)) => {
+                                self.tabla.registrar(
+                                    nombre.clone(),
+                                    self.gestor.actual(),
+                                    CategoriaSimbodo::Funcion,
+                                    false,
+                                );
                                 self.funciones.insert(nombre.clone(), sig.clone());
                             }
                             None => {
@@ -654,10 +707,12 @@ impl ContextoSemantico {
 
     fn analizar_bloque(&mut self, stmts: &[Sentencia]) {
         self.scopes.push(HashMap::new());
+        self.gestor.entrar();
         for s in stmts {
             self.analizar_sentencia(s.clone());
         }
         self.scopes.pop();
+        self.gestor.salir();
     }
 
     fn analizar_expresion(&mut self, e: &Expresion) -> TipoSem {
@@ -1006,6 +1061,7 @@ impl ContextoSemantico {
                 self.retorno_inferido = None;
                 self.en_funcion = true;
                 self.scopes.push(HashMap::new());
+                self.gestor.entrar();
                 for (pname, pta) in parametros {
                     let tipo = pta
                         .as_ref()
@@ -1023,6 +1079,7 @@ impl ContextoSemantico {
                     self.analizar_sentencia(st.clone());
                 }
                 self.scopes.pop();
+                self.gestor.salir();
                 self.funcion_actual = prev_func;
                 self.retorno_esperado = prev_ret;
                 self.retorno_inferido = prev_inf;
@@ -1274,6 +1331,17 @@ impl ContextoSemantico {
         for scope in self.scopes.iter().rev() {
             if let Some(v) = scope.get(nombre) {
                 return Some(v.clone());
+            }
+        }
+        None
+    }
+
+    /// Resuelve un identificador a su símbodo usando la infraestructura de la
+    /// Etapa 1, caminando la pila de ámbitos del gestor en orden léxico.
+    pub fn resolver_simbodo(&self, nombre: &str) -> Option<SimbodoId> {
+        for ambito in self.gestor.pila().iter().rev() {
+            if let Some(id) = self.tabla.buscar(*ambito, nombre) {
+                return Some(id);
             }
         }
         None

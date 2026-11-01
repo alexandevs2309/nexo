@@ -39,6 +39,10 @@ pub enum Valor {
     Arreglo(Vec<Valor>),
     /// Lista dinámica: `lista<T>`.
     Lista(Vec<Valor>),
+    /// Objeto con claves ordenadas (BTreeMap) para JSON/serialización determinista.
+    Objeto(std::collections::BTreeMap<String, Valor>),
+    /// Fecha y hora con offset explícito (instante temporal).
+    FechaHora(chrono::DateTime<chrono::FixedOffset>),
     /// Valor nulo (ADR-0011 §3.5). Distinto de falso, 0 y "".
     Nulo,
     /// Archivo abierto (ADR-0013 §3.5). Encapsula el estado de E/S.
@@ -80,6 +84,8 @@ impl Clone for Valor {
             Valor::Texto(s) => Valor::Texto(s.clone()),
             Valor::Arreglo(v) => Valor::Arreglo(v.clone()),
             Valor::Lista(v) => Valor::Lista(v.clone()),
+            Valor::Objeto(m) => Valor::Objeto(m.clone()),
+            Valor::FechaHora(d) => Valor::FechaHora(*d),
             Valor::Nulo => Valor::Nulo,
             Valor::Archivo(arc) => Valor::Archivo(Arc::clone(arc)),
             Valor::Modulo(rc) => Valor::Modulo(Arc::clone(rc)),
@@ -107,6 +113,8 @@ impl std::fmt::Debug for Valor {
             Valor::Texto(s) => write!(f, "Texto({s:?})"),
             Valor::Arreglo(v) => write!(f, "Arreglo({v:?})"),
             Valor::Lista(v) => write!(f, "Lista({v:?})"),
+            Valor::Objeto(m) => write!(f, "Objeto({m:?})"),
+            Valor::FechaHora(d) => write!(f, "FechaHora({d})"),
             Valor::Nulo => write!(f, "Nulo"),
             Valor::Archivo(_) => write!(f, "Archivo(<opaco>)"),
             Valor::Modulo(m) => write!(f, "Modulo({})", m.ruta.display()),
@@ -126,6 +134,8 @@ impl PartialEq for Valor {
             (Valor::Texto(a), Valor::Texto(b)) => a == b,
             (Valor::Arreglo(a), Valor::Arreglo(b)) => a == b,
             (Valor::Lista(a), Valor::Lista(b)) => a == b,
+            (Valor::Objeto(a), Valor::Objeto(b)) => a == b,
+            (Valor::FechaHora(a), Valor::FechaHora(b)) => a == b,
             (Valor::Nulo, Valor::Nulo) => true,
             // Archivos se comparan por identidad de puntero (Arc).
             (Valor::Archivo(a), Valor::Archivo(b)) => Arc::ptr_eq(a, b),
@@ -235,6 +245,8 @@ impl Valor {
             Valor::Texto(_) => "texto",
             Valor::Arreglo(_) => "arreglo",
             Valor::Lista(_) => "lista",
+            Valor::Objeto(_) => "objeto",
+            Valor::FechaHora(_) => "fechahora",
             Valor::Nulo => "nulo",
             Valor::Archivo(_) => "archivo",
             Valor::Modulo(_) => "modulo",
@@ -515,6 +527,8 @@ impl Valor {
             Valor::Texto(_) => false,
             Valor::Arreglo(_) => false,
             Valor::Lista(_) => false,
+            Valor::Objeto(_) => false,
+            Valor::FechaHora(_) => false,
             Valor::Nulo => false,
             Valor::Archivo(_) => false,
             Valor::Modulo(_) => false,
@@ -535,6 +549,8 @@ impl Valor {
             // Arreglos y listas no tienen representación numérica.
             Valor::Arreglo(_) => f64::NAN,
             Valor::Lista(_) => f64::NAN,
+            Valor::Objeto(_) => f64::NAN,
+            Valor::FechaHora(_) => f64::NAN,
             // Nulo no tiene representación numérica (ADR-0011 §3.5).
             Valor::Nulo => f64::NAN,
             // Archivo no tiene representación numérica.
@@ -592,6 +608,17 @@ impl fmt::Display for Valor {
                 }
                 write!(f, "]")
             }
+            Valor::Objeto(m) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in m.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "\"{k}\": {v}")?;
+                }
+                write!(f, "}}")
+            }
+            Valor::FechaHora(d) => write!(f, "{}", d.to_rfc3339()),
             Valor::Nulo => write!(f, "nulo"),
             Valor::Archivo(_) => write!(f, "<archivo>"),
             Valor::Modulo(m) => write!(f, "<modulo: {}>", m.ruta.display()),
