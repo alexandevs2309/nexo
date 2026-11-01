@@ -183,13 +183,15 @@ fn run_sin_archivo_es_error_de_uso() {
 }
 
 fn directorio_temporal() -> std::path::PathBuf {
-    let ruta = std::env::temp_dir().join(format!(
-        "basilisco-cli-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tid = std::thread::current().id();
+    let ruta = std::env::temp_dir().join(format!("basilisco-cli-{nanos}-{seq}-{tid:?}"));
     std::fs::create_dir_all(&ruta).unwrap();
     ruta
 }

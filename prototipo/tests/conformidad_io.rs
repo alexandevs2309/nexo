@@ -12,11 +12,15 @@ fn ejecutar(fuente: &str) -> Result<Option<Valor>, ErrorEjecucion> {
 }
 
 fn dir_temporal() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let ruta = std::env::temp_dir().join(format!("basilisco-io-{nanos}"));
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tid = std::thread::current().id();
+    let ruta = std::env::temp_dir().join(format!("basilisco-io-{nanos}-{seq}-{tid:?}"));
     fs::create_dir_all(&ruta).unwrap();
     ruta
 }
