@@ -30,7 +30,7 @@ Introducir un pase semántico independiente y versionado, separado del evaluador
 2. Produzca un conjunto de diagnósticos sin ejecutar el programa.
 3. Mantenga una tabla de símbolos externa al AST (no anotaciones en el AST inicialmente).
 4. Preserve todas las validaciones de seguridad del evaluador (no eliminarlas).
-5. Sea opcional en `run` (configurable) pero obligatorio en `analizar`.
+5. El análisis estático se ejecuta mediante `bsk analizar`; `bsk run` no ejecuta automáticamente el análisis estático y conserva las validaciones dinámicas del evaluador.
 6. Sea incremental: etapas pequeñas y revisables.
 
 Decisión sobre representación: **mantener el AST original y asociar información semántica externamente** (tablas de símbolos + scopes). No introducir una IR ni anotaciones en el AST en esta fase. Esto minimiza cambios en parser/evaluador y permite evolución gradual.
@@ -169,9 +169,21 @@ Reutilizar `CausaError` y `ErrorEjecucion` existentes como base; ampliar con cat
 
 ## 12. Integración con CLI
 
-- `bsk analizar <archivo>`: ejecuta el pase semántico completo disponible, imprime diagnósticos, no ejecuta. Código de salida != 0 si hay errores.
-- `bsk run <archivo>`: por defecto ejecuta análisis semántico disponible antes de run; si hay errores semánticos bloqueantes, no ejecuta; modo `--sin-analisis` (o equivalente) para scripts legacy, documentado.
-- Compatibilidad: programas que hoy funcionan no deben romperse por nuevas validaciones estáticas; las nuevas validaciones se introducen por etapas con pruebas de regresión.
+**`bsk analizar <archivo>`**
+- Ejecuta el análisis estático.
+- No ejecuta el programa.
+- Acumula diagnósticos.
+- Devuelve código de salida 1 cuando existen errores y 0 cuando el análisis termina correctamente.
+
+**`bsk run <archivo>`**
+- Ejecuta el programa.
+- No ejecuta automáticamente el análisis estático.
+- Conserva las verificaciones dinámicas del evaluador.
+
+**`--sin-analisis`**
+- No está implementado.
+- No existe actualmente como opción de CLI.
+- Se registra como funcionalidad pendiente, no como capacidad disponible.
 
 ## 13. Compatibilidad con el evaluador
 
@@ -208,12 +220,21 @@ Etapa 5 — Flujo de control y alcanzabilidad (opcional):
 Etapa 6 — CLI `analizar`/`run` integración final:
 - Objetivo: código de salida y diagnósticos estables.
 - Riesgo: bajo.
+- Resultado: integración completada según la sección 12 (dos caminos independientes: análisis estático y ejecución dinámica).
 
 ## 15. Consecuencias
 
 Positivas: base sólida para evolución, mejor DX, diagnósticos claros, compatibilidad con implementación incremental.
 
-Negativas: trabajo adicional, riesgo de divergencia entre análisis y evaluador si no se mantiene sincronizado, complejidad de mantener dos caminos (analizar vs run).
+Negativas: trabajo adicional, riesgo de divergencia entre diagnósticos estáticos y errores detectados en runtime al mantener dos caminos independientes (analizar vs run), complejidad de mantener ambos.
+
+Limitaciones pendientes:
+- Inferencia por primera llamada frágil.
+- Sin análisis de código inalcanzable.
+- Sin garantía completa de retorno estático.
+- Diagnósticos sin span final ni sugerencias.
+- Sin genéricos, uniones ni tipos algebraicos.
+- Sin opción `--sin-analisis`.
 
 Riesgos: inferencia frágil por primera llamada puede generar falsos positivos; cambios en tipos graduales requieren coordinación con ADR-0011.
 
