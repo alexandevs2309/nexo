@@ -1,0 +1,6 @@
+# Procesamiento JSON real con BASILISCO
+sea contenido = leer_archivo("ejemplos/datos.json")
+sea obj = json_parsear(contenido)
+mostrar("Nombre: " + json_obtener(obj, "nombre"))
+escribir_archivo("ejemplos/salida.json", json_serializar(obj))
+mostrar("Archivo generado")

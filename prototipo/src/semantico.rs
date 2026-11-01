@@ -70,8 +70,8 @@ impl TipoSem {
 }
 
 #[derive(Debug, Clone)]
-struct VarInfo {
-    tipo: TipoSem,
+pub struct VarInfo {
+    pub tipo: TipoSem,
     mutable: bool,
 }
 
@@ -1327,7 +1327,7 @@ impl ContextoSemantico {
         ModuloInfo { exports, nombres }
     }
 
-    fn buscar_variable(&self, nombre: &str) -> Option<VarInfo> {
+    pub fn buscar_variable(&self, nombre: &str) -> Option<VarInfo> {
         for scope in self.scopes.iter().rev() {
             if let Some(v) = scope.get(nombre) {
                 return Some(v.clone());
@@ -1352,7 +1352,7 @@ impl ContextoSemantico {
     }
 }
 
-fn tipo_anotacion_a_sem(t: &TipoAnotacion) -> TipoSem {
+pub fn tipo_anotacion_a_sem(t: &TipoAnotacion) -> TipoSem {
     match t {
         TipoAnotacion::Entero => TipoSem::Entero,
         TipoAnotacion::Decimal => TipoSem::Decimal,

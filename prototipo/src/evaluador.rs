@@ -222,6 +222,7 @@ pub const NOMBRES_RESERVADOS: &[&str] = &[
     "existe_archivo",
     "leer_archivo",
     "escribir_archivo",
+    "listar_directorio",
     "iniciar_tarea",
     "esperar_tarea",
     "cargar_ffi",
@@ -3246,6 +3247,7 @@ fn es_builtin(nombre: &str) -> bool {
             | "existe_archivo"
             | "leer_archivo"
             | "escribir_archivo"
+            | "listar_directorio"
             | "iniciar_tarea"
             | "esperar_tarea"
             | "cargar_ffi"
@@ -4650,6 +4652,50 @@ fn evaluar_builtin(
                     CausaError::AsignacionIncompatible {
                         esperado: "texto, texto".to_string(),
                         obtenido: args[0].nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
+            }
+        }
+        "listar_directorio" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match &args[0] {
+                Valor::Texto(ruta) => {
+                    let mut entradas = Vec::new();
+                    match std::fs::read_dir(ruta) {
+                        Ok(iter) => {
+                            for e in iter.flatten() {
+                                entradas.push(Valor::Texto(
+                                    e.file_name().to_string_lossy().to_string(),
+                                ));
+                            }
+                            Ok(Valor::Arreglo(entradas))
+                        }
+                        Err(e) => Err(err_builtin(
+                            CausaError::ErrorDeArchivo {
+                                ruta: ruta.clone(),
+                                detalle: e.to_string(),
+                            },
+                            linea,
+                            columna,
+                        )),
+                    }
+                }
+                otro => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
                     },
                     linea,
                     columna,

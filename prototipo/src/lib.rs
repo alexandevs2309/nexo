@@ -9,6 +9,7 @@ pub mod cli;
 pub mod cliente_remoto;
 pub mod evaluador;
 pub mod formateador;
+pub mod hir;
 pub mod lexer;
 pub mod paquetes;
 pub mod parser;
