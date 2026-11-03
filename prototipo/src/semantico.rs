@@ -1510,3 +1510,15 @@ fn tipo_comun(a: &TipoSem, b: &TipoSem) -> TipoSem {
         _ => TipoSem::Desconocido,
     }
 }
+
+impl ContextoSemantico {
+    pub fn archivo_actual(&self) -> Option<&PathBuf> {
+        self.archivo_actual.as_ref()
+    }
+    pub fn set_archivo_actual(&mut self, p: Option<PathBuf>) {
+        self.archivo_actual = p;
+    }
+    pub fn cargador(&self) -> Option<&Arc<Mutex<CargadorModulos>>> {
+        self.cargador.as_ref()
+    }
+}

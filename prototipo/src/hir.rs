@@ -1068,6 +1068,88 @@ fn variables_libres(stmts: &[Sentencia], params: &[String]) -> (Vec<String>, Vec
     (referenciadas.into_iter().collect(), capturadas_por_anidados)
 }
 
+/// Carga un módulo en tiempo de compilación y devuelve sus items HIR (funciones
+/// y declaraciones), filtrando por `nombres` si se da (sentencia `usar ... { ... }`).
+fn cargar_modulo_items(
+    ruta: &str,
+    ctx: &crate::semantico::ContextoSemantico,
+    res: &mut ResolutorHir,
+    nombres: Option<&Vec<String>>,
+) -> Vec<HirItem> {
+    use std::path::PathBuf;
+    // Resolver ruta relativa al archivo actual.
+    let base_dir = ctx
+        .archivo_actual()
+        .and_then(|p| p.parent().map(|pp| pp.to_path_buf()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let mut candidatos = vec![ruta.to_string()];
+    // normalizar extensión
+    if !ruta.ends_with(".bsk") && !ruta.ends_with(".nexo") {
+        candidatos = vec![
+            format!("{ruta}.bsk"),
+            format!("{ruta}.nexo"),
+            ruta.to_string(),
+        ];
+    }
+    let mut contenido: Option<String> = None;
+    let mut ruta_resuelta: Option<PathBuf> = None;
+    for c in &candidatos {
+        let p = base_dir.join(c);
+        if let Ok(txt) = std::fs::read_to_string(&p) {
+            contenido = Some(txt);
+            ruta_resuelta = Some(p);
+            break;
+        }
+    }
+    let Some(contenido) = contenido else {
+        return Vec::new();
+    };
+    let tokens = match crate::Lexer::nuevo(&contenido).tokenizar() {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let ast = match crate::Parser::nuevo(tokens).parsear_programa() {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+    // Analizar con un contexto que comparte el cargador.
+    let mut ctx_mod = crate::semantico::ContextoSemantico::nuevo();
+    if let Some(c) = ctx.cargador() {
+        ctx_mod = crate::semantico::ContextoSemantico::con_cargador(c.clone(), None);
+    }
+    if let Some(p) = &ruta_resuelta {
+        ctx_mod.set_archivo_actual(Some(p.clone()));
+        ctx_mod.archivo = Some(p.display().to_string());
+    }
+    let _ = ctx_mod.analizar_programa(&ast);
+    // Bajar a HIR con un resolvedor propio (comparte la pila de ámbitos raíz
+    // mediante un nuevo ResolutorHir; los nombres se resuelven por nombre).
+    let hir = match crate::hir::lower_programa(&ast, &ctx_mod) {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
+    };
+    // Filtrar por nombres si se pidió.
+    let mut items = hir.items;
+    if let Some(nombres) = nombres {
+        let set: std::collections::HashSet<&String> = nombres.iter().collect();
+        items.retain(|it| match it {
+            HirItem::Funcion { nombre, .. } => set.contains(nombre),
+            HirItem::Declaracion { .. } => true,
+            _ => false,
+        });
+    }
+    // Registrar las funciones importadas en el resolvedor actual para que las
+    // llamadas posteriores se resuelvan como directas.
+    for it in &items {
+        if let HirItem::Funcion { nombre, .. } = it {
+            res.funciones.insert(nombre.clone());
+            res.insertar(nombre, None);
+        }
+    }
+    // Incorporar clausuras anidadas (ya están en hir.items tras lower_programa).
+    items
+}
+
 /// Programa -> HIR.
 pub fn lower_programa(
     ast: &[Sentencia],
@@ -1214,10 +1296,12 @@ pub fn lower_programa(
                 });
             }
             Sentencia::Importar { ruta, alias, .. } => {
+                let mods = cargar_modulo_items(ruta, ctx, &mut res, None);
                 items.push(HirItem::Importar {
                     ruta: ruta.clone(),
                     alias: alias.clone(),
                 });
+                items.extend(mods);
             }
             Sentencia::Exportar { sentencia, .. } => {
                 match lower_sentencia(sentencia, ctx, &mut res) {
@@ -1233,11 +1317,13 @@ pub fn lower_programa(
                 nombres,
                 ..
             } => {
+                let mods = cargar_modulo_items(ruta, ctx, &mut res, nombres.as_ref());
                 items.push(HirItem::Usar {
                     ruta: ruta.clone(),
                     alias: alias.clone(),
                     nombres: nombres.clone(),
                 });
+                items.extend(mods);
             }
             otro => {
                 errores.push(format!(
