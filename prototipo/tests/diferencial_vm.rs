@@ -149,3 +149,29 @@ fn diff_romper_continuar() {
         "funcion main() -> entero {\n  sea s = 0\n  sea i = 0\n  mientras i < 10 {\n    i = i + 1\n    si i == 3 { continuar }\n    si i == 5 { romper }\n    s = s + i\n  }\n  retornar s\n}",
     );
 }
+
+#[test]
+fn diff_mostrar_stdlib() {
+    let src = "funcion main() -> entero {\n  mostrar 42\n  retornar 1\n}";
+    // VM needs stdlib registered; tree-walk uses built-in mostrar.
+    let ss = parsear(src);
+    let mut ctx = ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    let hir = hir::lower_programa(&ss, &ctx).unwrap();
+    let mir = mir::lower_programa(&hir);
+    let mut maquina = vm::MaquinaVirtual::nuevo(mir);
+    maquina.registrar_stdlib();
+    let idx = maquina.indice_de("main").unwrap();
+    let vmr = match maquina.ejecutar_indice(idx, &[]) {
+        Ok(v) => format!("OK:{:?}", v),
+        Err(e) => format!("ERR:{}", e),
+    };
+    // tree-walk
+    let ss2 = parsear(&format!("{}\nmain()", src));
+    let mut env = Entorno::nueva();
+    let tw = match env.ejecutar_programa(&ss2) {
+        Ok(v) => format!("OK:{:?}", v),
+        Err(e) => format!("ERR:{}", e.causa),
+    };
+    assert_eq!(tw, vmr);
+}

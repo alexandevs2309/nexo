@@ -99,6 +99,8 @@ pub struct MaquinaVirtual {
     indice: HashMap<String, usize>,
     /// Funciones nativas (FFI / integradas) registradas en la VM.
     nativos: HashMap<String, FuncionNativa>,
+    /// Salida capturada de `mostrar`/`mostrar_sin_salto` (biblioteca estándar).
+    salida: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     pasos: usize,
     limite_pasos: usize,
     profundidad: usize,
@@ -125,6 +127,7 @@ impl MaquinaVirtual {
             programa,
             indice,
             nativos: HashMap::new(),
+            salida: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pasos: 0,
             limite_pasos,
             profundidad: 0,
@@ -147,6 +150,35 @@ impl MaquinaVirtual {
     /// nombre (la primera gana en el intérprete).
     pub fn registrar_nativo(&mut self, nombre: impl Into<String>, f: FuncionNativa) {
         self.nativos.entry(nombre.into()).or_insert(f);
+    }
+
+    /// Registra la biblioteca estándar mínima (mostrar, mostrar_sin_salto).
+    pub fn registrar_stdlib(&mut self) {
+        let salida = std::sync::Arc::clone(&self.salida);
+        self.registrar_nativo(
+            "mostrar",
+            std::sync::Arc::new(move |args: &[Valor]| {
+                let texto = args.first().map(|v| v.to_string()).unwrap_or_default();
+                salida.lock().unwrap().push(format!("{texto}\n"));
+                println!("{texto}");
+                Ok(Valor::Nulo)
+            }),
+        );
+        let salida = std::sync::Arc::clone(&self.salida);
+        self.registrar_nativo(
+            "mostrar_sin_salto",
+            std::sync::Arc::new(move |args: &[Valor]| {
+                let texto = args.first().map(|v| v.to_string()).unwrap_or_default();
+                salida.lock().unwrap().push(texto.clone());
+                print!("{texto}");
+                Ok(Valor::Nulo)
+            }),
+        );
+    }
+
+    /// Salida capturada de mostrar/mostrar_sin_salto.
+    pub fn salida(&self) -> Vec<String> {
+        self.salida.lock().unwrap().clone()
     }
 
     /// Número de funciones nativas registradas.
