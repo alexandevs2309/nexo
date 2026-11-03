@@ -4,6 +4,8 @@
 //! Contratos de decisión: ADR-0003 (léxico), ADR-0004 (precedencia).
 //! Identidad y CLI: ADR-0009 y ADR-0010.
 
+pub mod backend_nativo;
+pub mod backend_wasm;
 pub mod cargador;
 pub mod cli;
 pub mod cliente_remoto;
@@ -11,6 +13,8 @@ pub mod evaluador;
 pub mod formateador;
 pub mod hir;
 pub mod lexer;
+pub mod mir;
+pub mod optimizador;
 pub mod paquetes;
 pub mod parser;
 pub mod proyecto;
@@ -19,6 +23,7 @@ pub mod servidor;
 pub mod simbodo;
 pub mod token;
 pub mod valor;
+pub mod vm;
 
 pub use evaluador::{CausaError, Entorno, ErrorEjecucion, evaluar};
 pub use lexer::Lexer;

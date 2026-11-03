@@ -1,6 +1,27 @@
-# BASILISCO Registry (R6, work in progress)
+# BASILISCO Registry (R6 — cerrada)
 
 El registro es un binario independiente; no agrega comandos al intérprete `bsk`.
+
+## Estado
+
+**R6 CERRADA** (2026-10-31). Las verificaciones documentadas en `10-especificacion/registro-de-brechas.md` confirman:
+
+- Servidor Axum/SQLx operativo con autenticación Bearer (Argon2 + SHA-256).
+- Namespaces con control de membresía.
+- Publicación BPK con validación completa (SHA-256 por archivo, Ed25519, SemVer, expiración, ZIP safety, NFC).
+- Cadena de confianza: bootstrap de clave Ed25519 fuera de banda; el servidor re-firma con su clave propia.
+- Descarga, búsqueda y yank funcionales.
+- Cliente `bsk instalar-remoto` verifica firma Ed25519 → `verificado=true`.
+- Persistencia y recuperación ante reinicio del servidor y la BD verificadas.
+- Test E2E automatizado `tests/registry_integration.rs` pasa contra PostgreSQL 16 real.
+- `cargo test` → verde; `cargo clippy` y `cargo fmt --check` limpios.
+
+**Limitaciones residuales que no impiden el uso prototipal:**
+- Sin rate limiting ni auditoría de operaciones.
+- `/health` no verifica conectividad con PostgreSQL.
+- No apto para exposición a redes no confiables sin revisión de seguridad adicional.
+- Requiere PostgreSQL; no hay modo embebido ni SQLite de desarrollo.
+
 
 ## Ejecución local
 
@@ -30,11 +51,4 @@ todavía no verifica la salud de PostgreSQL.
 
 ## Estado funcional
 
-Este binario y el despliegue son scaffolding de R6, no una implementación
-lista para producción. La API actual no tiene autenticación/autorización de
-publicación, el endpoint de publicación previo acepta metadatos criptográficos
-del cliente sin verificar una clave de confianza, la validación BPK no cubre
-todo el perfil R2, y no hay integración probada desde los clientes R4/R5. No
-exponga este servicio a redes no confiables. Estas brechas impiden declarar R6
-cerrada; están documentadas aquí deliberadamente para no confundir el esqueleto
-con un registro seguro y conforme.
+Ver sección **Estado** al inicio de este documento. R6 está cerrada con evidencia; las limitaciones residuales están listadas allí.

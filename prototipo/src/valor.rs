@@ -11,6 +11,7 @@
 //! Tipo adicional (ADR-0007 §1.1): `lógico` (`bool`). **No** es numérico: no hay conversión
 //! en ningún sentido con `entero`/`decimal`/`real`; cualquier mezcla es error con ubicación.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -25,7 +26,7 @@ pub const FACTOR_ESCALA: i128 = 1_000_000_000;
 /// 10^19, para validación de rango del decimal.
 const DIEZ_POT_19: i128 = 10_000_000_000_000_000_000;
 
-/// Un valor de BASILISCO con su tipo (tres numéricos + `lógico` + `texto` + `arreglo` + `lista` + `nulo` + `archivo`).
+/// Un valor de BASILISCO con su tipo (tres numéricos + `lógico` + `texto` + `arreglo` + `lista` + `nulo` + `archivo` + `objeto`).
 pub enum Valor {
     Entero(i64),
     /// Decimal escalonado: `entero / 10^9`. El entero tiene hasta 19 dígitos.
@@ -40,7 +41,7 @@ pub enum Valor {
     /// Lista dinámica: `lista<T>`.
     Lista(Vec<Valor>),
     /// Objeto con claves ordenadas (BTreeMap) para JSON/serialización determinista.
-    Objeto(std::collections::BTreeMap<String, Valor>),
+    Objeto(BTreeMap<String, Valor>),
     /// Fecha y hora con offset explícito (instante temporal).
     FechaHora(chrono::DateTime<chrono::FixedOffset>),
     /// Valor nulo (ADR-0011 §3.5). Distinto de falso, 0 y "".
@@ -51,12 +52,19 @@ pub enum Valor {
     Modulo(Arc<crate::cargador::ModuloCargado>),
     /// Función de primera clase (referencia por nombre).
     Funcion(String),
-    /// Clausura: función anidada con entorno léxico capturado.
+    /// Clausura: función anidada con entorno léxico capturado (Tree-Walk).
     FuncionClausura {
         parametros: Vec<(String, Option<crate::parser::TipoAnotacion>)>,
         cuerpo: Vec<crate::parser::Sentencia>,
         entorno: Arc<Mutex<crate::evaluador::Entorno>>,
     },
+    /// Clausura compilada (MIR): función por nombre + valores capturados.
+    ClausuraMir {
+        nombre: String,
+        capturas: Vec<Valor>,
+    },
+    /// Celda de referencia mutable (captura por referencia en clausuras).
+    Celda(Arc<Mutex<Valor>>),
 }
 
 /// Estado interno de un archivo abierto (ADR-0013 §3.5). Opaco para el código BASILISCO.
@@ -99,6 +107,11 @@ impl Clone for Valor {
                 cuerpo: cuerpo.clone(),
                 entorno: Arc::clone(entorno),
             },
+            Valor::ClausuraMir { nombre, capturas } => Valor::ClausuraMir {
+                nombre: nombre.clone(),
+                capturas: capturas.clone(),
+            },
+            Valor::Celda(arc) => Valor::Celda(Arc::clone(arc)),
         }
     }
 }
@@ -120,6 +133,8 @@ impl std::fmt::Debug for Valor {
             Valor::Modulo(m) => write!(f, "Modulo({})", m.ruta.display()),
             Valor::Funcion(s) => write!(f, "Funcion({s})"),
             Valor::FuncionClausura { .. } => write!(f, "FuncionClausura"),
+            Valor::ClausuraMir { nombre, .. } => write!(f, "ClausuraMir({nombre})"),
+            Valor::Celda(_) => write!(f, "Celda(<opaco>)"),
         }
     }
 }
@@ -140,6 +155,17 @@ impl PartialEq for Valor {
             // Archivos se comparan por identidad de puntero (Arc).
             (Valor::Archivo(a), Valor::Archivo(b)) => Arc::ptr_eq(a, b),
             (Valor::Modulo(a), Valor::Modulo(b)) => Arc::ptr_eq(a, b),
+            (Valor::Celda(a), Valor::Celda(b)) => Arc::ptr_eq(a, b),
+            (
+                Valor::ClausuraMir {
+                    nombre: a,
+                    capturas: ca,
+                },
+                Valor::ClausuraMir {
+                    nombre: b,
+                    capturas: cb,
+                },
+            ) => a == b && ca == cb,
             _ => false,
         }
     }
@@ -252,6 +278,8 @@ impl Valor {
             Valor::Modulo(_) => "modulo",
             Valor::Funcion(_) => "función",
             Valor::FuncionClausura { .. } => "función",
+            Valor::ClausuraMir { .. } => "función",
+            Valor::Celda(_) => "celda",
         }
     }
 }
@@ -534,6 +562,8 @@ impl Valor {
             Valor::Modulo(_) => false,
             Valor::Funcion(_) => false,
             Valor::FuncionClausura { .. } => false,
+            Valor::ClausuraMir { .. } => false,
+            Valor::Celda(_) => false,
         }
     }
 
@@ -560,6 +590,8 @@ impl Valor {
             // Función no tiene representación numérica.
             Valor::Funcion(_) => f64::NAN,
             Valor::FuncionClausura { .. } => f64::NAN,
+            Valor::ClausuraMir { .. } => f64::NAN,
+            Valor::Celda(_) => f64::NAN,
         }
     }
 }
@@ -624,6 +656,8 @@ impl fmt::Display for Valor {
             Valor::Modulo(m) => write!(f, "<modulo: {}>", m.ruta.display()),
             Valor::Funcion(s) => write!(f, "<función: {s}>"),
             Valor::FuncionClausura { .. } => write!(f, "<clausura>"),
+            Valor::ClausuraMir { .. } => write!(f, "<clausura>"),
+            Valor::Celda(_) => write!(f, "<celda>"),
         }
     }
 }

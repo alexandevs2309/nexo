@@ -1,5 +1,9 @@
 # Auditoría técnica integral de BASILISCO
 
+## 1. Resumen ejecutivo (sincronizado 2026-11-01)
+
+BASILISCO 0.6.0 cuenta con lexer, parser, evaluador, análisis semántico, módulos, CLI y biblioteca estándar básica. **R6 (registro remoto) CERRADA** con evidencia contra PostgreSQL 16 real: servidor Axum/SQLx, autenticación Bearer, namespaces, publicación BPK (SHA-256 + Ed25519), cadena de confianza, descarga, yank, test E2E automatizado y persistencia verificada. **FFI RETIRADA DELIBERADAMENTE** en el ciclo R6 (eliminadas libffi/libloading para simplificar el build); spec histórica conservada en `10-especificacion/ffi-abi.md`. Race condition en tests paralelos corregida (2026-11-01). Sin IR, VM, nativo ni WASM. Validación: 551+ pruebas aprobadas, 0 fallidas; `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` correctos.
+
 ## 1. Resumen ejecutivo (sincronizado 2026-10-30)
 
 BASILISCO 0.6.0 cuenta con lexer, parser, evaluador, análisis semántico, módulos, CLI y biblioteca estándar básica. Validación: 551 pruebas aprobadas, 0 fallidas; `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` correctos. Funciones de primera clase con closures, lambdas y captura de entorno léxico; funciones anidadas soportadas por parser, evaluador y análisis semántico. `Expresion::LlamadaIndirecta` valida estáticamente firma, parámetros y retorno. El izado de funciones de nivel superior es consistente entre `analizar` y `run` (llamadas anticipadas, recursión mutua y detección de duplicados). Inferencia de funciones no anotadas limitada. Sin IR, VM, nativo ni WASM. Gestor de paquetes local.
@@ -36,10 +40,10 @@ Estado general: **núcleo funcional con capacidades avanzadas parciales**. La im
 
 - Evaluador de árbol como único backend.
 - Inferencia de tipos limitada para funciones no anotadas.
-- Clausuras no implementadas.
-- Gestor de paquetes local, sin registro remoto.
+- Clausuras no implementadas. *(superado en 2026-10-30: closures con captura de entorno implementadas)*
+- Gestor de paquetes local, sin registro remoto. *(superado en 2026-10-31: R6 cerrada)*
 - Sin IR/VM/native/WASM.
-- FFI no implementado.
+- FFI no implementado. *(superado transitoriamente en 2026-10-31, luego **retirada deliberadamente** en ciclo R6; spec histórica en `ffi-abi.md`)*
 
 ## 5. Limitaciones
 
@@ -72,8 +76,8 @@ Estado general: **núcleo funcional con capacidades avanzadas parciales**. La im
 - Aislamiento: parcial (ejecución en entorno propio).
 
 ### E. Paquetes
-- Proyecto local, manifiesto, instalación básica: parcial.
-- Registro remoto/publicación: ausente.
+- Proyecto local, manifiesto, instalación básica: implementado.
+- Registro remoto R6: **IMPLEMENTADO Y CERRADO** (servidor Axum/SQLx, auth, namespaces, BPK, Ed25519). Ver `prototipo/README-registry.md`.
 
 ### F. Arquitectura
 - Solo tree-walk.

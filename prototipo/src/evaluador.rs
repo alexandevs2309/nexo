@@ -185,17 +185,6 @@ pub const NOMBRES_RESERVADOS: &[&str] = &[
     "a_real",
     "texto",
     "abrir",
-    "datetime_ahora",
-    "datetime_parsear",
-    "datetime_formatear",
-    "datetime_sumar_dias",
-    "datetime_diferencia",
-    "env_obtener",
-    "env_existe",
-    "env_establecer",
-    "json_parsear",
-    "json_serializar",
-    "json_obtener",
     "leer_linea",
     "leer_todo",
     "escribir",
@@ -222,12 +211,14 @@ pub const NOMBRES_RESERVADOS: &[&str] = &[
     "existe_archivo",
     "leer_archivo",
     "escribir_archivo",
-    "listar_directorio",
     "iniciar_tarea",
     "esperar_tarea",
     "cargar_ffi",
     "llamar_ffi",
     "descargar_ffi",
+    "json_parsear",
+    "json_serializar",
+    "json_obtener",
 ];
 
 impl CausaError {
@@ -3210,17 +3201,6 @@ fn es_builtin(nombre: &str) -> bool {
             | "a_real"
             | "texto"
             | "abrir"
-            | "datetime_ahora"
-            | "datetime_parsear"
-            | "datetime_formatear"
-            | "datetime_sumar_dias"
-            | "datetime_diferencia"
-            | "env_obtener"
-            | "env_existe"
-            | "env_establecer"
-            | "json_parsear"
-            | "json_serializar"
-            | "json_obtener"
             | "leer_linea"
             | "leer_todo"
             | "escribir"
@@ -3247,12 +3227,14 @@ fn es_builtin(nombre: &str) -> bool {
             | "existe_archivo"
             | "leer_archivo"
             | "escribir_archivo"
-            | "listar_directorio"
             | "iniciar_tarea"
             | "esperar_tarea"
             | "cargar_ffi"
             | "llamar_ffi"
             | "descargar_ffi"
+            | "json_parsear"
+            | "json_serializar"
+            | "json_obtener"
     )
 }
 
@@ -3442,9 +3424,12 @@ fn evaluar_builtin(
             }
             match &args[0] {
                 Valor::Texto(t) => Ok(Valor::Entero(t.chars().count() as i64)),
+                Valor::Lista(v) => Ok(Valor::Entero(v.len() as i64)),
+                Valor::Arreglo(v) => Ok(Valor::Entero(v.len() as i64)),
+                Valor::Objeto(m) => Ok(Valor::Entero(m.len() as i64)),
                 otro => Err(err_builtin(
                     CausaError::AsignacionIncompatible {
-                        esperado: "texto".to_string(),
+                        esperado: "texto, lista, arreglo u objeto".to_string(),
                         obtenido: otro.nombre_tipo().to_string(),
                     },
                     linea,
@@ -4658,50 +4643,6 @@ fn evaluar_builtin(
                 )),
             }
         }
-        "listar_directorio" => {
-            if args.len() != 1 {
-                return Err(err_builtin(
-                    CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
-                        esperado: 1,
-                        obtenido: args.len(),
-                    },
-                    linea,
-                    columna,
-                ));
-            }
-            match &args[0] {
-                Valor::Texto(ruta) => {
-                    let mut entradas = Vec::new();
-                    match std::fs::read_dir(ruta) {
-                        Ok(iter) => {
-                            for e in iter.flatten() {
-                                entradas.push(Valor::Texto(
-                                    e.file_name().to_string_lossy().to_string(),
-                                ));
-                            }
-                            Ok(Valor::Arreglo(entradas))
-                        }
-                        Err(e) => Err(err_builtin(
-                            CausaError::ErrorDeArchivo {
-                                ruta: ruta.clone(),
-                                detalle: e.to_string(),
-                            },
-                            linea,
-                            columna,
-                        )),
-                    }
-                }
-                otro => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "texto".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-            }
-        }
         "map" => {
             if args.len() != 2 {
                 return Err(err_builtin(
@@ -5331,296 +5272,13 @@ fn evaluar_builtin(
             };
             Ok(resultado)
         }
-        "datetime_ahora" => {
-            if !args.is_empty() {
-                return Err(err_builtin(
-                    CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
-                        esperado: 0,
-                        obtenido: args.len(),
-                    },
-                    linea,
-                    columna,
-                ));
-            }
-            Ok(Valor::FechaHora(
-                chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(0).unwrap()),
-            ))
-        }
-        "datetime_parsear" => {
-            if args.len() != 1 {
-                return Err(err_builtin(
-                    CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
-                        esperado: 1,
-                        obtenido: args.len(),
-                    },
-                    linea,
-                    columna,
-                ));
-            }
-            match &args[0] {
-                Valor::Texto(t) => match chrono::DateTime::parse_from_rfc3339(t) {
-                    Ok(dt) => Ok(Valor::FechaHora(dt)),
-                    Err(_) => Err(err_builtin(
-                        CausaError::EntradaInvalida {
-                            esperado: "fecha ISO 8601/RFC3339".to_string(),
-                            obtenido: t.clone(),
-                        },
-                        linea,
-                        columna,
-                    )),
-                },
-                otro => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "texto".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-            }
-        }
-        "datetime_formatear" => {
-            if args.len() != 2 {
-                return Err(err_builtin(
-                    CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
-                        esperado: 2,
-                        obtenido: args.len(),
-                    },
-                    linea,
-                    columna,
-                ));
-            }
-            match (&args[0], &args[1]) {
-                (Valor::FechaHora(d), Valor::Texto(fmt)) => {
-                    Ok(Valor::Texto(d.format(fmt).to_string()))
-                }
-                (Valor::FechaHora(_), otro) => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "texto".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-                (otro, _) => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "fechahora".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-            }
-        }
-        "datetime_sumar_dias" => {
-            if args.len() != 2 {
-                return Err(err_builtin(
-                    CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
-                        esperado: 2,
-                        obtenido: args.len(),
-                    },
-                    linea,
-                    columna,
-                ));
-            }
-            match (&args[0], &args[1]) {
-                (Valor::FechaHora(d), Valor::Entero(n)) => {
-                    match d.checked_add_signed(chrono::Duration::days(*n)) {
-                        Some(nd) => Ok(Valor::FechaHora(nd)),
-                        None => Err(err_builtin(
-                            CausaError::EntradaInvalida {
-                                esperado: "fecha válida".to_string(),
-                                obtenido: "desbordamiento".to_string(),
-                            },
-                            linea,
-                            columna,
-                        )),
-                    }
-                }
-                (Valor::FechaHora(_), otro) => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "entero".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-                (otro, _) => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "fechahora".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-            }
-        }
-        "datetime_diferencia" => {
-            if args.len() != 2 {
-                return Err(err_builtin(
-                    CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
-                        esperado: 2,
-                        obtenido: args.len(),
-                    },
-                    linea,
-                    columna,
-                ));
-            }
-            match (&args[0], &args[1]) {
-                (Valor::FechaHora(a), Valor::FechaHora(b)) => {
-                    let diff = a.signed_duration_since(*b);
-                    Ok(Valor::Entero(diff.num_seconds()))
-                }
-                (Valor::FechaHora(_), otro) => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "fechahora".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-                (otro, _) => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "fechahora".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-            }
-        }
-        "env_obtener" => {
-            if args.len() != 1 {
-                return Err(err_builtin(
-                    CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
-                        esperado: 1,
-                        obtenido: args.len(),
-                    },
-                    linea,
-                    columna,
-                ));
-            }
-            match &args[0] {
-                Valor::Texto(n) => {
-                    if n.is_empty() {
-                        return Err(err_builtin(
-                            CausaError::EntradaInvalida {
-                                esperado: "nombre no vacío".to_string(),
-                                obtenido: "cadena vacía".to_string(),
-                            },
-                            linea,
-                            columna,
-                        ));
-                    }
-                    match std::env::var(n) {
-                        Ok(v) => Ok(Valor::Texto(v)),
-                        Err(_) => Ok(Valor::Nulo),
-                    }
-                }
-                otro => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "texto".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-            }
-        }
-        "env_existe" => {
-            if args.len() != 1 {
-                return Err(err_builtin(
-                    CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
-                        esperado: 1,
-                        obtenido: args.len(),
-                    },
-                    linea,
-                    columna,
-                ));
-            }
-            match &args[0] {
-                Valor::Texto(n) => {
-                    if n.is_empty() {
-                        return Err(err_builtin(
-                            CausaError::EntradaInvalida {
-                                esperado: "nombre no vacío".to_string(),
-                                obtenido: "cadena vacía".to_string(),
-                            },
-                            linea,
-                            columna,
-                        ));
-                    }
-                    Ok(Valor::Logico(std::env::var_os(n).is_some()))
-                }
-                otro => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "texto".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-            }
-        }
-        "env_establecer" => {
-            if args.len() != 2 {
-                return Err(err_builtin(
-                    CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
-                        esperado: 2,
-                        obtenido: args.len(),
-                    },
-                    linea,
-                    columna,
-                ));
-            }
-            match (&args[0], &args[1]) {
-                (Valor::Texto(n), Valor::Texto(v)) => {
-                    if n.is_empty() {
-                        return Err(err_builtin(
-                            CausaError::EntradaInvalida {
-                                esperado: "nombre no vacío".to_string(),
-                                obtenido: "cadena vacía".to_string(),
-                            },
-                            linea,
-                            columna,
-                        ));
-                    }
-                    unsafe {
-                        std::env::set_var(n, v);
-                    }
-                    Ok(Valor::Nulo)
-                }
-                (Valor::Texto(_), otro) => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "texto".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-                (otro, _) => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "texto".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-            }
-        }
+
+        // ---------------------------------------------------------------- JSON
         "json_parsear" => {
             if args.len() != 1 {
                 return Err(err_builtin(
                     CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
+                        funcion: "json_parsear".to_string(),
                         esperado: 1,
                         obtenido: args.len(),
                     },
@@ -5628,33 +5286,37 @@ fn evaluar_builtin(
                     columna,
                 ));
             }
-            match &args[0] {
-                Valor::Texto(t) => match serde_json::from_str::<serde_json::Value>(t) {
-                    Ok(v) => Ok(json_a_valor(&v)),
-                    Err(_) => Err(err_builtin(
-                        CausaError::EntradaInvalida {
-                            esperado: "JSON válido".to_string(),
-                            obtenido: "JSON inválido".to_string(),
+            let texto = match &args[0] {
+                Valor::Texto(s) => s.clone(),
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
                         },
                         linea,
                         columna,
-                    )),
-                },
-                otro => Err(err_builtin(
+                    ));
+                }
+            };
+            let jv: serde_json::Value = serde_json::from_str(&texto).map_err(|e| {
+                err_builtin(
                     CausaError::AsignacionIncompatible {
-                        esperado: "texto".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
+                        esperado: "JSON válido".to_string(),
+                        obtenido: format!("JSON inválido: {e}"),
                     },
                     linea,
                     columna,
-                )),
-            }
+                )
+            })?;
+            Ok(json_a_valor(jv))
         }
+
         "json_serializar" => {
             if args.len() != 1 {
                 return Err(err_builtin(
                     CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
+                        funcion: "json_serializar".to_string(),
                         esperado: 1,
                         obtenido: args.len(),
                     },
@@ -5662,24 +5324,34 @@ fn evaluar_builtin(
                     columna,
                 ));
             }
-            let v = valor_a_json(&args[0]);
-            match serde_json::to_string(&v) {
-                Ok(s) => Ok(Valor::Texto(s)),
-                Err(_) => Err(err_builtin(
-                    CausaError::EntradaInvalida {
-                        esperado: "valor serializable".to_string(),
-                        obtenido: "error de serialización".to_string(),
+            let jv = valor_a_json(&args[0]).map_err(|msg| {
+                err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "valor serializable en JSON".to_string(),
+                        obtenido: msg,
                     },
                     linea,
                     columna,
-                )),
-            }
+                )
+            })?;
+            let s = serde_json::to_string(&jv).map_err(|e| {
+                err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "JSON serializable".to_string(),
+                        obtenido: e.to_string(),
+                    },
+                    linea,
+                    columna,
+                )
+            })?;
+            Ok(Valor::Texto(s))
         }
+
         "json_obtener" => {
             if args.len() != 2 {
                 return Err(err_builtin(
                     CausaError::FirmaInvalida {
-                        funcion: nombre.to_string(),
+                        funcion: "json_obtener".to_string(),
                         esperado: 2,
                         obtenido: args.len(),
                     },
@@ -5687,37 +5359,109 @@ fn evaluar_builtin(
                     columna,
                 ));
             }
-            match (&args[0], &args[1]) {
-                (Valor::Objeto(m), Valor::Texto(k)) => match m.get(k) {
-                    Some(v) => Ok(v.clone()),
-                    None => Err(err_builtin(
-                        CausaError::VariableNoDefinida(format!("propiedad '{k}' no encontrada")),
+            let mapa = match &args[0] {
+                Valor::Objeto(m) => m.clone(),
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "objeto".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
                         linea,
                         columna,
-                    )),
-                },
-                (Valor::Objeto(_), otro) => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "texto".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-                (otro, _) => Err(err_builtin(
-                    CausaError::AsignacionIncompatible {
-                        esperado: "objeto".to_string(),
-                        obtenido: otro.nombre_tipo().to_string(),
-                    },
-                    linea,
-                    columna,
-                )),
-            }
+                    ));
+                }
+            };
+            let clave = match &args[1] {
+                Valor::Texto(s) => s.clone(),
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            Ok(mapa.get(&clave).cloned().unwrap_or(Valor::Nulo))
         }
+
         _ => Err(err_builtin(
             CausaError::VariableNoDefinida(nombre.to_string()),
             linea,
             columna,
+        )),
+    }
+}
+
+// ------------------------------------------------------------------ JSON helpers
+
+/// Convierte un `serde_json::Value` en un `Valor` de BASILISCO.
+fn json_a_valor(v: serde_json::Value) -> Valor {
+    match v {
+        serde_json::Value::Null => Valor::Nulo,
+        serde_json::Value::Bool(b) => Valor::Logico(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Valor::Entero(i)
+            } else if let Some(f) = n.as_f64() {
+                Valor::Real(f)
+            } else {
+                // número fuera de rango de f64 (extremadamente raro)
+                Valor::Real(f64::INFINITY)
+            }
+        }
+        serde_json::Value::String(s) => Valor::Texto(s),
+        serde_json::Value::Array(arr) => Valor::Lista(arr.into_iter().map(json_a_valor).collect()),
+        serde_json::Value::Object(obj) => {
+            let mapa = obj.into_iter().map(|(k, v)| (k, json_a_valor(v))).collect();
+            Valor::Objeto(mapa)
+        }
+    }
+}
+
+/// Convierte un `Valor` de BASILISCO en un `serde_json::Value`.
+/// Retorna `Err(String)` con el nombre del tipo si no es serializable.
+fn valor_a_json(v: &Valor) -> Result<serde_json::Value, String> {
+    match v {
+        Valor::Nulo => Ok(serde_json::Value::Null),
+        Valor::Logico(b) => Ok(serde_json::Value::Bool(*b)),
+        Valor::Entero(n) => Ok(serde_json::Value::Number((*n).into())),
+        Valor::Real(f) => {
+            if f.is_nan() {
+                return Err("real NaN no es representable en JSON".to_string());
+            }
+            if f.is_infinite() {
+                return Err("real infinito no es representable en JSON".to_string());
+            }
+            serde_json::Number::from_f64(*f)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| format!("real {f} no es representable como número JSON"))
+        }
+        Valor::Decimal(m) => {
+            // Convertir decimal a f64 para JSON
+            let f = *m as f64 / crate::valor::FACTOR_ESCALA as f64;
+            serde_json::Number::from_f64(f)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| "decimal no representable como número JSON".to_string())
+        }
+        Valor::Texto(s) => Ok(serde_json::Value::String(s.clone())),
+        Valor::Lista(elems) | Valor::Arreglo(elems) => {
+            let arr: Result<Vec<_>, _> = elems.iter().map(valor_a_json).collect();
+            Ok(serde_json::Value::Array(arr?))
+        }
+        Valor::Objeto(mapa) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in mapa {
+                obj.insert(k.clone(), valor_a_json(v)?);
+            }
+            Ok(serde_json::Value::Object(obj))
+        }
+        otro => Err(format!(
+            "el tipo '{}' no es serializable en JSON",
+            otro.nombre_tipo()
         )),
     }
 }
@@ -5753,54 +5497,6 @@ where
             linea,
             columna,
         )),
-    }
-}
-
-fn json_a_valor(v: &serde_json::Value) -> Valor {
-    match v {
-        serde_json::Value::Null => Valor::Nulo,
-        serde_json::Value::Bool(b) => Valor::Logico(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Valor::Entero(i)
-            } else if let Some(f) = n.as_f64() {
-                Valor::Real(f)
-            } else {
-                Valor::Real(0.0)
-            }
-        }
-        serde_json::Value::String(s) => Valor::Texto(s.clone()),
-        serde_json::Value::Array(arr) => Valor::Lista(arr.iter().map(json_a_valor).collect()),
-        serde_json::Value::Object(obj) => {
-            let mut m = std::collections::BTreeMap::new();
-            for (k, val) in obj {
-                m.insert(k.clone(), json_a_valor(val));
-            }
-            Valor::Objeto(m)
-        }
-    }
-}
-
-fn valor_a_json(v: &Valor) -> serde_json::Value {
-    match v {
-        Valor::Nulo => serde_json::Value::Null,
-        Valor::Logico(b) => serde_json::Value::Bool(*b),
-        Valor::Entero(i) => serde_json::json!(*i),
-        Valor::Decimal(m) => serde_json::json!(*m as f64 / 1_000_000_000.0),
-        Valor::Real(f) => serde_json::json!(*f),
-        Valor::Texto(s) => serde_json::Value::String(s.clone()),
-        Valor::FechaHora(d) => serde_json::Value::String(d.to_rfc3339()),
-        Valor::Lista(arr) | Valor::Arreglo(arr) => {
-            serde_json::Value::Array(arr.iter().map(valor_a_json).collect())
-        }
-        Valor::Objeto(m) => {
-            let mut obj = serde_json::Map::new();
-            for (k, val) in m {
-                obj.insert(k.clone(), valor_a_json(val));
-            }
-            serde_json::Value::Object(obj)
-        }
-        _ => serde_json::Value::Null,
     }
 }
 

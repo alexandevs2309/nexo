@@ -175,6 +175,7 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
             valor,
             mutable,
             es_const,
+            publico,
             ..
         } => {
             let kw = if *es_const {
@@ -189,6 +190,9 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
                 "dato"
             };
             out.push_str(&ind);
+            if *publico {
+                out.push_str("publico ");
+            }
             out.push_str(kw);
             out.push(' ');
             out.push_str(nombre);
@@ -279,9 +283,13 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
             parametros,
             tipo_retorno,
             cuerpo,
+            publico,
             ..
         } => {
             out.push_str(&ind);
+            if *publico {
+                out.push_str("publico ");
+            }
             out.push_str("funcion ");
             out.push_str(nombre);
             out.push('(');
