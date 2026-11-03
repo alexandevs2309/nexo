@@ -129,7 +129,7 @@ pub enum HirSentencia {
     Continuar,
     IntentarRescatar {
         cuerpo_intentar: Vec<HirSentencia>,
-        variable_error: Option<String>,
+        variable_error: Option<SimbodoId>,
         cuerpo_rescatar: Vec<HirSentencia>,
     },
     Importar {
@@ -175,7 +175,7 @@ pub enum HirItem {
     Expresion(HirExpresion),
     IntentarRescatar {
         cuerpo_intentar: Vec<HirSentencia>,
-        variable_error: Option<String>,
+        variable_error: Option<SimbodoId>,
         cuerpo_rescatar: Vec<HirSentencia>,
     },
     Importar {
@@ -722,22 +722,19 @@ fn lower_sentencia(
                 .filter_map(|st| lower_sentencia(st, ctx, res).ok())
                 .collect();
             res.salir();
-            let (var_nombre, cr): (Option<String>, Vec<HirSentencia>) = {
+            let (var_id, cr): (Option<SimbodoId>, Vec<HirSentencia>) = {
                 res.entrar();
-                let var_nombre = variable_error.as_ref().map(|v| {
-                    res.insertar(v, None);
-                    v.clone()
-                });
+                let var_id = variable_error.as_ref().map(|v| res.insertar(v, None));
                 let cr = cuerpo_rescatar
                     .iter()
                     .filter_map(|st| lower_sentencia(st, ctx, res).ok())
                     .collect();
                 res.salir();
-                (var_nombre, cr)
+                (var_id, cr)
             };
             Ok(HirSentencia::IntentarRescatar {
                 cuerpo_intentar: ci,
-                variable_error: var_nombre,
+                variable_error: var_id,
                 cuerpo_rescatar: cr,
             })
         }
@@ -1280,10 +1277,7 @@ pub fn lower_programa(
                     .iter()
                     .filter_map(|st| lower_sentencia(st, ctx, &mut res).ok())
                     .collect();
-                let var_nombre = variable_error.as_ref().map(|v| {
-                    res.insertar(v, None);
-                    v.clone()
-                });
+                let var_id = variable_error.as_ref().map(|v| res.insertar(v, None));
                 let cr: Vec<HirSentencia> = cuerpo_rescatar
                     .iter()
                     .filter_map(|st| lower_sentencia(st, ctx, &mut res).ok())
@@ -1291,7 +1285,7 @@ pub fn lower_programa(
                 res.salir();
                 items.push(HirItem::IntentarRescatar {
                     cuerpo_intentar: ci,
-                    variable_error: var_nombre,
+                    variable_error: var_id,
                     cuerpo_rescatar: cr,
                 });
             }

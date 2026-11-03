@@ -141,6 +141,14 @@ pub enum MirStmt {
         callee: MirOperand,
         argumentos: Vec<MirOperand>,
     },
+    /// Entrar en región try: rescue/merge blocks y variable de error (local).
+    EntrarTry {
+        rescue: BlockId,
+        merge: BlockId,
+        var_local: Option<usize>,
+    },
+    /// Salir de región try.
+    SalirTry,
     /// Punto de no-retorno / marcador (nop).
     Nop,
 }
@@ -1016,14 +1024,40 @@ fn lower_stmt(ctx: &mut LoweringCtx, s: &HirSentencia) -> Result<(), String> {
             Ok(())
         }
         HirSentencia::IntentarRescatar {
-            cuerpo_intentar, ..
+            cuerpo_intentar,
+            variable_error,
+            cuerpo_rescatar,
         } => {
-            // Semántica aproximada (sin modelo de excepciones en MIR): se
-            // ejecuta el bloque `intentar`. El bloque `rescatar` se omite en
-            // esta etapa (correrá solo cuando existan aristas de excepción).
+            let rescue_block = ctx.nuevo_bloque();
+            let merge_block = ctx.nuevo_bloque();
+            let var_local =
+                variable_error.map(|id| ctx.local_de_simbodo(id, TipoSem::Desconocido).0);
+            ctx.emitir_stmt(MirStmt::EntrarTry {
+                rescue: rescue_block,
+                merge: merge_block,
+                var_local,
+            });
             for st in cuerpo_intentar {
                 lower_stmt(ctx, st)?;
             }
+            ctx.emitir_stmt(MirStmt::SalirTry);
+            if matches!(
+                ctx.bloque_mut(ctx.bloque_actual).terminator,
+                MirTerminator::Unreachable
+            ) {
+                ctx.set_terminator(MirTerminator::Goto(merge_block));
+            }
+            ctx.cambiar_bloque(rescue_block);
+            for st in cuerpo_rescatar {
+                lower_stmt(ctx, st)?;
+            }
+            if matches!(
+                ctx.bloque_mut(ctx.bloque_actual).terminator,
+                MirTerminator::Unreachable
+            ) {
+                ctx.set_terminator(MirTerminator::Goto(merge_block));
+            }
+            ctx.cambiar_bloque(merge_block);
             Ok(())
         }
         _ => Ok(()),

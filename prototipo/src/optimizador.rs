@@ -81,6 +81,8 @@ fn plegar_constantes(f: &mut MirFunction) {
                         sustituir_operando(a, &conocidos);
                     }
                 }
+                MirStmt::EntrarTry { .. } => {}
+                MirStmt::SalirTry => {}
                 MirStmt::Nop => {}
             }
         }

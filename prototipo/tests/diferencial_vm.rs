@@ -175,3 +175,24 @@ fn diff_mostrar_stdlib() {
     };
     assert_eq!(tw, vmr);
 }
+
+#[test]
+fn diff_intentar_rescatar_error_division() {
+    assert_parity(
+        "funcion main() -> entero {\n  intentar {\n    sea r = 1 / 0\n    retornar 99\n  } rescatar e {\n    retornar 42\n  }\n}",
+    );
+}
+
+#[test]
+fn diff_intentar_rescatar_variable_error() {
+    assert_parity(
+        "funcion main() -> texto {\n  intentar {\n    sea r = 1 / 0\n    retornar \"ok\"\n  } rescatar e {\n    retornar \"atrapado\"\n  }\n}",
+    );
+}
+
+#[test]
+fn diff_intentar_rescatar_sin_captura() {
+    assert_parity(
+        "funcion main() -> entero {\n  intentar {\n    sea r = 1 / 0\n    retornar 99\n  } rescatar {\n    retornar 7\n  }\n}",
+    );
+}

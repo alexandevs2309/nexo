@@ -148,6 +148,10 @@ fn generar_stmt(out: &mut String, stmt: &MirStmt, indent: usize) {
         MirStmt::LlamadaIndirecta { .. } => {
             out.push_str(&format!("{}// llamada indirecta no soportada\n", pad));
         }
+        MirStmt::EntrarTry { .. } => {
+            out.push_str(&format!("{}// intentar no soportado\n", pad));
+        }
+        MirStmt::SalirTry => {}
         MirStmt::Nop => {}
     }
 }

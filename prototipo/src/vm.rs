@@ -101,6 +101,8 @@ pub struct MaquinaVirtual {
     nativos: HashMap<String, FuncionNativa>,
     /// Salida capturada de `mostrar`/`mostrar_sin_salto` (biblioteca estándar).
     salida: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Pila de regiones try activas.
+    try_stack: Vec<(BlockId, BlockId, Option<usize>)>,
     pasos: usize,
     limite_pasos: usize,
     profundidad: usize,
@@ -128,6 +130,7 @@ impl MaquinaVirtual {
             indice,
             nativos: HashMap::new(),
             salida: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            try_stack: Vec::new(),
             pasos: 0,
             limite_pasos,
             profundidad: 0,
@@ -251,15 +254,46 @@ impl MaquinaVirtual {
             let bloque = &f.bloques[bloque_actual.0];
 
             // Sentencias del bloque.
+            let mut saltar_a_rescue: Option<BlockId> = None;
             for stmt in &bloque.stmts {
                 self.paso()?;
-                self.ejecutar_stmt(&mut locals, stmt)?;
+                if let Err(e) = self.ejecutar_stmt(&mut locals, stmt) {
+                    if let Some((rescue, _merge, var_local)) = self.try_stack.last().cloned() {
+                        if let Some(vl) = var_local
+                            && vl < locals.len()
+                        {
+                            locals[vl] = Valor::Texto(e.to_string());
+                        }
+                        self.try_stack.pop();
+                        saltar_a_rescue = Some(rescue);
+                        break;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+            if let Some(rescue) = saltar_a_rescue {
+                bloque_actual = rescue;
+                continue;
             }
 
             // Terminador: salto al siguiente bloque o retorno.
-            match self.ejecutar_terminador(&mut locals, &bloque.terminator)? {
-                Transicion::Salto(nuevo) => bloque_actual = nuevo,
-                Transicion::Retornar(valor) => return Ok(valor),
+            match self.ejecutar_terminador(&mut locals, &bloque.terminator) {
+                Ok(Transicion::Salto(nuevo)) => bloque_actual = nuevo,
+                Ok(Transicion::Retornar(valor)) => return Ok(valor),
+                Err(e) => {
+                    if let Some((rescue, _merge, var_local)) = self.try_stack.last().cloned() {
+                        if let Some(vl) = var_local
+                            && vl < locals.len()
+                        {
+                            locals[vl] = Valor::Texto(e.to_string());
+                        }
+                        self.try_stack.pop();
+                        bloque_actual = rescue;
+                    } else {
+                        return Err(e);
+                    }
+                }
             }
         }
     }
@@ -308,6 +342,20 @@ impl MaquinaVirtual {
                 let r = self.llamar(&nombre, &args)?;
                 if let Some(dest) = destino {
                     self.escribir_place(locals, dest, r)?;
+                }
+                Ok(())
+            }
+            MirStmt::EntrarTry {
+                rescue,
+                merge,
+                var_local,
+            } => {
+                self.try_stack.push((*rescue, *merge, *var_local));
+                Ok(())
+            }
+            MirStmt::SalirTry => {
+                if !self.try_stack.is_empty() {
+                    self.try_stack.pop();
                 }
                 Ok(())
             }
