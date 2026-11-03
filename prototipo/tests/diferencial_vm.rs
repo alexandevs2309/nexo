@@ -201,7 +201,9 @@ fn diff_intentar_rescatar_sin_captura() {
 
 #[test]
 fn diff_fibonacci_recursivo() {
-    assert_parity("funcion fib(n: entero) -> entero { si n < 2 { retornar n } sino { retornar fib(n - 1) + fib(n - 2) } }\nfuncion main() -> entero { retornar fib(10) }");
+    assert_parity(
+        "funcion fib(n: entero) -> entero { si n < 2 { retornar n } sino { retornar fib(n - 1) + fib(n - 2) } }\nfuncion main() -> entero { retornar fib(10) }",
+    );
 }
 
 #[test]
@@ -216,7 +218,9 @@ fn diff_abs_min_max() {
 
 #[test]
 fn diff_mayusculas_minusculas() {
-    assert_parity("funcion main() -> texto { retornar mayusculas(\"bas\") + \" \" + minusculas(\"BASILISCO\") }");
+    assert_parity(
+        "funcion main() -> texto { retornar mayusculas(\"bas\") + \" \" + minusculas(\"BASILISCO\") }",
+    );
 }
 
 #[test]
@@ -226,7 +230,9 @@ fn diff_es_vacio() {
 
 #[test]
 fn diff_contiene_empieza_con() {
-    assert_parity("funcion main() -> logico { retornar contiene(\"hola mundo\", \"mundo\") y empieza_con(\"hola mundo\", \"hola\") }");
+    assert_parity(
+        "funcion main() -> logico { retornar contiene(\"hola mundo\", \"mundo\") y empieza_con(\"hola mundo\", \"hola\") }",
+    );
 }
 
 #[test]
@@ -237,4 +243,37 @@ fn diff_arbol_expresion() {
 #[test]
 fn diff_comparacion_textos() {
     assert_parity("funcion main() -> logico { retornar \"abeja\" < \"abejon\" }");
+}
+
+#[test]
+fn diff_json_parsear_serializar() {
+    assert_parity(
+        "funcion main() -> texto { retornar json_serializar(json_parsear(\"{\\\"a\\\": 1, \\\"b\\\": [1, 2, 3]}\")) }",
+    );
+}
+
+#[test]
+fn diff_json_obtener() {
+    assert_parity(
+        "funcion main() -> entero { sea obj = json_parsear(\"{\\\"x\\\": 40}\")\n retornar 2 + json_obtener(obj, \"x\") }",
+    );
+}
+
+#[test]
+fn diff_archivo_escribir_leer() {
+    let ruta = format!("./basilisco_diff_test_{}.txt", std::process::id());
+    let src = format!(
+        "funcion main() -> texto {{\n  escribir_archivo(\"{}\", \"hola vm\")\n  retornar leer_archivo(\"{}\")\n}}",
+        ruta, ruta
+    );
+    let tw = tree_walk(&src);
+    let vmr = vm_run(&src);
+    std::fs::remove_file(&ruta).ok();
+    assert_eq!(tw, vmr, "\nTREE-WALK: {}\nVM: {}", tw, vmr);
+}
+
+#[test]
+fn diff_existe_archivo() {
+    let src = "funcion main() -> logico { retornar existe_archivo(\".\") }";
+    assert_parity(src);
 }

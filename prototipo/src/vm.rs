@@ -188,7 +188,7 @@ impl MaquinaVirtual {
                         return Err(ErrorVm::TipoEsperado {
                             esperado: "texto, arreglo, lista u objeto",
                             encontrado: "otro",
-                        })
+                        });
                     }
                     None => 0,
                 };
@@ -269,7 +269,7 @@ impl MaquinaVirtual {
                 (Some(Valor::Texto(s)), Some(Valor::Texto(sub))) => {
                     Ok(Valor::Logico(s.contains(sub.as_str())))
                 }
-                (Some(Valor::Texto(s)), _) => Err(ErrorVm::TipoEsperado {
+                (Some(Valor::Texto(_)), _) => Err(ErrorVm::TipoEsperado {
                     esperado: "texto",
                     encontrado: "otro",
                 }),
@@ -277,6 +277,122 @@ impl MaquinaVirtual {
                     esperado: "texto",
                     encontrado: "otro",
                 }),
+            }),
+        );
+        self.registrar_nativo(
+            "leer_archivo",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let ruta = match args.first() {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto (ruta)",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                std::fs::read_to_string(&ruta)
+                    .map(Valor::Texto)
+                    .map_err(|_| ErrorVm::TipoEsperado {
+                        esperado: "archivo legible",
+                        encontrado: "error de lectura",
+                    })
+            }),
+        );
+        self.registrar_nativo(
+            "escribir_archivo",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let ruta = match args.first() {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto (ruta)",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let contenido = args.get(1).map(|v| v.to_string()).unwrap_or_default();
+                std::fs::write(&ruta, contenido).map_err(|_| ErrorVm::TipoEsperado {
+                    esperado: "ruta escribible",
+                    encontrado: "error de escritura",
+                })?;
+                Ok(Valor::Nulo)
+            }),
+        );
+        self.registrar_nativo(
+            "existe_archivo",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let ruta = match args.first() {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto (ruta)",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                Ok(Valor::Logico(std::path::Path::new(&ruta).exists()))
+            }),
+        );
+        self.registrar_nativo(
+            "json_parsear",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let texto = match args.first() {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let jv: serde_json::Value =
+                    serde_json::from_str(&texto).map_err(|_| ErrorVm::TipoEsperado {
+                        esperado: "JSON válido",
+                        encontrado: "JSON inválido",
+                    })?;
+                Ok(json_a_valor(jv))
+            }),
+        );
+        self.registrar_nativo(
+            "json_serializar",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let jv =
+                    valor_a_json(&args.first().cloned().unwrap_or(Valor::Nulo)).map_err(|_| {
+                        ErrorVm::TipoEsperado {
+                            esperado: "valor serializable en JSON",
+                            encontrado: "otro",
+                        }
+                    })?;
+                let s = serde_json::to_string(&jv).map_err(|_| ErrorVm::TipoEsperado {
+                    esperado: "JSON serializable",
+                    encontrado: "otro",
+                })?;
+                Ok(Valor::Texto(s))
+            }),
+        );
+        self.registrar_nativo(
+            "json_obtener",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let mapa = match args.first() {
+                    Some(Valor::Objeto(m)) => m.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "objeto",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let clave = match args.get(1) {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                Ok(mapa.get(&clave).cloned().unwrap_or(Valor::Nulo))
             }),
         );
         self.registrar_nativo(
@@ -900,5 +1016,67 @@ fn aplicar_unop(op: &MirUnOp, a: &Valor) -> Result<Valor, ErrorVm> {
                 derecho: "negación",
             }),
         },
+    }
+}
+
+/// Convierte un `serde_json::Value` en un `Valor` de BASILISCO.
+fn json_a_valor(v: serde_json::Value) -> Valor {
+    match v {
+        serde_json::Value::Null => Valor::Nulo,
+        serde_json::Value::Bool(b) => Valor::Logico(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Valor::Entero(i)
+            } else if let Some(f) = n.as_f64() {
+                Valor::Real(f)
+            } else {
+                Valor::Real(f64::INFINITY)
+            }
+        }
+        serde_json::Value::String(s) => Valor::Texto(s),
+        serde_json::Value::Array(arr) => Valor::Lista(arr.into_iter().map(json_a_valor).collect()),
+        serde_json::Value::Object(obj) => {
+            let mapa = obj.into_iter().map(|(k, v)| (k, json_a_valor(v))).collect();
+            Valor::Objeto(mapa)
+        }
+    }
+}
+
+/// Convierte un `Valor` en `serde_json::Value`.
+fn valor_a_json(v: &Valor) -> Result<serde_json::Value, String> {
+    match v {
+        Valor::Nulo => Ok(serde_json::Value::Null),
+        Valor::Logico(b) => Ok(serde_json::Value::Bool(*b)),
+        Valor::Entero(n) => Ok(serde_json::Value::Number((*n).into())),
+        Valor::Real(f) => {
+            if f.is_nan() || f.is_infinite() {
+                return Err("real no representable en JSON".to_string());
+            }
+            serde_json::Number::from_f64(*f)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| "real no representable como número JSON".to_string())
+        }
+        Valor::Decimal(m) => {
+            let f = *m as f64 / 1_000_000_000.0;
+            serde_json::Number::from_f64(f)
+                .map(serde_json::Value::Number)
+                .ok_or_else(|| "decimal no representable como número JSON".to_string())
+        }
+        Valor::Texto(s) => Ok(serde_json::Value::String(s.clone())),
+        Valor::Lista(elems) | Valor::Arreglo(elems) => {
+            let arr: Result<Vec<_>, _> = elems.iter().map(valor_a_json).collect();
+            Ok(serde_json::Value::Array(arr?))
+        }
+        Valor::Objeto(mapa) => {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in mapa {
+                obj.insert(k.clone(), valor_a_json(v)?);
+            }
+            Ok(serde_json::Value::Object(obj))
+        }
+        otro => Err(format!(
+            "el tipo '{}' no es serializable en JSON",
+            otro.nombre_tipo()
+        )),
     }
 }
