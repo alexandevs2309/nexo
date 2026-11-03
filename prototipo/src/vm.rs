@@ -51,6 +51,11 @@ pub enum ErrorVm {
     IndiceFueraDeRango { indice: i64, tamano: usize },
     /// El campo no existe en el objeto.
     CampoInexistente { campo: String },
+    /// Conversión de texto a número inválida.
+    ConversionInvalido {
+        valor: String,
+        esperado: &'static str,
+    },
 }
 
 impl std::fmt::Display for ErrorVm {
@@ -77,6 +82,9 @@ impl std::fmt::Display for ErrorVm {
                 write!(f, "índice {indice} fuera de rango (tamaño {tamano})")
             }
             ErrorVm::CampoInexistente { campo } => write!(f, "campo inexistente: {campo}"),
+            ErrorVm::ConversionInvalido { valor, esperado } => {
+                write!(f, "el texto «{valor}» no es un «{esperado}» válido")
+            }
         }
     }
 }
@@ -396,6 +404,239 @@ impl MaquinaVirtual {
             }),
         );
         self.registrar_nativo(
+            "termina_con",
+            std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
+                (Some(Valor::Texto(s)), Some(Valor::Texto(suf))) => {
+                    Ok(Valor::Logico(s.ends_with(suf.as_str())))
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "recortar",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Texto(s)) => Ok(Valor::Texto(s.trim().to_string())),
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "reemplazar",
+            std::sync::Arc::new(
+                |args: &[Valor]| match (args.first(), args.get(1), args.get(2)) {
+                    (Some(Valor::Texto(s)), Some(Valor::Texto(from)), Some(Valor::Texto(to))) => {
+                        Ok(Valor::Texto(s.replace(from, to)))
+                    }
+                    _ => Err(ErrorVm::TipoEsperado {
+                        esperado: "texto",
+                        encontrado: "otro",
+                    }),
+                },
+            ),
+        );
+        self.registrar_nativo(
+            "subcadena",
+            std::sync::Arc::new(
+                |args: &[Valor]| match (args.first(), args.get(1), args.get(2)) {
+                    (
+                        Some(Valor::Texto(s)),
+                        Some(Valor::Entero(inicio)),
+                        Some(Valor::Entero(fin)),
+                    ) => {
+                        let chars: Vec<char> = s.chars().collect();
+                        let (i, f) = (*inicio, *fin);
+                        if i < 0 || f < 0 || i > f || f as usize > chars.len() {
+                            return Err(ErrorVm::TipoEsperado {
+                                esperado: "rango válido de subcadena",
+                                encontrado: "rango inválido",
+                            });
+                        }
+                        Ok(Valor::Texto(
+                            chars[i as usize..f as usize].iter().collect::<String>(),
+                        ))
+                    }
+                    _ => Err(ErrorVm::TipoEsperado {
+                        esperado: "texto, entero, entero",
+                        encontrado: "otro",
+                    }),
+                },
+            ),
+        );
+        self.registrar_nativo(
+            "repetir",
+            std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
+                (Some(Valor::Texto(s)), Some(Valor::Entero(n))) => {
+                    if *n < 0 {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "entero no negativo",
+                            encontrado: "entero negativo",
+                        });
+                    }
+                    Ok(Valor::Texto(s.repeat(*n as usize)))
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto, entero",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "dividir",
+            std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
+                (Some(Valor::Texto(s)), Some(Valor::Texto(sep))) => {
+                    if sep.is_empty() {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "separador no vacío",
+                            encontrado: "texto vacío",
+                        });
+                    }
+                    let partes: Vec<Valor> =
+                        s.split(sep).map(|p| Valor::Texto(p.to_string())).collect();
+                    Ok(Valor::Lista(partes))
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto, texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "unir",
+            std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
+                (Some(Valor::Lista(items)), Some(Valor::Texto(sep))) => {
+                    let mut partes = Vec::with_capacity(items.len());
+                    for item in items {
+                        match item {
+                            Valor::Texto(s) => partes.push(s.clone()),
+                            otro => {
+                                return Err(ErrorVm::TipoEsperado {
+                                    esperado: "texto",
+                                    encontrado: otro.nombre_tipo(),
+                                });
+                            }
+                        }
+                    }
+                    Ok(Valor::Texto(partes.join(sep)))
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "lista<texto>, texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "potencia",
+            std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
+                (Some(Valor::Entero(base)), Some(Valor::Entero(exp))) if *exp >= 0 => {
+                    match base.checked_pow(*exp as u32) {
+                        Some(r) => Ok(Valor::Entero(r)),
+                        None => Err(ErrorVm::Aritmetico(
+                            crate::valor::MotivoAritmetico::DesbordamientoEntero,
+                        )),
+                    }
+                }
+                (Some(b), Some(e)) => {
+                    let base = match b {
+                        Valor::Entero(x) => *x as f64,
+                        Valor::Decimal(x) => *x as f64 / crate::valor::FACTOR_ESCALA as f64,
+                        Valor::Real(x) => *x,
+                        _ => {
+                            return Err(ErrorVm::TipoEsperado {
+                                esperado: "número",
+                                encontrado: "otro",
+                            });
+                        }
+                    };
+                    let exp = match e {
+                        Valor::Entero(x) => *x as f64,
+                        Valor::Decimal(x) => *x as f64 / crate::valor::FACTOR_ESCALA as f64,
+                        Valor::Real(x) => *x,
+                        _ => {
+                            return Err(ErrorVm::TipoEsperado {
+                                esperado: "número",
+                                encontrado: "otro",
+                            });
+                        }
+                    };
+                    Ok(Valor::Real(base.powf(exp)))
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "número, número",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "raiz",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let valor = match args.first() {
+                    Some(Valor::Entero(x)) => *x as f64,
+                    Some(Valor::Decimal(x)) => *x as f64 / crate::valor::FACTOR_ESCALA as f64,
+                    Some(Valor::Real(x)) => *x,
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "número",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                Ok(Valor::Real(valor.sqrt()))
+            }),
+        );
+        self.registrar_nativo(
+            "invertir",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Arreglo(v)) => {
+                    let mut n = v.clone();
+                    n.reverse();
+                    Ok(Valor::Arreglo(n))
+                }
+                Some(Valor::Lista(v)) => {
+                    let mut n = v.clone();
+                    n.reverse();
+                    Ok(Valor::Lista(n))
+                }
+                Some(Valor::Texto(t)) => {
+                    let mut c: Vec<char> = t.chars().collect();
+                    c.reverse();
+                    Ok(Valor::Texto(c.into_iter().collect()))
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "arreglo, lista o texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "ordenar",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Arreglo(v)) => {
+                    let mut n = v.clone();
+                    n.sort_by(ordenar_valor);
+                    Ok(Valor::Arreglo(n))
+                }
+                Some(Valor::Lista(v)) => {
+                    let mut n = v.clone();
+                    n.sort_by(ordenar_valor);
+                    Ok(Valor::Lista(n))
+                }
+                Some(Valor::Texto(t)) => {
+                    let mut c: Vec<char> = t.chars().collect();
+                    c.sort();
+                    Ok(Valor::Texto(c.into_iter().collect()))
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "arreglo, lista o texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
             "empieza_con",
             std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
                 (Some(Valor::Texto(s)), Some(Valor::Texto(prefijo))) => {
@@ -403,6 +644,104 @@ impl MaquinaVirtual {
                 }
                 _ => Err(ErrorVm::TipoEsperado {
                     esperado: "texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "a_entero",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Texto(t)) => match t.trim().parse::<i64>() {
+                    Ok(v) => Ok(Valor::Entero(v)),
+                    Err(_) => Err(ErrorVm::ConversionInvalido {
+                        valor: t.clone(),
+                        esperado: "entero",
+                    }),
+                },
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "a_decimal",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Texto(t)) => match Valor::decimal_desde_lexema(t.trim()) {
+                    Ok(v) => Ok(v),
+                    Err(_) => Err(ErrorVm::ConversionInvalido {
+                        valor: t.clone(),
+                        esperado: "decimal",
+                    }),
+                },
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "a_real",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Texto(t)) => match t.trim().parse::<f64>() {
+                    Ok(v) => Ok(Valor::Real(v)),
+                    Err(_) => Err(ErrorVm::ConversionInvalido {
+                        valor: t.clone(),
+                        esperado: "real",
+                    }),
+                },
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "agregar",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Arreglo(v)) => {
+                    let mut n = v.clone();
+                    n.push(args.get(1).cloned().unwrap_or(Valor::Nulo));
+                    Ok(Valor::Arreglo(n))
+                }
+                Some(Valor::Lista(v)) => {
+                    let mut n = v.clone();
+                    n.push(args.get(1).cloned().unwrap_or(Valor::Nulo));
+                    Ok(Valor::Lista(n))
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "arreglo o lista",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "eliminar",
+            std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
+                (Some(Valor::Arreglo(v)), Some(Valor::Entero(i))) => match (*i).try_into() {
+                    Ok(idx) if idx < v.len() => {
+                        let mut n = v.clone();
+                        n.remove(idx);
+                        Ok(Valor::Arreglo(n))
+                    }
+                    _ => Err(ErrorVm::IndiceFueraDeRango {
+                        indice: *i,
+                        tamano: v.len(),
+                    }),
+                },
+                (Some(Valor::Lista(v)), Some(Valor::Entero(i))) => match (*i).try_into() {
+                    Ok(idx) if idx < v.len() => {
+                        let mut n = v.clone();
+                        n.remove(idx);
+                        Ok(Valor::Lista(n))
+                    }
+                    _ => Err(ErrorVm::IndiceFueraDeRango {
+                        indice: *i,
+                        tamano: v.len(),
+                    }),
+                },
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "arreglo o lista con índice entero no negativo",
                     encontrado: "otro",
                 }),
             }),
@@ -976,6 +1315,15 @@ fn comparar(
         (Valor::Entero(x), Valor::Decimal(y)) => (*x as i128 * FACTOR_ESCALA).cmp(y),
         (Valor::Decimal(x), Valor::Entero(y)) => x.cmp(&(*y as i128 * FACTOR_ESCALA)),
         (Valor::Decimal(x), Valor::Decimal(y)) => x.cmp(y),
+        (Valor::Entero(x), Valor::Real(y)) => match (*x as f64).partial_cmp(y) {
+            Some(o) => o,
+            // NaN: ninguna relación de orden es cierta (semántica de `evaluador`).
+            None => return Ok(Valor::Logico(false)),
+        },
+        (Valor::Real(x), Valor::Entero(y)) => match x.partial_cmp(&(*y as f64)) {
+            Some(o) => o,
+            None => return Ok(Valor::Logico(false)),
+        },
         (Valor::Real(x), Valor::Real(y)) => match x.partial_cmp(y) {
             Some(o) => o,
             // NaN: ninguna relación de orden es cierta (semántica de `evaluador`).
@@ -1078,5 +1426,33 @@ fn valor_a_json(v: &Valor) -> Result<serde_json::Value, String> {
             "el tipo '{}' no es serializable en JSON",
             otro.nombre_tipo()
         )),
+    }
+}
+
+/// Comparador homogéneo para `ordenar` (tex (texto), o numéricos en orden de conversión implícita).
+fn ordenar_valor(a: &Valor, b: &Valor) -> std::cmp::Ordering {
+    fn rango(v: &Valor) -> u8 {
+        match v {
+            Valor::Entero(_) => 0,
+            Valor::Decimal(_) => 1,
+            Valor::Real(_) => 2,
+            Valor::Logico(_) => 3,
+            Valor::Texto(_) => 4,
+            _ => 5,
+        }
+    }
+    use std::cmp::Ordering::*;
+    let ra = rango(a);
+    let rb = rango(b);
+    if ra != rb {
+        return ra.cmp(&rb);
+    }
+    match (a, b) {
+        (Valor::Entero(x), Valor::Entero(y)) => x.cmp(y),
+        (Valor::Decimal(x), Valor::Decimal(y)) => x.cmp(y),
+        (Valor::Real(x), Valor::Real(y)) => x.partial_cmp(y).unwrap_or(Equal),
+        (Valor::Logico(x), Valor::Logico(y)) => x.cmp(y),
+        (Valor::Texto(x), Valor::Texto(y)) => x.cmp(y),
+        _ => Equal,
     }
 }

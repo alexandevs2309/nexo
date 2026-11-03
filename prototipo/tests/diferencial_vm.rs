@@ -277,3 +277,41 @@ fn diff_existe_archivo() {
     let src = "funcion main() -> logico { retornar existe_archivo(\".\") }";
     assert_parity(src);
 }
+
+#[test]
+fn diff_a_entero() {
+    assert_parity("funcion main() -> entero { retornar a_entero(\"  42 \") * 2 - 1 }");
+}
+
+#[test]
+fn diff_a_decimal() {
+    assert_parity(
+        "funcion main() -> logico { sea d = a_decimal(\"2.5\")\n  retornar d > 2 y d < 3 }",
+    );
+}
+
+#[test]
+fn diff_a_real() {
+    assert_parity(
+        "funcion main() -> logico { sea r = a_real(\"3.14\")\n  retornar r > 3 y r < 4 }",
+    );
+}
+
+#[test]
+fn diff_agregar_eliminar() {
+    assert_parity(
+        "funcion main() -> entero {\n  sea a = [1, 2]\n  sea b = agregar(a, 3)\n  sea c = eliminar(b, 0)\n  retornar longitud(b) * 10 + longitud(c)\n}",
+    );
+}
+
+#[test]
+fn diff_agregar_nueva_coleccion() {
+    assert_parity("funcion main() -> entero { retornar longitud(agregar(agregar([], 1), 2)) }");
+}
+
+#[test]
+fn diff_eliminar_indice_invalido_rescatado() {
+    assert_parity(
+        "funcion main() -> entero {\n  intentar {\n    eliminar([1, 2], 5)\n    retornar 0\n  } rescatar e {\n    retornar 99\n  }\n}",
+    );
+}
