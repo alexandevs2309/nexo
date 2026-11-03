@@ -142,3 +142,10 @@ fn diff_closure_mutable() {
     let src = "funcion crear_contador() {\n  sea x = 0\n  funcion inc() {\n    x = x + 1\n    retornar x\n  }\n  retornar inc\n}\nfuncion main() -> entero {\n  sea c = crear_contador()\n  c()\n  retornar c()\n}";
     assert_parity(src);
 }
+
+#[test]
+fn diff_romper_continuar() {
+    assert_parity(
+        "funcion main() -> entero {\n  sea s = 0\n  sea i = 0\n  mientras i < 10 {\n    i = i + 1\n    si i == 3 { continuar }\n    si i == 5 { romper }\n    s = s + i\n  }\n  retornar s\n}",
+    );
+}

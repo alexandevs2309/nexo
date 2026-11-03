@@ -51,7 +51,7 @@
 - **`Lambda`**: baja a `MirConst::Nulo` (placeholder). **Las clausuras no se materializan.**
 - **`Si`-expresión** (`HirExpresion::Si`): baja a `Nulo`.
 - **`ParaCada`**: implementado como bucle por índice sobre el iterable (arreglo/lista/texto) con `MirRvalue::Longitud` y `MirRvalue::Indice`.
-- **`Romper`/`Continuar`**: placeholder (Nop). No terminan el bucle.
+- **`Romper`/`Continuar`**: implementados (Goto al bloque de salida/condición del bucle).
 - **`IntentarRescatar`**: solo ejecuta el bloque `intentar`; el bloque `rescatar` se omite (sin modelo de excepciones).
 - **`VerificadorMir`**: valida que haya bloques; no valida terminadores ni alcanzabilidad.
 
@@ -112,7 +112,7 @@ La suite diferencial cubre: aritmética, control de flujo, recursión, arreglos 
 |---|---|---|
 | 1 | **Closures: solo capturas inmutables por valor.** Las clausuras que mutan una variable capturada (`x = x + 1`) no propagan la mutación al entorno exterior porque las capturas se copian al crear la clausura. Requiere celdas de referencia (`RefCell`/`Arc<Mutex>`) en `Valor`. | `src/hir.rs` (variables_libres, lowering de Lambda/Funcion anidada); `src/vm.rs` (LlamadaIndirecta con ClausuraMir). Test `diff_closure_mutable` marcado `#[ignore]`. |
 | 2 | **Módulos ignorados en MIR.** `Importar`/`Usar`/`Exportar` no se bajan. | `src/mir.rs` lower_stmt: no hay arms para esos variantes → catch-all `Ok(())`. |
-| 3 | **`Romper`/`Continuar` son Nop.** No terminan el bucle. | `src/mir.rs` ~700: `HirSentencia::Romper \| Continuar => Ok(())`. |
+| 3 | ~~**`Romper`/`Continuar` son Nop.**~~ — **RESUELTO.** Ahora generan `Goto` al bloque de salida/condición del bucle actual. | `src/mir.rs`: arms `HirSentencia::Romper` / `Continuar`. |
 | 4 | **`IntentarRescatar` ejecuta solo el bloque `intentar`.** El bloque `rescatar` se omite (sin modelo de excepciones). | `src/mir.rs` lower_stmt arm. |
 | 5 | **`Si`-expresión baja a Nulo.** | `src/mir.rs` lower_expr: `HirExpresion::Si { ... } => MirOperand::Const(MirConst::Nulo)`. |
 | 6 | **`Lambda` baja a Nulo.** | `src/mir.rs` lower_expr: `HirExpresion::Lambda => MirOperand::Const(MirConst::Nulo)`. |
@@ -157,7 +157,7 @@ La suite diferencial cubre: aritmética, control de flujo, recursión, arreglos 
 
 1. ~~**Closures mutables**~~ — **RESUELTO.** Implementado mediante celdas de referencia (`Valor::Celda`, `MirRvalue::CrearCelda`/`LeerCelda`, proyección `MirProjection::Celda`). Las capturas mutables ahora se comparten y propagan. `diff_closure_mutable` en verde.
 2. **Ampliar suite diferencial** a closures mutables, módulos, archivos, FFI, fechas, objetos, ubicaciones de error. Sin esto, la paridad es una afirmación, no una evidencia.
-3. **Implementar `Romper`/`Continuar`** con targets de bucle en el lowering.
+3. ~~**`Romper`/`Continuar`**~~ — **RESUELTO.** Implementado con pila de bucles (`ctx.bucles`) en el lowering: `Romper` → `Goto(salida)`, `Continuar` → `Goto(condición)`. `diff_romper_continuar` en verde.
 4. **Modelo de excepciones** (`Invoke` ya existe en MIR; falta lowering de `IntentarRescatar` con aristas de error).
 5. **Módulos en MIR** (reutilizar `CargadorModulos`).
 6. **Tipos ricos en backends** solo cuando la VM tenga paridad completa.

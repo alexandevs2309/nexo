@@ -208,6 +208,8 @@ struct LoweringCtx {
     bloques: Vec<MirBasicBlock>,
     bloque_actual: BlockId,
     contador_temp: usize,
+    /// Pila de bucles: (bloque_condicion, bloque_salida).
+    bucles: Vec<(BlockId, BlockId)>,
 }
 
 impl LoweringCtx {
@@ -219,6 +221,7 @@ impl LoweringCtx {
             bloques: Vec::new(),
             bloque_actual: BlockId(0),
             contador_temp: 0,
+            bucles: Vec::new(),
         };
         // Bloque de entrada inicial.
         ctx.bloques.push(MirBasicBlock {
@@ -818,6 +821,8 @@ fn lower_stmt(ctx: &mut LoweringCtx, s: &HirSentencia) -> Result<(), String> {
             let bloque_cuerpo = ctx.nuevo_bloque();
             let bloque_salida = ctx.nuevo_bloque();
 
+            ctx.bucles.push((bloque_cond, bloque_salida));
+
             // Ir a condición.
             ctx.set_terminator(MirTerminator::Goto(bloque_cond));
 
@@ -842,6 +847,8 @@ fn lower_stmt(ctx: &mut LoweringCtx, s: &HirSentencia) -> Result<(), String> {
                 ctx.set_terminator(MirTerminator::Goto(bloque_cond));
             }
 
+            ctx.bucles.pop();
+
             // Salida.
             ctx.cambiar_bloque(bloque_salida);
             Ok(())
@@ -852,8 +859,18 @@ fn lower_stmt(ctx: &mut LoweringCtx, s: &HirSentencia) -> Result<(), String> {
             }
             Ok(())
         }
-        HirSentencia::Romper | HirSentencia::Continuar => {
-            // Placeholder: terminador explícito se añadirá con análisis de bucles.
+        HirSentencia::Romper => {
+            if let Some((_, salida)) = ctx.bucles.last() {
+                let salida = *salida;
+                ctx.set_terminator(MirTerminator::Goto(salida));
+            }
+            Ok(())
+        }
+        HirSentencia::Continuar => {
+            if let Some((cond, _)) = ctx.bucles.last() {
+                let cond = *cond;
+                ctx.set_terminator(MirTerminator::Goto(cond));
+            }
             Ok(())
         }
         HirSentencia::AsignacionIndice {
@@ -912,6 +929,8 @@ fn lower_stmt(ctx: &mut LoweringCtx, s: &HirSentencia) -> Result<(), String> {
             let bloque_cond = ctx.nuevo_bloque();
             let bloque_cuerpo = ctx.nuevo_bloque();
             let bloque_salida = ctx.nuevo_bloque();
+            ctx.bucles.push((bloque_cond, bloque_salida));
+
             ctx.set_terminator(MirTerminator::Goto(bloque_cond));
             // Condición: idx < longitud(iterable).
             ctx.cambiar_bloque(bloque_cond);
@@ -990,6 +1009,9 @@ fn lower_stmt(ctx: &mut LoweringCtx, s: &HirSentencia) -> Result<(), String> {
             ) {
                 ctx.set_terminator(MirTerminator::Goto(bloque_cond));
             }
+
+            ctx.bucles.pop();
+
             ctx.cambiar_bloque(bloque_salida);
             Ok(())
         }
