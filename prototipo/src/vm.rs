@@ -155,7 +155,7 @@ impl MaquinaVirtual {
         self.nativos.entry(nombre.into()).or_insert(f);
     }
 
-    /// Registra la biblioteca estándar mínima (mostrar, mostrar_sin_salto).
+    /// Registra la biblioteca estándar mínima (mostrar, mostrar_sin_salto, longitud, etc.).
     pub fn registrar_stdlib(&mut self) {
         let salida = std::sync::Arc::clone(&self.salida);
         self.registrar_nativo(
@@ -175,6 +175,120 @@ impl MaquinaVirtual {
                 salida.lock().unwrap().push(texto.clone());
                 print!("{texto}");
                 Ok(Valor::Nulo)
+            }),
+        );
+        self.registrar_nativo(
+            "longitud",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let n = match args.first() {
+                    Some(Valor::Texto(s)) => s.chars().count() as i64,
+                    Some(Valor::Arreglo(e)) | Some(Valor::Lista(e)) => e.len() as i64,
+                    Some(Valor::Objeto(m)) => m.len() as i64,
+                    Some(_) => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto, arreglo, lista u objeto",
+                            encontrado: "otro",
+                        })
+                    }
+                    None => 0,
+                };
+                Ok(Valor::Entero(n))
+            }),
+        );
+        self.registrar_nativo(
+            "abs",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Entero(n)) => Ok(Valor::Entero(n.saturating_abs())),
+                Some(Valor::Real(x)) => Ok(Valor::Real(x.abs())),
+                Some(Valor::Decimal(m)) => {
+                    let abs = if *m < 0 { -m } else { *m };
+                    Ok(Valor::Decimal(abs))
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "entero, decimal o real",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "min",
+            std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
+                (Some(Valor::Entero(a)), Some(Valor::Entero(b))) => Ok(Valor::Entero((*a).min(*b))),
+                (Some(Valor::Real(a)), Some(Valor::Real(b))) => Ok(Valor::Real(a.min(*b))),
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "entero o real",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "max",
+            std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
+                (Some(Valor::Entero(a)), Some(Valor::Entero(b))) => Ok(Valor::Entero((*a).max(*b))),
+                (Some(Valor::Real(a)), Some(Valor::Real(b))) => Ok(Valor::Real(a.max(*b))),
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "entero o real",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "mayusculas",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Texto(s)) => Ok(Valor::Texto(s.to_uppercase())),
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "minusculas",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Texto(s)) => Ok(Valor::Texto(s.to_lowercase())),
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "es_vacio",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Texto(s)) => Ok(Valor::Logico(s.is_empty())),
+                Some(Valor::Arreglo(e)) | Some(Valor::Lista(e)) => Ok(Valor::Logico(e.is_empty())),
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto, arreglo o lista",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "contiene",
+            std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
+                (Some(Valor::Texto(s)), Some(Valor::Texto(sub))) => {
+                    Ok(Valor::Logico(s.contains(sub.as_str())))
+                }
+                (Some(Valor::Texto(s)), _) => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: "otro",
+                }),
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "empieza_con",
+            std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
+                (Some(Valor::Texto(s)), Some(Valor::Texto(prefijo))) => {
+                    Ok(Valor::Logico(s.starts_with(prefijo.as_str())))
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: "otro",
+                }),
             }),
         );
     }

@@ -24,6 +24,7 @@ fn vm_run(src: &str) -> String {
     };
     let mir = mir::lower_programa(&hir);
     let mut maquina = vm::MaquinaVirtual::nuevo(mir);
+    maquina.registrar_stdlib();
     let Some(idx) = maquina.indice_de("main") else {
         return "NOFUNC:main".to_string();
     };
@@ -161,6 +162,7 @@ fn diff_mostrar_stdlib() {
     let mir = mir::lower_programa(&hir);
     let mut maquina = vm::MaquinaVirtual::nuevo(mir);
     maquina.registrar_stdlib();
+    maquina.registrar_stdlib();
     let idx = maquina.indice_de("main").unwrap();
     let vmr = match maquina.ejecutar_indice(idx, &[]) {
         Ok(v) => format!("OK:{:?}", v),
@@ -195,4 +197,44 @@ fn diff_intentar_rescatar_sin_captura() {
     assert_parity(
         "funcion main() -> entero {\n  intentar {\n    sea r = 1 / 0\n    retornar 99\n  } rescatar {\n    retornar 7\n  }\n}",
     );
+}
+
+#[test]
+fn diff_fibonacci_recursivo() {
+    assert_parity("funcion fib(n: entero) -> entero { si n < 2 { retornar n } sino { retornar fib(n - 1) + fib(n - 2) } }\nfuncion main() -> entero { retornar fib(10) }");
+}
+
+#[test]
+fn diff_longitud_texto() {
+    assert_parity("funcion main() -> entero { retornar longitud(\"hola mundo\") }");
+}
+
+#[test]
+fn diff_abs_min_max() {
+    assert_parity("funcion main() -> entero { retornar abs(0 - 7) + min(3, 9) + max(3, 9) }");
+}
+
+#[test]
+fn diff_mayusculas_minusculas() {
+    assert_parity("funcion main() -> texto { retornar mayusculas(\"bas\") + \" \" + minusculas(\"BASILISCO\") }");
+}
+
+#[test]
+fn diff_es_vacio() {
+    assert_parity("funcion main() -> logico { retornar es_vacio(\"\") y no es_vacio(\"a\") }");
+}
+
+#[test]
+fn diff_contiene_empieza_con() {
+    assert_parity("funcion main() -> logico { retornar contiene(\"hola mundo\", \"mundo\") y empieza_con(\"hola mundo\", \"hola\") }");
+}
+
+#[test]
+fn diff_arbol_expresion() {
+    assert_parity("funcion main() -> entero { retornar (1 + 2) * (3 + 4) - (10 / 2) % 3 }");
+}
+
+#[test]
+fn diff_comparacion_textos() {
+    assert_parity("funcion main() -> logico { retornar \"abeja\" < \"abejon\" }");
 }
