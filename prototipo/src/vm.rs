@@ -15,6 +15,8 @@
 //! proyecciones anidadas en `MirPlace`.
 
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 
 use crate::mir::{
     BlockId, MirBinOp, MirConst, MirOperand, MirPlace, MirPrograma, MirProjection, MirRvalue,
@@ -711,6 +713,235 @@ impl MaquinaVirtual {
                 }
                 _ => Err(ErrorVm::TipoEsperado {
                     esperado: "arreglo o lista",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "abrir",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let (ruta, modo) = match (args.first(), args.get(1)) {
+                    (Some(Valor::Texto(r)), Some(Valor::Texto(m))) => (r.clone(), m.clone()),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto, texto",
+                            encontrado: "otro",
+                        })
+                    }
+                };
+                let file_result = match modo.as_str() {
+                    "leer" => File::open(&ruta),
+                    "escribir" => OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&ruta),
+                    "agregar" => OpenOptions::new().append(true).create(true).open(&ruta),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "modo válido (leer, escribir, agregar)",
+                            encontrado: "modo inválido",
+                        })
+                    }
+                };
+                let archivo = file_result.map_err(|_| ErrorVm::TipoEsperado {
+                    esperado: "archivo accesible",
+                    encontrado: "error de apertura",
+                })?;
+                let (lector, escritor) = match modo.as_str() {
+                    "leer" => (Some(BufReader::new(archivo)), None),
+                    "escribir" | "agregar" => (None, Some(BufWriter::new(archivo))),
+                    _ => (None, None),
+                };
+                Ok(Valor::Archivo(std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::valor::ArchivoInterno {
+                        ruta,
+                        modo,
+                        cerrado: false,
+                        lector,
+                        escritor,
+                    },
+                ))))
+            }),
+        );
+        self.registrar_nativo(
+            "leer_linea",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let Some(Valor::Archivo(arc)) = args.first() else {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "archivo",
+                        encontrado: "otro",
+                    });
+                };
+                let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                if guard.cerrado {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "archivo abierto",
+                        encontrado: "archivo ya cerrado",
+                    });
+                }
+                let ruta = guard.ruta.clone();
+                let lector = guard.lector.as_mut().ok_or(ErrorVm::TipoEsperado {
+                    esperado: "modo lectura",
+                    encontrado: "archivo no abierto en modo lectura",
+                })?;
+                let mut linea_texto = String::new();
+                let leidos = lector.read_line(&mut linea_texto).map_err(|_| {
+                    ErrorVm::TipoEsperado {
+                        esperado: "lectura exitosa",
+                        encontrado: "error de lectura",
+                    }
+                })?;
+                if leidos == 0 {
+                    return Ok(Valor::Texto(String::new()));
+                }
+                if linea_texto.ends_with('\n') {
+                    linea_texto.pop();
+                }
+                if linea_texto.ends_with('\r') {
+                    linea_texto.pop();
+                }
+                Ok(Valor::Texto(linea_texto))
+            }),
+        );
+        self.registrar_nativo(
+            "leer_todo",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let Some(Valor::Archivo(arc)) = args.first() else {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "archivo",
+                        encontrado: "otro",
+                    });
+                };
+                let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                if guard.cerrado {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "archivo abierto",
+                        encontrado: "archivo ya cerrado",
+                    });
+                }
+                let lector = guard.lector.as_mut().ok_or(ErrorVm::TipoEsperado {
+                    esperado: "modo lectura",
+                    encontrado: "archivo no abierto en modo lectura",
+                })?;
+                let mut contenido = String::new();
+                lector
+                    .read_to_string(&mut contenido)
+                    .map_err(|_| ErrorVm::TipoEsperado {
+                        esperado: "lectura exitosa",
+                        encontrado: "error de lectura",
+                    })?;
+                Ok(Valor::Texto(contenido))
+            }),
+        );
+        self.registrar_nativo(
+            "escribir",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let (Some(Valor::Archivo(arc)), valor) = (args.first(), args.get(1)) else {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "archivo, texto",
+                        encontrado: "otro",
+                    });
+                };
+                let Some(Valor::Texto(t)) = valor else {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "archivo, texto",
+                        encontrado: "otro",
+                    });
+                };
+                let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                if guard.cerrado {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "archivo abierto",
+                        encontrado: "archivo ya cerrado",
+                    });
+                }
+                let escritor = guard.escritor.as_mut().ok_or(ErrorVm::TipoEsperado {
+                    esperado: "modo escritura",
+                    encontrado: "archivo no abierto en modo escritura",
+                })?;
+                escritor
+                    .write_all(t.as_bytes())
+                    .map_err(|_| ErrorVm::TipoEsperado {
+                        esperado: "escritura exitosa",
+                        encontrado: "error de escritura",
+                    })?;
+                Ok(Valor::Nulo)
+            }),
+        );
+        self.registrar_nativo(
+            "escribir_linea",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let (Some(Valor::Archivo(arc)), valor) = (args.first(), args.get(1)) else {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "archivo, texto",
+                        encontrado: "otro",
+                    });
+                };
+                let Some(Valor::Texto(t)) = valor else {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "archivo, texto",
+                        encontrado: "otro",
+                    });
+                };
+                let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                if guard.cerrado {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "archivo abierto",
+                        encontrado: "archivo ya cerrado",
+                    });
+                }
+                let escritor = guard.escritor.as_mut().ok_or(ErrorVm::TipoEsperado {
+                    esperado: "modo escritura",
+                    encontrado: "archivo no abierto en modo escritura",
+                })?;
+                writeln!(escritor, "{t}").map_err(|_| ErrorVm::TipoEsperado {
+                    esperado: "escritura exitosa",
+                    encontrado: "error de escritura",
+                })?;
+                Ok(Valor::Nulo)
+            }),
+        );
+        self.registrar_nativo(
+            "cerrar",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Archivo(arc)) => {
+                    let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.cerrado = true;
+                    guard.lector = None;
+                    guard.escritor = None;
+                    Ok(Valor::Nulo)
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "archivo",
+                    encontrado: "otro",
+                }),
+            }),
+        );
+        self.registrar_nativo(
+            "fin_de_archivo",
+            std::sync::Arc::new(|args: &[Valor]| match args.first() {
+                Some(Valor::Archivo(arc)) => {
+                    let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                    if guard.cerrado {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "archivo abierto",
+                            encontrado: "archivo ya cerrado",
+                        });
+                    }
+                    match guard.lector.as_mut() {
+                        Some(lector) => {
+                            let buf = lector.fill_buf().map_err(|_| ErrorVm::TipoEsperado {
+                                esperado: "lectura exitosa",
+                                encontrado: "error de lectura",
+                            })?;
+                            Ok(Valor::Logico(buf.is_empty()))
+                        }
+                        None => Ok(Valor::Logico(false)),
+                    }
+                }
+                _ => Err(ErrorVm::TipoEsperado {
+                    esperado: "archivo",
                     encontrado: "otro",
                 }),
             }),
