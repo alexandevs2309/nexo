@@ -404,3 +404,17 @@ fn diff_archivo_modo_agregar() {
     std::fs::remove_file(&ruta).ok();
     assert_eq!(tw, vmr, "\nTREE-WALK: {}\nVM: {}", tw, vmr);
 }
+
+#[test]
+fn diff_tarea_iniciar_y_esperar() {
+    assert_parity(
+        "funcion tarea() -> entero {\n  sea s = 0\n  sea i = 1\n  mientras i <= 100 {\n    s = s + i\n    i = i + 1\n  }\n  retornar s\n}\nfuncion main() -> entero {\n  sea id = iniciar_tarea(\"tarea\")\n  sea local = 5\n  retornar esperar_tarea(id) + local\n}",
+    );
+}
+
+#[test]
+fn diff_tarea_dos_tareas() {
+    assert_parity(
+        "funcion a() -> entero { retornar 10 * 10 }\nfuncion b() -> entero { retornar 20 * 20 }\nfuncion main() -> entero {\n  sea ia = iniciar_tarea(\"a\")\n  sea ib = iniciar_tarea(\"b\")\n  retornar esperar_tarea(ia) + esperar_tarea(ib)\n}",
+    );
+}

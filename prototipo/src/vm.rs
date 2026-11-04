@@ -17,6 +17,16 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::sync::{LazyLock, Mutex};
+
+/// Valor de retorno de una tarea: `Ok(valor)` o `Err(mensaje)` (como en `evaluador`).
+type ResultadoTarea = Result<Valor, String>;
+/// Handle de tarea esperable (`take` + `join`), análogo al del Tree-Walk.
+type TareaPendiente = Option<std::thread::JoinHandle<ResultadoTarea>>;
+
+/// Registro global de tareas de la VM (`iniciar_tarea` / `esperar_tarea`),
+/// análogo al del evaluador (Tree-Walk).
+static TAREAS_VM: LazyLock<Mutex<Vec<TareaPendiente>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 use crate::mir::{
     BlockId, MirBinOp, MirConst, MirOperand, MirPlace, MirPrograma, MirProjection, MirRvalue,
@@ -1241,6 +1251,13 @@ impl MaquinaVirtual {
                 _ => {}
             }
         }
+        // Tareas: iniciar_tarea("nombre") / esperar_tarea(id). La tarea corre en
+        // su propia VM (mismo programa, igual que el Tree-Walk clona el entorno).
+        match callee {
+            "iniciar_tarea" if !args.is_empty() => return self.iniciar_tarea(args),
+            "esperar_tarea" if !args.is_empty() => return self.esperar_tarea(args),
+            _ => {}
+        }
         // Fallback: función nativa registrada (FFI / integrada).
         if self.nativos.contains_key(callee) {
             self.paso()?;
@@ -1350,6 +1367,72 @@ impl MaquinaVirtual {
             otro => Err(ErrorVm::TipoEsperado {
                 esperado: "función",
                 encontrado: otro.nombre_tipo(),
+            }),
+        }
+    }
+
+    /// `iniciar_tarea("nombre")`: lanza la función MIR en un hilo con su propia
+    /// VM y devuelve el id de la tarea (semántica de `evaluador`).
+    fn iniciar_tarea(&mut self, args: &[Valor]) -> Result<Valor, ErrorVm> {
+        let func_name = match &args[0] {
+            Valor::Texto(s) => s.clone(),
+            otro => {
+                return Err(ErrorVm::TipoEsperado {
+                    esperado: "texto",
+                    encontrado: otro.nombre_tipo(),
+                });
+            }
+        };
+        if !self.indice.contains_key(&func_name) {
+            return Err(ErrorVm::FuncionNoEncontrada(func_name));
+        }
+        let programa = self.programa.clone();
+        let handle = std::thread::spawn(move || {
+            let mut vm = MaquinaVirtual::nuevo(programa);
+            vm.registrar_stdlib();
+            vm.ejecutar(&func_name, &[])
+                .map(|v| v.unwrap_or(Valor::Nulo))
+                .map_err(|e| e.to_string())
+        });
+        let mut tareas = TAREAS_VM.lock().unwrap();
+        let id = tareas.len();
+        tareas.push(Some(handle));
+        Ok(Valor::Entero(id as i64))
+    }
+
+    /// `esperar_tarea(id)`: espera (join) la tarea y devuelve su valor.
+    fn esperar_tarea(&mut self, args: &[Valor]) -> Result<Valor, ErrorVm> {
+        let id = match &args[0] {
+            Valor::Entero(v) => *v as usize,
+            otro => {
+                return Err(ErrorVm::TipoEsperado {
+                    esperado: "entero",
+                    encontrado: otro.nombre_tipo(),
+                });
+            }
+        };
+        let handle = {
+            let mut tareas = TAREAS_VM.lock().unwrap();
+            if id >= tareas.len() {
+                return Err(ErrorVm::FuncionNoEncontrada(format!("tarea {id}")));
+            }
+            tareas[id].take()
+        };
+        match handle {
+            Some(h) => match h.join() {
+                Ok(Ok(v)) => Ok(v),
+                Ok(Err(_)) => Err(ErrorVm::TipoEsperado {
+                    esperado: "tarea exitosa",
+                    encontrado: "error en tarea",
+                }),
+                Err(_) => Err(ErrorVm::TipoEsperado {
+                    esperado: "tarea exitosa",
+                    encontrado: "tarea cancelada",
+                }),
+            },
+            None => Err(ErrorVm::TipoEsperado {
+                esperado: "tarea pendiente",
+                encontrado: "tarea ya esperada",
             }),
         }
     }
