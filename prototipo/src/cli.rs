@@ -22,11 +22,32 @@ pub const ALIAS: &str = "bsk";
 pub const EXT_CANONICA: &str = "bsk";
 pub const EXT_LEGADO: &str = "nexo";
 
+/// Motor de ejecución preferido ("arbol" = Tree-Walk, "vm" = VM).
+/// Se inicializa desde la variable de entorno BASILISCO_MOTOR o --motor=.
+static MOTOR_PREFERIDO: std::sync::LazyLock<std::sync::Mutex<String>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(String::from("arbol")));
+
 /// Punto de entrada común de `basilisco` y `bsk`.
 pub fn main() -> ExitCode {
     let mut args = env::args_os();
     let _programa = args.next();
-    let args: Vec<OsString> = args.collect();
+    let mut args: Vec<OsString> = args.collect();
+
+    // Extraer --motor=... / --engine=... de los argumentos (no rompe el resto).
+    let mut motor = std::env::var("BASILISCO_MOTOR").unwrap_or_else(|_| "arbol".to_string());
+    args.retain(|a| {
+        let s = a.to_string_lossy();
+        if let Some(v) = s
+            .strip_prefix("--motor=")
+            .or_else(|| s.strip_prefix("--engine="))
+        {
+            motor = v.to_string();
+            false
+        } else {
+            true
+        }
+    });
+    *MOTOR_PREFERIDO.lock().unwrap() = motor;
 
     if args.is_empty() {
         demo();
@@ -339,6 +360,7 @@ fn ayuda() {
     println!("  {COMANDO} nuevo [archivo.bsk]   crea un programa inicial");
     println!("  {COMANDO} nuevo proyecto <nombre> crea un proyecto BASILISCO");
     println!("  {COMANDO} run [<archivo.bsk>] ejecuta un archivo o proyecto");
+    println!("  Opciones globales: --motor=arbol|vm (o BASILISCO_MOTOR=...) selecciona el motor.");
     println!("  {COMANDO} run <archivo.nexo>     ejecuta un programa legado");
     println!("  {COMANDO} run                   ejecuta el proyecto actual");
     println!("  {COMANDO} analizar <archivo>     analiza sin ejecutar");
@@ -670,6 +692,16 @@ fn ejecutar_fuente(
     archivo: Option<String>,
     cargador: Option<Arc<Mutex<CargadorModulos>>>,
 ) -> Result<Option<Valor>, String> {
+    let motor = MOTOR_PREFERIDO.lock().unwrap().clone();
+    if motor == "vm" {
+        match ejecutar_fuente_vm(fuente, archivo.clone(), cargador.clone()) {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                eprintln!("aviso: motor VM falló ({e}); usando motor árbol (Tree-Walk).");
+            }
+        }
+    }
+
     let tokens = Lexer::con_archivo(fuente, archivo.clone())
         .tokenizar()
         .map_err(|e| e.to_string())?;
@@ -694,6 +726,50 @@ fn ejecutar_fuente(
             Err(e.to_string())
         }
     }
+}
+
+/// Ejecuta un programa con el motor VM. Devuelve error si no hay `main` o si
+/// el pipeline MIR/VM falla (el llamador cae al Tree-Walk).
+fn ejecutar_fuente_vm(
+    fuente: &str,
+    archivo: Option<String>,
+    cargador: Option<Arc<Mutex<CargadorModulos>>>,
+) -> Result<Option<Valor>, String> {
+    use crate::ContextoSemantico;
+    use crate::hir;
+    use crate::mir;
+    use crate::vm::MaquinaVirtual;
+    use std::path::PathBuf;
+
+    let tokens = Lexer::con_archivo(fuente, archivo.clone())
+        .tokenizar()
+        .map_err(|e| e.to_string())?;
+    let sentencias = Parser::con_archivo(tokens, archivo.clone())
+        .parsear_programa()
+        .map_err(|e| e.to_string())?;
+
+    let mut ctx = match cargador.clone() {
+        Some(c) => ContextoSemantico::con_cargador(c, archivo.clone()),
+        None => {
+            let mut c = ContextoSemantico::nuevo();
+            c.archivo = archivo.clone();
+            c
+        }
+    };
+    if let Some(a) = &archivo {
+        ctx.set_archivo_actual(Some(PathBuf::from(a)));
+    }
+    let _ = ctx.analizar_programa(&sentencias);
+    let hir = hir::lower_programa(&sentencias, &ctx).map_err(|e| format!("{:?}", e))?;
+    let programa = mir::lower_programa(&hir);
+
+    let mut vm = MaquinaVirtual::nuevo(programa);
+    vm.registrar_stdlib();
+
+    let Some(idx) = vm.indice_de("main") else {
+        return Err("el programa no define `funcion main()`".to_string());
+    };
+    vm.ejecutar_indice(idx, &[]).map_err(|e| e.to_string())
 }
 
 /// Solo para la demo; evalúa una única expresión.

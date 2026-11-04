@@ -23,14 +23,14 @@ fn hir_lower_declaracion() {
 }
 
 #[test]
-fn hir_rechaza_no_soportado() {
+fn hir_acepta_top_level_en_main_sintetico() {
     let src = "mientras verdadero { mostrar(1) }";
     let tokens = Lexer::nuevo(src).tokenizar().unwrap();
     let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
     let mut ctx = ContextoSemantico::nuevo();
     let _ = ctx.analizar_programa(&ss);
     let res = hir::lower_programa(&ss, &ctx);
-    assert!(res.is_err());
+    assert!(res.is_ok());
 }
 
 #[test]

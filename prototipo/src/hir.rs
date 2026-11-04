@@ -680,11 +680,17 @@ fn lower_sentencia(
             res.salir();
             Ok(HirSentencia::Bloque(body))
         }
-        Sentencia::Mostrar { valor, .. } => {
-            Ok(HirSentencia::Expresion(lower_expresion(valor, ctx, res)))
-        }
+        Sentencia::Mostrar { valor, .. } => Ok(HirSentencia::Expresion(HirExpresion::Llamada {
+            nombre: "mostrar".to_string(),
+            argumentos: vec![lower_expresion(valor, ctx, res)],
+            tipo: TipoSem::Desconocido,
+        })),
         Sentencia::MostrarSinSalto { valor, .. } => {
-            Ok(HirSentencia::Expresion(lower_expresion(valor, ctx, res)))
+            Ok(HirSentencia::Expresion(HirExpresion::Llamada {
+                nombre: "mostrar_sin_salto".to_string(),
+                argumentos: vec![lower_expresion(valor, ctx, res)],
+                tipo: TipoSem::Desconocido,
+            }))
         }
         Sentencia::Expresion(e) => Ok(HirSentencia::Expresion(lower_expresion(e, ctx, res))),
         Sentencia::ParaCada {
@@ -1179,6 +1185,8 @@ pub fn lower_programa(
     let mut items = Vec::new();
     let mut errores = Vec::new();
     let mut res = ResolutorHir::nuevo();
+    let mut cuerpo_principal: Vec<HirSentencia> = Vec::new();
+    let mut tiene_main_usuario = false;
 
     // Pre-paso: registrar los nombres de las funciones de primer nivel en el
     // ámbito raíz (permite llamadas anticipadas y recursión), igual que
@@ -1186,6 +1194,9 @@ pub fn lower_programa(
     for s in ast {
         match s {
             Sentencia::Funcion { nombre, .. } => {
+                if nombre == "main" {
+                    tiene_main_usuario = true;
+                }
                 res.insertar(nombre, None);
                 res.funciones.insert(nombre.clone());
             }
@@ -1344,12 +1355,31 @@ pub fn lower_programa(
                 items.extend(mods);
             }
             otro => {
-                errores.push(format!(
-                    "construcción AST no soportada en HIR: {:?}",
-                    std::mem::discriminant(otro)
-                ));
+                // Sentencias de nivel superior (mostrar, si, mientras, ...) se
+                // agrupan en una función `main` sintética para que el motor VM
+                // (que exige `main`) pueda ejecutarlas.
+                match lower_sentencia(otro, ctx, &mut res) {
+                    Ok(hs) => cuerpo_principal.push(hs),
+                    Err(e) => errores.push(e),
+                }
             }
         }
+    }
+    // Si no hay `main` de usuario pero se acumularon sentencias de nivel
+    // superior, sintetizar `funcion main()` para el motor VM.
+    if !tiene_main_usuario && !cuerpo_principal.is_empty() {
+        let id = res.insertar("main", None);
+        res.funciones.insert("main".to_string());
+        items.push(HirItem::Funcion {
+            nombre: "main".to_string(),
+            simbodo: id,
+            params: Vec::new(),
+            capturadas: Vec::new(),
+            capturas_externas: Vec::new(),
+            celdas: Vec::new(),
+            retorno: TipoSem::Desconocido,
+            cuerpo: cuerpo_principal,
+        });
     }
     if !errores.is_empty() {
         return Err(errores);
