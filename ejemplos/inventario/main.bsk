@@ -135,8 +135,8 @@ funcion consultar(productos) {
     }
 }
 
-funcion valor_inventario(productos) -> decimal {
-    sea total = 0.0
+funcion valor_inventario(productos) {
+    sea total = 0
     sea i = 0
     mientras i < longitud(productos) {
         sea p = productos[i]
