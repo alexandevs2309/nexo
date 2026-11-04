@@ -2,7 +2,7 @@
 // Datos: [id, nombre, precio, existencia]
 // Ejecutar desde prototipo: cargo run -- run ../ejemplos/inventario/main.bsk
 
-const ARCHIVO = "datos/inventario.json"
+const ARCHIVO = "../ejemplos/inventario/datos/inventario.json"
 
 funcion buscar_id(productos, id) -> entero {
     sea i = 0
