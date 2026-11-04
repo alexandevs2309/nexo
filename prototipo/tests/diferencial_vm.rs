@@ -315,3 +315,38 @@ fn diff_eliminar_indice_invalido_rescatado() {
         "funcion main() -> entero {\n  intentar {\n    eliminar([1, 2], 5)\n    retornar 0\n  } rescatar e {\n    retornar 99\n  }\n}",
     );
 }
+
+#[test]
+fn diff_map_longitud() {
+    assert_parity(
+        "funcion main() -> entero { retornar longitud(map([1, 2, 3], funcion (x) { retornar x * 2 })) }",
+    );
+}
+
+#[test]
+fn diff_filtrar() {
+    assert_parity(
+        "funcion main() -> entero { retornar longitud(filtrar([1, 2, 3, 4, 5], funcion (x) { retornar x % 2 == 0 })) }",
+    );
+}
+
+#[test]
+fn diff_reducir() {
+    assert_parity(
+        "funcion main() -> entero { retornar reducir([1, 2, 3, 4], funcion (acc, x) { retornar acc + x }, 0) }",
+    );
+}
+
+#[test]
+fn diff_map_filtrar_reducir_combinado() {
+    assert_parity(
+        "funcion main() -> entero {\n  sea duplicada = map([1, 2, 3], funcion (x) { retornar x * 2 })\n  sea pares = filtrar(duplicada, funcion (x) { retornar x > 2 })\n  retornar reducir(pares, funcion (a, b) { retornar a + b }, 0)\n}",
+    );
+}
+
+#[test]
+fn diff_map_con_clausura_capturada() {
+    assert_parity(
+        "funcion crear_sumador(n) { retornar funcion (x) { retornar x + n } }\nfuncion main() -> entero { retornar reducir(map([1, 2], crear_sumador(10)), funcion (a, b) { retornar a + b }, 0) }",
+    );
+}

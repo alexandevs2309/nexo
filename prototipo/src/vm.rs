@@ -1001,6 +1001,15 @@ impl MaquinaVirtual {
             let devuelto = self.ejecutar(callee, args)?;
             return Ok(devuelto.unwrap_or(Valor::Nulo));
         }
+        // Orden superior: map/filtrar/reducir con clausura MIR. La VM es quien
+        // puede invocar la clausura, así que intercepta antes del despacho a
+        // nativas (semántica idéntica a `evaluador`).
+        if args.len() >= 2 && matches!(args[1], Valor::ClausuraMir { .. }) {
+            match callee {
+                "map" | "filtrar" | "reducir" => return self.llamar_funcional(callee, args),
+                _ => {}
+            }
+        }
         // Fallback: función nativa registrada (FFI / integrada).
         if self.nativos.contains_key(callee) {
             self.paso()?;
@@ -1008,6 +1017,110 @@ impl MaquinaVirtual {
             return f(args);
         }
         Err(ErrorVm::FuncionNoEncontrada(callee.to_string()))
+    }
+
+    /// `map`/`filtrar`/`reducir` con clausura MIR: invoca la clausura por cada
+    /// elemento, replicando la semántica de `evaluador`.
+    fn llamar_funcional(&mut self, callee: &str, args: &[Valor]) -> Result<Valor, ErrorVm> {
+        self.paso()?;
+        let func_val = args[1].clone();
+        match callee {
+            "map" => match &args[0] {
+                Valor::Arreglo(v) => {
+                    let mut out = Vec::new();
+                    for item in v {
+                        let r = self.invocar_cierre(&func_val, std::slice::from_ref(item))?;
+                        out.push(r);
+                    }
+                    Ok(Valor::Arreglo(out))
+                }
+                Valor::Lista(v) => {
+                    let mut out = Vec::new();
+                    for item in v {
+                        let r = self.invocar_cierre(&func_val, std::slice::from_ref(item))?;
+                        out.push(r);
+                    }
+                    Ok(Valor::Lista(out))
+                }
+                otro => Err(ErrorVm::TipoEsperado {
+                    esperado: "arreglo o lista",
+                    encontrado: otro.nombre_tipo(),
+                }),
+            },
+            "filtrar" => match &args[0] {
+                Valor::Arreglo(v) => {
+                    let mut out = Vec::new();
+                    for item in v {
+                        let r = self.invocar_cierre(&func_val, std::slice::from_ref(item))?;
+                        match r {
+                            Valor::Logico(true) => out.push(item.clone()),
+                            Valor::Logico(false) => {}
+                            _ => {
+                                return Err(ErrorVm::TipoEsperado {
+                                    esperado: "lógico",
+                                    encontrado: r.nombre_tipo(),
+                                });
+                            }
+                        }
+                    }
+                    Ok(Valor::Arreglo(out))
+                }
+                Valor::Lista(v) => {
+                    let mut out = Vec::new();
+                    for item in v {
+                        let r = self.invocar_cierre(&func_val, std::slice::from_ref(item))?;
+                        match r {
+                            Valor::Logico(true) => out.push(item.clone()),
+                            Valor::Logico(false) => {}
+                            _ => {
+                                return Err(ErrorVm::TipoEsperado {
+                                    esperado: "lógico",
+                                    encontrado: r.nombre_tipo(),
+                                });
+                            }
+                        }
+                    }
+                    Ok(Valor::Lista(out))
+                }
+                otro => Err(ErrorVm::TipoEsperado {
+                    esperado: "arreglo o lista",
+                    encontrado: otro.nombre_tipo(),
+                }),
+            },
+            "reducir" => {
+                let mut acc = args.get(2).cloned().unwrap_or(Valor::Nulo);
+                match &args[0] {
+                    Valor::Arreglo(v) | Valor::Lista(v) => {
+                        for item in v {
+                            acc = self.invocar_cierre(&func_val, &[acc.clone(), item.clone()])?;
+                        }
+                        Ok(acc)
+                    }
+                    otro => Err(ErrorVm::TipoEsperado {
+                        esperado: "arreglo o lista",
+                        encontrado: otro.nombre_tipo(),
+                    }),
+                }
+            }
+            _ => Err(ErrorVm::FuncionNoEncontrada(callee.to_string())),
+        }
+    }
+
+    /// Invoca un `Valor` que representa función: clausura MIR (con sus capturas)
+    /// o referencia por nombre a una función MIR.
+    fn invocar_cierre(&mut self, cierre: &Valor, args: &[Valor]) -> Result<Valor, ErrorVm> {
+        match cierre {
+            Valor::ClausuraMir { nombre, capturas } => {
+                let mut full = args.to_vec();
+                full.extend(capturas.clone());
+                self.llamar(nombre, &full)
+            }
+            Valor::Funcion(n) => self.llamar(n, args),
+            otro => Err(ErrorVm::TipoEsperado {
+                esperado: "función",
+                encontrado: otro.nombre_tipo(),
+            }),
+        }
     }
 
     /// Lee un operando: clona el local o materializa la constante.

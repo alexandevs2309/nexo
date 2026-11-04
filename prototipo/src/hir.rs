@@ -900,7 +900,12 @@ fn variables_libres(stmts: &[Sentencia], params: &[String]) -> (Vec<String>, Vec
     }
 
     // Recolector de expresiones.
-    fn recolectar_expr(e: &Expresion, refs: &mut HashSet<String>) {
+    fn recolectar_expr(
+        e: &Expresion,
+        refs: &mut HashSet<String>,
+        declaradas: &HashSet<String>,
+        capturas: &mut Vec<String>,
+    ) {
         match e {
             Expresion::Variable { nombre, .. } => {
                 refs.insert(nombre.clone());
@@ -918,38 +923,38 @@ fn variables_libres(stmts: &[Sentencia], params: &[String]) -> (Vec<String>, Vec
             | Expresion::MayorIgual(a, b)
             | Expresion::Y(a, b)
             | Expresion::O(a, b) => {
-                recolectar_expr(a, refs);
-                recolectar_expr(b, refs);
+                recolectar_expr(a, refs, declaradas, capturas);
+                recolectar_expr(b, refs, declaradas, capturas);
             }
-            Expresion::No(x) => recolectar_expr(x, refs),
+            Expresion::No(x) => recolectar_expr(x, refs, declaradas, capturas),
             Expresion::Llamada { argumentos, .. } => {
                 for a in argumentos {
-                    recolectar_expr(a, refs);
+                    recolectar_expr(a, refs, declaradas, capturas);
                 }
             }
             Expresion::LlamadaIndirecta {
                 callee, argumentos, ..
             } => {
-                recolectar_expr(callee, refs);
+                recolectar_expr(callee, refs, declaradas, capturas);
                 for a in argumentos {
-                    recolectar_expr(a, refs);
+                    recolectar_expr(a, refs, declaradas, capturas);
                 }
             }
             Expresion::ArregloLiteral { elementos, .. } => {
                 for e in elementos {
-                    recolectar_expr(e, refs);
+                    recolectar_expr(e, refs, declaradas, capturas);
                 }
             }
             Expresion::Indice { objeto, indice, .. } => {
-                recolectar_expr(objeto, refs);
-                recolectar_expr(indice, refs);
+                recolectar_expr(objeto, refs, declaradas, capturas);
+                recolectar_expr(indice, refs, declaradas, capturas);
             }
             Expresion::Acceso { objeto, .. } => {
-                recolectar_expr(objeto, refs);
+                recolectar_expr(objeto, refs, declaradas, capturas);
             }
             Expresion::Rango { inicio, fin, .. } => {
-                recolectar_expr(inicio, refs);
-                recolectar_expr(fin, refs);
+                recolectar_expr(inicio, refs, declaradas, capturas);
+                recolectar_expr(fin, refs, declaradas, capturas);
             }
             Expresion::Lambda {
                 parametros, cuerpo, ..
@@ -958,9 +963,18 @@ fn variables_libres(stmts: &[Sentencia], params: &[String]) -> (Vec<String>, Vec
                     parametros.iter().map(|(n, _)| n.clone()).collect();
                 let (nested_free, nested_capt) = variables_libres(cuerpo, &nested_params);
                 for v in nested_free {
+                    // Nombres declarados en ESTE ámbito capturados por una
+                    // clausura anidada: van a la lista de capturas (y también
+                    // como referencia para propagación transitiva).
+                    if declaradas.contains(&v) && !capturas.contains(&v) {
+                        capturas.push(v.clone());
+                    }
                     refs.insert(v);
                 }
                 for v in nested_capt {
+                    if declaradas.contains(&v) && !capturas.contains(&v) {
+                        capturas.push(v.clone());
+                    }
                     refs.insert(v);
                 }
             }
@@ -968,18 +982,23 @@ fn variables_libres(stmts: &[Sentencia], params: &[String]) -> (Vec<String>, Vec
         }
     }
 
-    fn recolectar_stmt(s: &Sentencia, refs: &mut HashSet<String>, declaradas: &HashSet<String>) {
+    fn recolectar_stmt(
+        s: &Sentencia,
+        refs: &mut HashSet<String>,
+        declaradas: &HashSet<String>,
+        capturas: &mut Vec<String>,
+    ) {
         match s {
             Sentencia::Declaracion {
                 nombre: _, valor, ..
             } => {
-                recolectar_expr(valor, refs);
+                recolectar_expr(valor, refs, declaradas, capturas);
             }
             Sentencia::Asignacion { nombre, valor, .. } => {
                 if !declaradas.contains(nombre) {
                     refs.insert(nombre.clone());
                 }
-                recolectar_expr(valor, refs);
+                recolectar_expr(valor, refs, declaradas, capturas);
             }
             Sentencia::AsignacionIndice {
                 objeto,
@@ -987,13 +1006,13 @@ fn variables_libres(stmts: &[Sentencia], params: &[String]) -> (Vec<String>, Vec
                 valor,
                 ..
             } => {
-                recolectar_expr(objeto, refs);
-                recolectar_expr(indice, refs);
-                recolectar_expr(valor, refs);
+                recolectar_expr(objeto, refs, declaradas, capturas);
+                recolectar_expr(indice, refs, declaradas, capturas);
+                recolectar_expr(valor, refs, declaradas, capturas);
             }
-            Sentencia::Expresion(e) => recolectar_expr(e, refs),
+            Sentencia::Expresion(e) => recolectar_expr(e, refs, declaradas, capturas),
             Sentencia::Retorno { valor: Some(v), .. } => {
-                recolectar_expr(v, refs);
+                recolectar_expr(v, refs, declaradas, capturas);
             }
             Sentencia::Retorno { .. } => {}
             Sentencia::Si {
@@ -1002,35 +1021,35 @@ fn variables_libres(stmts: &[Sentencia], params: &[String]) -> (Vec<String>, Vec
                 rama_sino,
                 ..
             } => {
-                recolectar_expr(condicion, refs);
+                recolectar_expr(condicion, refs, declaradas, capturas);
                 for ss in rama_si {
-                    recolectar_stmt(ss, refs, declaradas);
+                    recolectar_stmt(ss, refs, declaradas, capturas);
                 }
                 if let Some(sino) = rama_sino {
                     for ss in sino {
-                        recolectar_stmt(ss, refs, declaradas);
+                        recolectar_stmt(ss, refs, declaradas, capturas);
                     }
                 }
             }
             Sentencia::Mientras {
                 condicion, cuerpo, ..
             } => {
-                recolectar_expr(condicion, refs);
+                recolectar_expr(condicion, refs, declaradas, capturas);
                 for ss in cuerpo {
-                    recolectar_stmt(ss, refs, declaradas);
+                    recolectar_stmt(ss, refs, declaradas, capturas);
                 }
             }
             Sentencia::Bloque(ss) => {
                 for s in ss {
-                    recolectar_stmt(s, refs, declaradas);
+                    recolectar_stmt(s, refs, declaradas, capturas);
                 }
             }
             Sentencia::ParaCada {
                 iterable, cuerpo, ..
             } => {
-                recolectar_expr(iterable, refs);
+                recolectar_expr(iterable, refs, declaradas, capturas);
                 for ss in cuerpo {
-                    recolectar_stmt(ss, refs, declaradas);
+                    recolectar_stmt(ss, refs, declaradas, capturas);
                 }
             }
             Sentencia::IntentarRescatar {
@@ -1039,24 +1058,29 @@ fn variables_libres(stmts: &[Sentencia], params: &[String]) -> (Vec<String>, Vec
                 ..
             } => {
                 for ss in cuerpo_intentar {
-                    recolectar_stmt(ss, refs, declaradas);
+                    recolectar_stmt(ss, refs, declaradas, capturas);
                 }
                 for ss in cuerpo_rescatar {
-                    recolectar_stmt(ss, refs, declaradas);
+                    recolectar_stmt(ss, refs, declaradas, capturas);
                 }
             }
             Sentencia::Exportar { sentencia, .. } => {
-                recolectar_stmt(sentencia, refs, declaradas);
+                recolectar_stmt(sentencia, refs, declaradas, capturas);
             }
             Sentencia::Mostrar { valor, .. } | Sentencia::MostrarSinSalto { valor, .. } => {
-                recolectar_expr(valor, refs);
+                recolectar_expr(valor, refs, declaradas, capturas);
             }
             _ => {}
         }
     }
 
     for s in stmts {
-        recolectar_stmt(s, &mut referenciadas, &declaradas);
+        recolectar_stmt(
+            s,
+            &mut referenciadas,
+            &declaradas,
+            &mut capturadas_por_anidados,
+        );
     }
     // Quitar declaradas y params.
     for d in &declaradas {
