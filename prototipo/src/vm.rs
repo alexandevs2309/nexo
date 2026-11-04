@@ -726,7 +726,7 @@ impl MaquinaVirtual {
                         return Err(ErrorVm::TipoEsperado {
                             esperado: "texto, texto",
                             encontrado: "otro",
-                        })
+                        });
                     }
                 };
                 let file_result = match modo.as_str() {
@@ -741,7 +741,7 @@ impl MaquinaVirtual {
                         return Err(ErrorVm::TipoEsperado {
                             esperado: "modo válido (leer, escribir, agregar)",
                             encontrado: "modo inválido",
-                        })
+                        });
                     }
                 };
                 let archivo = file_result.map_err(|_| ErrorVm::TipoEsperado {
@@ -780,18 +780,18 @@ impl MaquinaVirtual {
                         encontrado: "archivo ya cerrado",
                     });
                 }
-                let ruta = guard.ruta.clone();
                 let lector = guard.lector.as_mut().ok_or(ErrorVm::TipoEsperado {
                     esperado: "modo lectura",
                     encontrado: "archivo no abierto en modo lectura",
                 })?;
                 let mut linea_texto = String::new();
-                let leidos = lector.read_line(&mut linea_texto).map_err(|_| {
-                    ErrorVm::TipoEsperado {
-                        esperado: "lectura exitosa",
-                        encontrado: "error de lectura",
-                    }
-                })?;
+                let leidos =
+                    lector
+                        .read_line(&mut linea_texto)
+                        .map_err(|_| ErrorVm::TipoEsperado {
+                            esperado: "lectura exitosa",
+                            encontrado: "error de lectura",
+                        })?;
                 if leidos == 0 {
                     return Ok(Valor::Texto(String::new()));
                 }

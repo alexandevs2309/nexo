@@ -350,3 +350,57 @@ fn diff_map_con_clausura_capturada() {
         "funcion crear_sumador(n) { retornar funcion (x) { retornar x + n } }\nfuncion main() -> entero { retornar reducir(map([1, 2], crear_sumador(10)), funcion (a, b) { retornar a + b }, 0) }",
     );
 }
+
+#[test]
+fn diff_archivo_escribir_linea_leer_linea() {
+    let ruta = format!("./basilisco_hdl_ll_{}.txt", std::process::id());
+    let src = format!(
+        "funcion main() -> texto {{\n  sea f = abrir(\"{r}\", \"escribir\")\n  escribir_linea(f, \"linea1\")\n  escribir_linea(f, \"linea2\")\n  cerrar(f)\n  sea g = abrir(\"{r}\", \"leer\")\n  sea a = leer_linea(g)\n  sea b = leer_linea(g)\n  cerrar(g)\n  retornar a + \"|\" + b\n}}",
+        r = ruta
+    );
+    let tw = tree_walk(&src);
+    let vmr = vm_run(&src);
+    std::fs::remove_file(&ruta).ok();
+    assert_eq!(tw, vmr, "\nTREE-WALK: {}\nVM: {}", tw, vmr);
+}
+
+#[test]
+fn diff_archivo_escribir_leer_todo() {
+    let ruta = format!("./basilisco_hdl_todo_{}.txt", std::process::id());
+    let src = format!(
+        "funcion main() -> texto {{\n  sea f = abrir(\"{r}\", \"escribir\")\n  escribir(f, \"hola\\nmundo\")\n  cerrar(f)\n  sea g = abrir(\"{r}\", \"leer\")\n  sea t = leer_todo(g)\n  cerrar(g)\n  retornar t\n}}",
+        r = ruta
+    );
+    let tw = tree_walk(&src);
+    let vmr = vm_run(&src);
+    std::fs::remove_file(&ruta).ok();
+    assert_eq!(tw, vmr, "\nTREE-WALK: {}\nVM: {}", tw, vmr);
+}
+
+#[test]
+fn diff_archivo_fin_de_archivo_bucle() {
+    let ruta = format!("./basilisco_hdl_fda_{}.txt", std::process::id());
+    let src = format!(
+        "funcion main() -> entero {{\n  sea f = abrir(\"{r}\", \"escribir\")\n  escribir_linea(f, \"x\")\n  escribir_linea(f, \"y\")\n  cerrar(f)\n  sea g = abrir(\"{r}\", \"leer\")\n  sea n = 0\n  mientras no fin_de_archivo(g) {{\n    leer_linea(g)\n    n = n + 1\n  }}\n  cerrar(g)\n  retornar n\n}}",
+        r = ruta
+    );
+    let tw = tree_walk(&src);
+    let vmr = vm_run(&src);
+    std::fs::remove_file(&ruta).ok();
+    assert_eq!(tw, vmr, "\nTREE-WALK: {}\nVM: {}", tw, vmr);
+}
+
+#[test]
+fn diff_archivo_modo_agregar() {
+    let ruta = format!("./basilisco_hdl_add_{}.txt", std::process::id());
+    std::fs::write(&ruta, "uno").ok();
+    let src = format!(
+        "funcion main() -> texto {{\n  sea f = abrir(\"{r}\", \"agregar\")\n  escribir(f, \"-dos\")\n  cerrar(f)\n  retornar leer_archivo(\"{r}\")\n}}",
+        r = ruta
+    );
+    let tw = tree_walk(&src);
+    std::fs::write(&ruta, "uno").ok();
+    let vmr = vm_run(&src);
+    std::fs::remove_file(&ruta).ok();
+    assert_eq!(tw, vmr, "\nTREE-WALK: {}\nVM: {}", tw, vmr);
+}
