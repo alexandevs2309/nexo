@@ -126,6 +126,12 @@ pub struct MaquinaVirtual {
     salida: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// Valores de las variables globales (inicializados por `__init`).
     globals: Vec<Valor>,
+    /// Tipos inferidos por función (para funciones sin anotación de parámetros).
+    tipos_inferidos: HashMap<String, Vec<Valor>>,
+    /// Funciones sin sentencia `retornar` con valor.
+    funciones_sin_retorno: std::collections::HashSet<String>,
+    /// Locales de la función actual que provienen de una llamada sin retorno.
+    sin_retorno_locals: std::collections::HashSet<usize>,
     /// Si ya se ejecutó `__init`.
     inicializado: bool,
     /// Pila de regiones try activas.
@@ -153,12 +159,25 @@ impl MaquinaVirtual {
         for (i, f) in programa.funciones.iter().enumerate() {
             indice.entry(f.nombre.clone()).or_insert(i);
         }
+        let funciones_sin_retorno: std::collections::HashSet<String> = programa
+            .funciones
+            .iter()
+            .filter(|f| {
+                !f.bloques
+                    .iter()
+                    .any(|b| matches!(b.terminator, MirTerminator::Return(Some(_))))
+            })
+            .map(|f| f.nombre.clone())
+            .collect();
         MaquinaVirtual {
             programa,
             indice,
             nativos: HashMap::new(),
             salida: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             globals: vec![Valor::Nulo; n_globals],
+            tipos_inferidos: HashMap::new(),
+            funciones_sin_retorno,
+            sin_retorno_locals: std::collections::HashSet::new(),
             inicializado: false,
             try_stack: Vec::new(),
             pasos: 0,
@@ -1303,6 +1322,7 @@ impl MaquinaVirtual {
         if self.profundidad > self.limite_profundidad {
             return Err(ErrorVm::ProfundidadExcedida);
         }
+        self.sin_retorno_locals.clear();
 
         // Inicializar globales una sola vez antes de `main`.
         if f.nombre == "main" && !self.inicializado {
@@ -1398,6 +1418,9 @@ impl MaquinaVirtual {
                 let args = self.evaluar_argumentos(locals, argumentos)?;
                 let r = self.llamar(callee, &args)?;
                 if let Some(dest) = destino {
+                    if self.funciones_sin_retorno.contains(callee) {
+                        self.sin_retorno_locals.insert(dest.local.0);
+                    }
                     self.escribir_place(locals, dest, r)?;
                 }
                 Ok(())
@@ -1514,6 +1537,47 @@ impl MaquinaVirtual {
     fn llamar(&mut self, callee: &str, args: &[Valor]) -> Result<Valor, ErrorVm> {
         // Funciones MIR del programa tienen prioridad.
         if self.indice.contains_key(callee) {
+            // Verificación de tipos en tiempo de ejecución (paridad con Tree-Walk):
+            // - Si los parámetros tienen anotación, validar/convertir cada argumento.
+            // - Si no, inferir en la primera llamada y validar las siguientes.
+            let idx = self.indice[callee];
+            let func = self.programa.funciones[idx].clone();
+            let anotados = func
+                .params
+                .iter()
+                .any(|(_, t)| *t != crate::semantico::TipoSem::Desconocido);
+            if anotados {
+                for (i, (_, tipo)) in func.params.iter().enumerate() {
+                    if *tipo == crate::semantico::TipoSem::Desconocido {
+                        continue;
+                    }
+                    if let Some(arg) = args.get(i)
+                        && !tipo_compat_valor(arg, tipo)
+                    {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "tipo anotado",
+                            encontrado: arg.nombre_tipo(),
+                        });
+                    }
+                }
+            } else if !func.params.is_empty() {
+                // Inferencia: primera llamada guarda tipos; siguientes validan.
+                if let Some(inferidos) = self.tipos_inferidos.get(callee).cloned() {
+                    for (i, t) in inferidos.iter().enumerate() {
+                        if let Some(arg) = args.get(i)
+                            && !valor_compat_valor(arg, t)
+                        {
+                            return Err(ErrorVm::TipoEsperado {
+                                esperado: t.nombre_tipo(),
+                                encontrado: arg.nombre_tipo(),
+                            });
+                        }
+                    }
+                } else {
+                    self.tipos_inferidos
+                        .insert(callee.to_string(), args.to_vec());
+                }
+            }
             let devuelto = self.ejecutar(callee, args)?;
             return Ok(devuelto.unwrap_or(Valor::Nulo));
         }
@@ -1716,6 +1780,12 @@ impl MaquinaVirtual {
     fn operando_a_valor(&self, locals: &[Valor], op: &MirOperand) -> Result<Valor, ErrorVm> {
         match op {
             MirOperand::Copy(local) | MirOperand::Move(local) => {
+                if self.sin_retorno_locals.contains(&local.0) {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "valor de retorno",
+                        encontrado: "función sin retorno",
+                    });
+                }
                 locals.get(local.0).cloned().ok_or(ErrorVm::TipoEsperado {
                     esperado: "local",
                     encontrado: "vacío",
@@ -2168,4 +2238,28 @@ fn ordenar_valor(a: &Valor, b: &Valor) -> std::cmp::Ordering {
         (Valor::Texto(x), Valor::Texto(y)) => x.cmp(y),
         _ => Equal,
     }
+}
+
+/// Compatibilidad entre un `TipoSem` anotado y un `Valor` (paridad con
+/// `convertir_a_tipo_anotado` del evaluador).
+fn tipo_compat_valor(valor: &Valor, tipo: &crate::semantico::TipoSem) -> bool {
+    use crate::semantico::TipoSem;
+    match tipo {
+        TipoSem::Entero => matches!(valor, Valor::Entero(_)),
+        TipoSem::Decimal => matches!(valor, Valor::Decimal(_)),
+        TipoSem::Real => matches!(valor, Valor::Real(_) | Valor::Entero(_)),
+        TipoSem::Logico => matches!(valor, Valor::Logico(_)),
+        TipoSem::Texto => matches!(valor, Valor::Texto(_)),
+        TipoSem::Nulo => matches!(valor, Valor::Nulo),
+        TipoSem::Arreglo(_, _) | TipoSem::Lista(_) | TipoSem::Coleccion(_) => {
+            matches!(valor, Valor::Arreglo(_) | Valor::Lista(_))
+        }
+        _ => true,
+    }
+}
+
+/// Compatibilidad por discriminante entre dos valores (paridad con
+/// `convertir_para_tipo` para funciones sin anotación).
+fn valor_compat_valor(a: &Valor, b: &Valor) -> bool {
+    std::mem::discriminant(a) == std::mem::discriminant(b)
 }

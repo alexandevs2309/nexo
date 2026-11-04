@@ -25,7 +25,7 @@ pub const EXT_LEGADO: &str = "nexo";
 /// Motor de ejecución preferido ("arbol" = Tree-Walk, "vm" = VM).
 /// Se inicializa desde la variable de entorno BASILISCO_MOTOR o --motor=.
 static MOTOR_PREFERIDO: std::sync::LazyLock<std::sync::Mutex<String>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(String::from("arbol")));
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(String::from("vm")));
 
 /// Punto de entrada común de `basilisco` y `bsk`.
 pub fn main() -> ExitCode {
@@ -34,7 +34,7 @@ pub fn main() -> ExitCode {
     let mut args: Vec<OsString> = args.collect();
 
     // Extraer --motor=... / --engine=... de los argumentos (no rompe el resto).
-    let mut motor = std::env::var("BASILISCO_MOTOR").unwrap_or_else(|_| "arbol".to_string());
+    let mut motor = std::env::var("BASILISCO_MOTOR").unwrap_or_else(|_| "vm".to_string());
     args.retain(|a| {
         let s = a.to_string_lossy();
         if let Some(v) = s
@@ -736,7 +736,6 @@ fn ejecutar_fuente_vm(
     cargador: Option<Arc<Mutex<CargadorModulos>>>,
 ) -> Result<Option<Valor>, String> {
     use crate::ContextoSemantico;
-    use crate::hir;
     use crate::mir;
     use crate::vm::MaquinaVirtual;
     use std::path::PathBuf;
@@ -760,7 +759,12 @@ fn ejecutar_fuente_vm(
         ctx.set_archivo_actual(Some(PathBuf::from(a)));
     }
     let _ = ctx.analizar_programa(&sentencias);
-    let hir = hir::lower_programa(&sentencias, &ctx).map_err(|e| format!("{:?}", e))?;
+    // Limpiar error previo de módulo.
+    *crate::hir::MODULO_ERROR.lock().unwrap() = None;
+    let hir = crate::hir::lower_programa(&sentencias, &ctx).map_err(|e| format!("{:?}", e))?;
+    if let Some(e) = crate::hir::MODULO_ERROR.lock().unwrap().take() {
+        return Err(e);
+    }
     let programa = mir::lower_programa(&hir);
 
     let mut vm = MaquinaVirtual::nuevo(programa);

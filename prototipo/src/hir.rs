@@ -1104,6 +1104,13 @@ fn variables_libres(stmts: &[Sentencia], params: &[String]) -> (Vec<String>, Vec
 
 /// Carga un módulo en tiempo de compilación y devuelve sus items HIR (funciones
 /// y declaraciones), filtrando por `nombres` si se da (sentencia `usar ... { ... }`).
+static MODULOS_EN_CARGA: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+pub static MODULO_ERROR: std::sync::LazyLock<std::sync::Mutex<Option<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
 fn cargar_modulo_items(
     ruta: &str,
     ctx: &crate::semantico::ContextoSemantico,
@@ -1137,8 +1144,16 @@ fn cargar_modulo_items(
         }
     }
     let Some(contenido) = contenido else {
+        *MODULO_ERROR.lock().unwrap() = Some(format!("no se pudo cargar '{}'", ruta));
         return Vec::new();
     };
+    // Detección de ciclos: si la ruta ya está en carga, abortar.
+    if let Some(p) = &ruta_resuelta {
+        let mut guard = MODULOS_EN_CARGA.lock().unwrap();
+        if !guard.insert(p.clone()) {
+            return Vec::new();
+        }
+    }
     let tokens = match crate::Lexer::nuevo(&contenido).tokenizar() {
         Ok(t) => t,
         Err(_) => return Vec::new(),
@@ -1157,9 +1172,25 @@ fn cargar_modulo_items(
         ctx_mod.archivo = Some(p.display().to_string());
     }
     let _ = ctx_mod.analizar_programa(&ast);
-    // Bajar a HIR con un resolvedor propio (comparte la pila de ámbitos raíz
-    // mediante un nuevo ResolutorHir; los nombres se resuelven por nombre).
-    let hir = match crate::hir::lower_programa(&ast, &ctx_mod) {
+    // Recolectar nombres públicos del módulo.
+    let mut publicos_modulo: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in &ast {
+        match s {
+            Sentencia::Funcion {
+                nombre, publico, ..
+            } if *publico => {
+                publicos_modulo.insert(nombre.clone());
+            }
+            Sentencia::Declaracion {
+                nombre, publico, ..
+            } if *publico => {
+                publicos_modulo.insert(nombre.clone());
+            }
+            _ => {}
+        }
+    }
+    // Bajar a HIR con un resolvedor compartido.
+    let hir = match crate::hir::lower_programa_con_resolutor(&ast, &ctx_mod, res) {
         Ok(h) => h,
         Err(_) => return Vec::new(),
     };
@@ -1178,9 +1209,12 @@ fn cargar_modulo_items(
     // un objeto-módulo `alias` que mapea nombres -> Valor::Funcion(alias_nombre).
     let mut nombres_exportados: Vec<String> = Vec::new();
     if let Some(alias) = alias {
-        // Recolectar nombres de funciones exportadas (tras el filtro).
+        // Recolectar nombres de funciones exportadas (tras el filtro), solo
+        // las públicas (o todas si ninguna está marcada como pública).
         for it in &items {
-            if let HirItem::Funcion { nombre, .. } = it {
+            if let HirItem::Funcion { nombre, .. } = it
+                && publicos_modulo.contains(nombre)
+            {
                 nombres_exportados.push(nombre.clone());
             }
         }
@@ -1224,6 +1258,10 @@ fn cargar_modulo_items(
             }
         }
     }
+    // Liberar la marca de carga.
+    if let Some(p) = &ruta_resuelta {
+        MODULOS_EN_CARGA.lock().unwrap().remove(p);
+    }
     // Incorporar clausuras anidadas (ya están en hir.items tras lower_programa).
     items
 }
@@ -1233,9 +1271,18 @@ pub fn lower_programa(
     ast: &[Sentencia],
     ctx: &crate::semantico::ContextoSemantico,
 ) -> Result<HirPrograma, Vec<String>> {
+    let mut res = ResolutorHir::nuevo();
+    lower_programa_con_resolutor(ast, ctx, &mut res)
+}
+
+/// Versión que permite reutilizar un resolvedor (para inlining de módulos).
+pub fn lower_programa_con_resolutor(
+    ast: &[Sentencia],
+    ctx: &crate::semantico::ContextoSemantico,
+    res: &mut ResolutorHir,
+) -> Result<HirPrograma, Vec<String>> {
     let mut items = Vec::new();
     let mut errores = Vec::new();
-    let mut res = ResolutorHir::nuevo();
     let mut cuerpo_principal: Vec<HirSentencia> = Vec::new();
     let mut tiene_main_usuario = false;
     let mut ultima_es_expresion_bare = false;
@@ -1274,7 +1321,7 @@ pub fn lower_programa(
                 ..
             } => {
                 ultima_es_expresion_bare = false;
-                let val = lower_expresion(valor, ctx, &mut res);
+                let val = lower_expresion(valor, ctx, res);
                 let id = res.insertar(nombre, None);
                 res.variables.insert(nombre.clone());
                 let tipo = tipo_anotacion
@@ -1324,7 +1371,7 @@ pub fn lower_programa(
                 let mut body = Vec::new();
                 let mut fallo = false;
                 for st in cuerpo {
-                    match lower_sentencia(st, ctx, &mut res) {
+                    match lower_sentencia(st, ctx, res) {
                         Ok(hs) => body.push(hs),
                         Err(e) => {
                             errores.push(e);
@@ -1354,13 +1401,9 @@ pub fn lower_programa(
             Sentencia::Expresion(e) => {
                 ultima_es_expresion_bare = true;
                 if tiene_main_usuario {
-                    items.push(HirItem::Expresion(lower_expresion(e, ctx, &mut res)));
+                    items.push(HirItem::Expresion(lower_expresion(e, ctx, res)));
                 } else {
-                    match lower_sentencia(
-                        &Sentencia::Expresion(e.clone()),
-                        ctx,
-                        &mut res,
-                    ) {
+                    match lower_sentencia(&Sentencia::Expresion(e.clone()), ctx, res) {
                         Ok(hs) => cuerpo_principal.push(hs),
                         Err(err) => errores.push(err),
                     }
@@ -1375,12 +1418,12 @@ pub fn lower_programa(
                 res.entrar();
                 let ci: Vec<HirSentencia> = cuerpo_intentar
                     .iter()
-                    .filter_map(|st| lower_sentencia(st, ctx, &mut res).ok())
+                    .filter_map(|st| lower_sentencia(st, ctx, res).ok())
                     .collect();
                 let var_id = variable_error.as_ref().map(|v| res.insertar(v, None));
                 let cr: Vec<HirSentencia> = cuerpo_rescatar
                     .iter()
-                    .filter_map(|st| lower_sentencia(st, ctx, &mut res).ok())
+                    .filter_map(|st| lower_sentencia(st, ctx, res).ok())
                     .collect();
                 res.salir();
                 items.push(HirItem::IntentarRescatar {
@@ -1390,29 +1433,26 @@ pub fn lower_programa(
                 });
             }
             Sentencia::Importar { ruta, alias, .. } => {
-                let mods = cargar_modulo_items(ruta, ctx, &mut res, None, alias.as_deref());
+                let mods = cargar_modulo_items(ruta, ctx, res, None, alias.as_deref());
                 items.push(HirItem::Importar {
                     ruta: ruta.clone(),
                     alias: alias.clone(),
                 });
                 items.extend(mods);
             }
-            Sentencia::Exportar { sentencia, .. } => {
-                match lower_sentencia(sentencia, ctx, &mut res) {
-                    Ok(hs) => items.push(HirItem::Exportar {
-                        sentencia: Box::new(hs),
-                    }),
-                    Err(e) => errores.push(e),
-                }
-            }
+            Sentencia::Exportar { sentencia, .. } => match lower_sentencia(sentencia, ctx, res) {
+                Ok(hs) => items.push(HirItem::Exportar {
+                    sentencia: Box::new(hs),
+                }),
+                Err(e) => errores.push(e),
+            },
             Sentencia::Usar {
                 ruta,
                 alias,
                 nombres,
                 ..
             } => {
-                let mods =
-                    cargar_modulo_items(ruta, ctx, &mut res, nombres.as_ref(), alias.as_deref());
+                let mods = cargar_modulo_items(ruta, ctx, res, nombres.as_ref(), alias.as_deref());
                 items.push(HirItem::Usar {
                     ruta: ruta.clone(),
                     alias: alias.clone(),
@@ -1425,7 +1465,7 @@ pub fn lower_programa(
                 // agrupan en una función `main` sintética para que el motor VM
                 // (que exige `main`) pueda ejecutarlas.
                 ultima_es_expresion_bare = false;
-                match lower_sentencia(otro, ctx, &mut res) {
+                match lower_sentencia(otro, ctx, res) {
                     Ok(hs) => cuerpo_principal.push(hs),
                     Err(e) => errores.push(e),
                 }
@@ -1438,11 +1478,10 @@ pub fn lower_programa(
         // Si la última sentencia es una expresión, convertirla en `retornar`
         // para que el CLI imprima su valor (como hace el Tree-Walk).
         let mut cuerpo = cuerpo_principal;
-        if ultima_es_expresion_bare {
-            if let Some(HirSentencia::Expresion(e)) = cuerpo.last().cloned() {
-                cuerpo.pop();
-                cuerpo.push(HirSentencia::Retornar(Some(e)));
-            }
+        if ultima_es_expresion_bare && let Some(HirSentencia::Expresion(e)) = cuerpo.last().cloned()
+        {
+            cuerpo.pop();
+            cuerpo.push(HirSentencia::Retornar(Some(e)));
         }
         let id = res.insertar("main", None);
         res.funciones.insert("main".to_string());

@@ -34,7 +34,7 @@ fn primera_llamada_entero_segunda_texto_falla() {
         run_bsk("funcion f(x) { retornar x }\nmostrar(f(1))\nmostrar(f(\"a\"))\n");
     assert_ne!(code, 0, "debe fallar en runtime");
     assert!(
-        stderr.contains("incompatible") || stderr.contains("E1"),
+        stderr.contains("incompatible") || stderr.contains("E1") || stderr.contains("se esperaba"),
         "stderr: {stderr}"
     );
 }

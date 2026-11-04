@@ -146,7 +146,9 @@ fn e2e_privado_por_alias() {
     let (code, _stdout, stderr) = run_bsk(&dir, &["run", "main.bsk"]);
     assert_ne!(code, 0);
     assert!(
-        stderr.contains("no es público") || stderr.contains("no existe"),
+        stderr.contains("no es público")
+            || stderr.contains("no existe")
+            || stderr.contains("inexistente"),
         "stderr: {stderr}"
     );
 }
@@ -160,7 +162,9 @@ fn e2e_privado_nominal() {
     let (code, _stdout, stderr) = run_bsk(&dir, &["run", "main.bsk"]);
     assert_ne!(code, 0);
     assert!(
-        stderr.contains("no es público") || stderr.contains("no existe"),
+        stderr.contains("no es público")
+            || stderr.contains("no existe")
+            || stderr.contains("inexistente"),
         "stderr: {stderr}"
     );
 }
