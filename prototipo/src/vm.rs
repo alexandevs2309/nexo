@@ -68,6 +68,8 @@ pub enum ErrorVm {
         valor: String,
         esperado: &'static str,
     },
+    /// Error del puente FFI (carga/llamada de biblioteca dinámica).
+    FfiInvalido { detalle: String },
 }
 
 impl std::fmt::Display for ErrorVm {
@@ -97,6 +99,7 @@ impl std::fmt::Display for ErrorVm {
             ErrorVm::ConversionInvalido { valor, esperado } => {
                 write!(f, "el texto «{valor}» no es un «{esperado}» válido")
             }
+            ErrorVm::FfiInvalido { detalle } => write!(f, "ffi inválido: {detalle}"),
         }
     }
 }
@@ -195,6 +198,177 @@ impl MaquinaVirtual {
                 salida.lock().unwrap().push(texto.clone());
                 print!("{texto}");
                 Ok(Valor::Nulo)
+            }),
+        );
+        self.registrar_nativo(
+            "leer",
+            std::sync::Arc::new(|_args: &[Valor]| {
+                let mut entrada = String::new();
+                match std::io::stdin().lock().read_line(&mut entrada) {
+                    Ok(0) => Ok(Valor::Texto(String::new())),
+                    Ok(_) => {
+                        if entrada.ends_with('\n') {
+                            entrada.pop();
+                        }
+                        if entrada.ends_with('\r') {
+                            entrada.pop();
+                        }
+                        Ok(Valor::Texto(entrada))
+                    }
+                    Err(e) => Err(ErrorVm::FfiInvalido {
+                        detalle: format!("<stdin>: {e}"),
+                    }),
+                }
+            }),
+        );
+        self.registrar_nativo(
+            "leer_entero",
+            std::sync::Arc::new(|_args: &[Valor]| {
+                let mut entrada = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_line(&mut entrada)
+                    .map_err(|e| ErrorVm::FfiInvalido {
+                        detalle: format!("<stdin>: {e}"),
+                    })?;
+                if entrada.ends_with('\n') {
+                    entrada.pop();
+                }
+                if entrada.ends_with('\r') {
+                    entrada.pop();
+                }
+                let texto = entrada.trim();
+                match texto.parse::<i64>() {
+                    Ok(v) => Ok(Valor::Entero(v)),
+                    Err(_) => Err(ErrorVm::ConversionInvalido {
+                        valor: texto.to_string(),
+                        esperado: "entero",
+                    }),
+                }
+            }),
+        );
+        self.registrar_nativo(
+            "leer_decimal",
+            std::sync::Arc::new(|_args: &[Valor]| {
+                let mut entrada = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_line(&mut entrada)
+                    .map_err(|e| ErrorVm::FfiInvalido {
+                        detalle: format!("<stdin>: {e}"),
+                    })?;
+                if entrada.ends_with('\n') {
+                    entrada.pop();
+                }
+                if entrada.ends_with('\r') {
+                    entrada.pop();
+                }
+                let texto = entrada.trim();
+                match Valor::decimal_desde_lexema(texto) {
+                    Ok(v) => Ok(v),
+                    Err(_) => Err(ErrorVm::ConversionInvalido {
+                        valor: texto.to_string(),
+                        esperado: "decimal",
+                    }),
+                }
+            }),
+        );
+        self.registrar_nativo(
+            "leer_real",
+            std::sync::Arc::new(|_args: &[Valor]| {
+                let mut entrada = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_line(&mut entrada)
+                    .map_err(|e| ErrorVm::FfiInvalido {
+                        detalle: format!("<stdin>: {e}"),
+                    })?;
+                if entrada.ends_with('\n') {
+                    entrada.pop();
+                }
+                if entrada.ends_with('\r') {
+                    entrada.pop();
+                }
+                let texto = entrada.trim();
+                match texto.parse::<f64>() {
+                    Ok(v) => Ok(Valor::Real(v)),
+                    Err(_) => Err(ErrorVm::ConversionInvalido {
+                        valor: texto.to_string(),
+                        esperado: "real",
+                    }),
+                }
+            }),
+        );
+        self.registrar_nativo(
+            "ahora",
+            std::sync::Arc::new(|_args: &[Valor]| Ok(crate::fechas::ahora())),
+        );
+        self.registrar_nativo(
+            "fecha_actual",
+            std::sync::Arc::new(|_args: &[Valor]| Ok(crate::fechas::fecha_actual())),
+        );
+        self.registrar_nativo(
+            "formatear_fecha",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let ms = match args.first() {
+                    Some(Valor::Entero(v)) => *v,
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "entero",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let formato = match args.get(1) {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                Ok(crate::fechas::formatear_fecha(ms, &formato))
+            }),
+        );
+        self.registrar_nativo(
+            "http_get",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let url = match args.first() {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                crate::http::http_get(&url).map_err(|d| ErrorVm::FfiInvalido { detalle: d })
+            }),
+        );
+        self.registrar_nativo(
+            "http_post",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let url = match args.first() {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let cuerpo = match args.get(1) {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                crate::http::http_post(&url, &cuerpo)
+                    .map_err(|d| ErrorVm::FfiInvalido { detalle: d })
             }),
         );
         self.registrar_nativo(
@@ -954,6 +1128,85 @@ impl MaquinaVirtual {
                     esperado: "archivo",
                     encontrado: "otro",
                 }),
+            }),
+        );
+        self.registrar_nativo(
+            "cargar_ffi",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let ruta = match args.first() {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let id = crate::ffi::cargar_libreria(&ruta)
+                    .map_err(|d| ErrorVm::FfiInvalido { detalle: d })?;
+                Ok(Valor::Entero(id))
+            }),
+        );
+        self.registrar_nativo(
+            "descargar_ffi",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let id = match args.first() {
+                    Some(Valor::Entero(v)) => *v,
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "entero",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                crate::ffi::descargar_libreria(id)
+                    .map_err(|d| ErrorVm::FfiInvalido { detalle: d })?;
+                Ok(Valor::Nulo)
+            }),
+        );
+        self.registrar_nativo(
+            "llamar_ffi",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let id = match args.first() {
+                    Some(Valor::Entero(v)) => *v,
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "entero",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let simbodo = match args.get(1) {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let argumentos = match args.get(2) {
+                    Some(Valor::Lista(xs)) | Some(Valor::Arreglo(xs)) => xs.clone(),
+                    Some(Valor::Nulo) => Vec::new(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "lista",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let retorno = match args.get(3) {
+                    Some(Valor::Texto(s)) => s.clone(),
+                    None => "entero".to_string(),
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "texto",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                crate::ffi::llamar_funcion(id, &simbodo, &argumentos, &retorno)
+                    .map_err(|d| ErrorVm::FfiInvalido { detalle: d })
             }),
         );
         self.registrar_nativo(

@@ -8,11 +8,9 @@
 //! - Conversiones: solo implícitas sin pérdida (`entero→decimal`, `entero→real`).
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 
@@ -138,12 +136,6 @@ static CACHE_MODULOS: LazyLock<Mutex<HashMap<PathBuf, Entorno>>> =
 static TAREAS: LazyLock<Mutex<Vec<Option<thread::JoinHandle<Result<Valor, String>>>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
-/// Bibliotecas dinámicas cargadas para FFI (`cargar_ffi`), por identificador.
-static LIBRERIAS_FFI: LazyLock<Mutex<HashMap<i64, Arc<libloading::Library>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-/// Siguiente identificador disponible para `cargar_ffi`.
-static SIGUIENTE_ID_FFI: AtomicI64 = AtomicI64::new(0);
-
 /// Nombres reservados que no pueden reutilizarse como funciones de usuario.
 pub const NOMBRES_RESERVADOS: &[&str] = &[
     "si",
@@ -219,6 +211,11 @@ pub const NOMBRES_RESERVADOS: &[&str] = &[
     "json_parsear",
     "json_serializar",
     "json_obtener",
+    "ahora",
+    "fecha_actual",
+    "formatear_fecha",
+    "http_get",
+    "http_post",
 ];
 
 impl CausaError {
@@ -3235,6 +3232,11 @@ fn es_builtin(nombre: &str) -> bool {
             | "json_parsear"
             | "json_serializar"
             | "json_obtener"
+            | "ahora"
+            | "fecha_actual"
+            | "formatear_fecha"
+            | "http_get"
+            | "http_post"
     )
 }
 
@@ -4108,6 +4110,143 @@ fn evaluar_builtin(
                 )),
             }
         }
+        "ahora" => {
+            if !args.is_empty() {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 0,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            Ok(crate::fechas::ahora())
+        }
+        "fecha_actual" => {
+            if !args.is_empty() {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 0,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            Ok(crate::fechas::fecha_actual())
+        }
+        "formatear_fecha" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let ms = match &args[0] {
+                Valor::Entero(v) => *v,
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "entero".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            let formato = match &args[1] {
+                Valor::Texto(s) => s.clone(),
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            Ok(crate::fechas::formatear_fecha(ms, &formato))
+        }
+        "http_get" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let url = match &args[0] {
+                Valor::Texto(s) => s.clone(),
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            crate::http::http_get(&url)
+                .map_err(|detalle| err_builtin(CausaError::FFIInvalido { detalle }, linea, columna))
+        }
+        "http_post" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let url = match &args[0] {
+                Valor::Texto(s) => s.clone(),
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            let cuerpo = match &args[1] {
+                Valor::Texto(s) => s.clone(),
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "texto".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            crate::http::http_post(&url, &cuerpo)
+                .map_err(|detalle| err_builtin(CausaError::FFIInvalido { detalle }, linea, columna))
+        }
         "abs" => {
             if args.len() != 1 {
                 return Err(err_builtin(
@@ -4944,17 +5083,9 @@ fn evaluar_builtin(
                     ));
                 }
             };
-            let libreria = unsafe { libloading::Library::new(&ruta) }.map_err(|e| {
-                err_builtin(
-                    CausaError::FFIInvalido {
-                        detalle: format!("no se pudo cargar '{ruta}': {e}"),
-                    },
-                    linea,
-                    columna,
-                )
+            let id = crate::ffi::cargar_libreria(&ruta).map_err(|detalle| {
+                err_builtin(CausaError::FFIInvalido { detalle }, linea, columna)
             })?;
-            let id = SIGUIENTE_ID_FFI.fetch_add(1, Ordering::SeqCst);
-            LIBRERIAS_FFI.lock().unwrap().insert(id, Arc::new(libreria));
             Ok(Valor::Entero(id))
         }
         "descargar_ffi" => {
@@ -4982,16 +5113,9 @@ fn evaluar_builtin(
                     ));
                 }
             };
-            let eliminada = LIBRERIAS_FFI.lock().unwrap().remove(&id);
-            if eliminada.is_none() {
-                return Err(err_builtin(
-                    CausaError::FFIInvalido {
-                        detalle: format!("no hay biblioteca cargada con id {id}"),
-                    },
-                    linea,
-                    columna,
-                ));
-            }
+            crate::ffi::descargar_libreria(id).map_err(|detalle| {
+                err_builtin(CausaError::FFIInvalido { detalle }, linea, columna)
+            })?;
             Ok(Valor::Nulo)
         }
         "llamar_ffi" => {
@@ -5067,209 +5191,10 @@ fn evaluar_builtin(
                 "entero".to_string()
             };
 
-            // Cargar y buscar el símbolo. El Arc mantiene viva la biblioteca
-            // durante la llamada aunque otro hilo la descargue.
-            let libreria = match LIBRERIAS_FFI.lock().unwrap().get(&id).cloned() {
-                Some(l) => l,
-                None => {
-                    return Err(err_builtin(
-                        CausaError::FFIInvalido {
-                            detalle: format!("no hay biblioteca cargada con id {id}"),
-                        },
-                        linea,
-                        columna,
-                    ));
-                }
-            };
-            let simbolo_ffi = unsafe { libreria.get::<*mut std::ffi::c_void>(simbolo.as_bytes()) }
-                .map_err(|e| {
-                    err_builtin(
-                        CausaError::FFIInvalido {
-                            detalle: format!("símbolo '{simbolo}' no encontrado: {e}"),
-                        },
-                        linea,
-                        columna,
-                    )
+            let resultado = crate::ffi::llamar_funcion(id, &simbolo, &argumentos, &retorno)
+                .map_err(|detalle| {
+                    err_builtin(CausaError::FFIInvalido { detalle }, linea, columna)
                 })?;
-            let funcion_ptr = *simbolo_ffi;
-
-            // Tipos ABI de los argumentos y valores C correspondientes. Los
-            // CString deben sobrevivir a la llamada completa.
-            let mut tipos_args = Vec::with_capacity(argumentos.len());
-            let mut valores_i64: Vec<i64> = Vec::with_capacity(argumentos.len());
-            let mut valores_f64: Vec<f64> = Vec::with_capacity(argumentos.len());
-            let mut valores_texto: Vec<CString> = Vec::with_capacity(argumentos.len());
-            for (i, a) in argumentos.iter().enumerate() {
-                match a {
-                    Valor::Entero(v) => {
-                        tipos_args.push(libffi::middle::Type::i64());
-                        valores_i64.push(*v);
-                    }
-                    Valor::Real(v) => {
-                        tipos_args.push(libffi::middle::Type::f64());
-                        valores_f64.push(*v);
-                    }
-                    Valor::Decimal(v) => {
-                        tipos_args.push(libffi::middle::Type::f64());
-                        valores_f64.push(*v as f64 / FACTOR_ESCALA as f64);
-                    }
-                    Valor::Texto(s) => match CString::new(s.clone()) {
-                        Ok(c) => {
-                            tipos_args.push(libffi::middle::Type::pointer());
-                            valores_texto.push(c);
-                        }
-                        Err(e) => {
-                            return Err(err_builtin(
-                                CausaError::FFIInvalido {
-                                    detalle: format!(
-                                        "argumento {}: texto con byte NUL interno ({e})",
-                                        i + 1
-                                    ),
-                                },
-                                linea,
-                                columna,
-                            ));
-                        }
-                    },
-                    otro => {
-                        return Err(err_builtin(
-                            CausaError::FFIInvalido {
-                                detalle: format!(
-                                    "argumento {}: tipo '{}' no aceptado por la ABI C (aceptados: entero, real, decimal, texto)",
-                                    i + 1,
-                                    otro.nombre_tipo()
-                                ),
-                            },
-                            linea,
-                            columna,
-                        ));
-                    }
-                }
-            }
-
-            // Punteros C estables para argumentos de texto (la cadena vive
-            // hasta el final de la llamada gracias a `valores_texto`).
-            let textos_ptr: Vec<*const std::ffi::c_char> =
-                valores_texto.iter().map(|c| c.as_ptr()).collect();
-
-            // Construir los Arg's una sola vez, con cursores por tipo.
-            let mut args_c: Vec<libffi::middle::Arg> = Vec::with_capacity(argumentos.len());
-            let mut idx_i64 = 0usize;
-            let mut idx_f64 = 0usize;
-            let mut idx_texto = 0usize;
-            for a in &argumentos {
-                match a {
-                    Valor::Entero(_) => {
-                        args_c.push(libffi::middle::arg(&valores_i64[idx_i64]));
-                        idx_i64 += 1;
-                    }
-                    Valor::Real(_) | Valor::Decimal(_) => {
-                        args_c.push(libffi::middle::arg(&valores_f64[idx_f64]));
-                        idx_f64 += 1;
-                    }
-                    Valor::Texto(_) => {
-                        args_c.push(libffi::middle::arg(&textos_ptr[idx_texto]));
-                        idx_texto += 1;
-                    }
-                    _ => unreachable!("los tipos no aceptados se rechazan antes"),
-                }
-            }
-
-            // La firma final depende del tipo indicado de retorno.
-            let resultado: Valor = match retorno.as_str() {
-                "entero" | "logico" => {
-                    let cif =
-                        libffi::middle::Cif::new(tipos_args.clone(), libffi::middle::Type::i64());
-                    let r = unsafe {
-                        cif.call::<i64>(libffi::low::CodePtr::from_ptr(funcion_ptr), &args_c)
-                    };
-                    if retorno == "logico" {
-                        Valor::Logico(r != 0)
-                    } else {
-                        Valor::Entero(r)
-                    }
-                }
-                "real" => {
-                    let cif =
-                        libffi::middle::Cif::new(tipos_args.clone(), libffi::middle::Type::f64());
-                    Valor::Real(unsafe {
-                        cif.call::<f64>(libffi::low::CodePtr::from_ptr(funcion_ptr), &args_c)
-                    })
-                }
-                "decimal" => {
-                    let cif =
-                        libffi::middle::Cif::new(tipos_args.clone(), libffi::middle::Type::f64());
-                    let r = unsafe {
-                        cif.call::<f64>(libffi::low::CodePtr::from_ptr(funcion_ptr), &args_c)
-                    };
-                    if !r.is_finite() {
-                        return Err(err_builtin(
-                            CausaError::FFIInvalido {
-                                detalle: "el resultado no es representable en 'decimal'"
-                                    .to_string(),
-                            },
-                            linea,
-                            columna,
-                        ));
-                    }
-                    let escalado = r * FACTOR_ESCALA as f64;
-                    // `decimal` es un entero escalado (i128); un resultado
-                    // mayor que i128::MAX no es representable.
-                    if escalado.abs() >= i128::MAX as f64 {
-                        return Err(err_builtin(
-                            CausaError::FFIInvalido {
-                                detalle: "el resultado se desborda en 'decimal'".to_string(),
-                            },
-                            linea,
-                            columna,
-                        ));
-                    }
-                    Valor::Decimal(escalado as i128)
-                }
-                "texto" => {
-                    let cif = libffi::middle::Cif::new(
-                        tipos_args.clone(),
-                        libffi::middle::Type::pointer(),
-                    );
-                    let ptr = unsafe {
-                        cif.call::<*const std::ffi::c_char>(
-                            libffi::low::CodePtr::from_ptr(funcion_ptr),
-                            &args_c,
-                        )
-                    };
-                    if ptr.is_null() {
-                        return Err(err_builtin(
-                            CausaError::FFIInvalido {
-                                detalle: "la función devolvió un puntero nulo con retorno 'texto'"
-                                    .to_string(),
-                            },
-                            linea,
-                            columna,
-                        ));
-                    }
-                    let texto = unsafe { std::ffi::CStr::from_ptr(ptr) }
-                        .to_string_lossy()
-                        .into_owned();
-                    Valor::Texto(texto)
-                }
-                "nulo" | "vacío" => {
-                    let cif =
-                        libffi::middle::Cif::new(tipos_args.clone(), libffi::middle::Type::void());
-                    unsafe { cif.call::<()>(libffi::low::CodePtr::from_ptr(funcion_ptr), &args_c) };
-                    Valor::Nulo
-                }
-                otro => {
-                    return Err(err_builtin(
-                        CausaError::FFIInvalido {
-                            detalle: format!(
-                                "tipo de retorno '{otro}' no aceptado (aceptados: entero, logico, real, decimal, texto, nulo)"
-                            ),
-                        },
-                        linea,
-                        columna,
-                    ));
-                }
-            };
             Ok(resultado)
         }
 
