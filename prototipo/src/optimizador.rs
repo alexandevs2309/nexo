@@ -83,6 +83,9 @@ fn plegar_constantes(f: &mut MirFunction) {
                 }
                 MirStmt::EntrarTry { .. } => {}
                 MirStmt::SalirTry => {}
+                MirStmt::AsignacionGlobal { valor, .. } => {
+                    sustituir_constantes(valor, &conocidos);
+                }
                 MirStmt::Nop => {}
             }
         }

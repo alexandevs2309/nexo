@@ -27,7 +27,13 @@ pub enum MirOperand {
     Move(LocalId),
     /// Constante literal.
     Const(MirConst),
+    /// Acceso a una variable global.
+    Global(GlobalId),
 }
+
+/// Identificador de variable global.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GlobalId(pub usize);
 
 /// Constante MIR.
 #[derive(Debug, Clone, PartialEq)]
@@ -134,6 +140,8 @@ pub enum MirUnOp {
 pub enum MirStmt {
     /// `_local = rvalue`
     Asignacion { destino: MirPlace, valor: MirRvalue },
+    /// `_global = rvalue`
+    AsignacionGlobal { global: GlobalId, valor: MirRvalue },
     /// Llamada a función con resultado en `destino` (si Some).
     Llamada {
         destino: Option<MirPlace>,
@@ -207,7 +215,7 @@ pub struct MirFunction {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MirPrograma {
     pub funciones: Vec<MirFunction>,
-    pub globals: Vec<(String, TipoSem)>,
+    pub globals: Vec<TipoSem>,
 }
 
 /// Contexto de lowering de una función.
@@ -216,6 +224,8 @@ struct LoweringCtx {
     /// Mapeo `SimbodoId -> LocalId`: los ids de símbodo no son consecutivos
     /// (guarida de resolución léxica del HIR), así que cada local se registra.
     mapeo: HashMap<SimbodoId, LocalId>,
+    /// Mapeo `SimbodoId -> GlobalId` para variables globales (top-level).
+    globals: HashMap<SimbodoId, GlobalId>,
     /// Variables capturadas (por referencia) en esta función.
     capturadas: std::collections::HashSet<SimbodoId>,
     bloques: Vec<MirBasicBlock>,
@@ -226,10 +236,11 @@ struct LoweringCtx {
 }
 
 impl LoweringCtx {
-    fn nuevo() -> Self {
+    fn nuevo(globals: HashMap<SimbodoId, GlobalId>) -> Self {
         let mut ctx = LoweringCtx {
             locals: Vec::new(),
             mapeo: HashMap::new(),
+            globals,
             capturadas: std::collections::HashSet::new(),
             bloques: Vec::new(),
             bloque_actual: BlockId(0),
@@ -310,6 +321,9 @@ fn lower_expr(ctx: &mut LoweringCtx, e: &HirExpresion) -> MirOperand {
     match e {
         HirExpresion::Literal(lit, _tipo) => MirOperand::Const(lower_literal(lit)),
         HirExpresion::Variable(id, _tipo) => {
+            if let Some(&gid) = ctx.globals.get(id) {
+                return MirOperand::Global(gid);
+            }
             let local = ctx.local_de_simbodo(*id, TipoSem::Desconocido);
             if ctx.capturadas.contains(id) {
                 let tmp = ctx.nuevo_temp(TipoSem::Desconocido);
@@ -736,6 +750,13 @@ fn lower_stmt(ctx: &mut LoweringCtx, s: &HirSentencia) -> Result<(), String> {
             ..
         } => {
             let op = lower_expr(ctx, valor);
+            if let Some(&gid) = ctx.globals.get(simbodo) {
+                ctx.emitir_stmt(MirStmt::AsignacionGlobal {
+                    global: gid,
+                    valor: MirRvalue::Use(op),
+                });
+                return Ok(());
+            }
             let local = ctx.local_de_simbodo(*simbodo, tipo.clone());
             if ctx.capturadas.contains(simbodo) {
                 let tmp = ctx.nuevo_temp(TipoSem::Desconocido);
@@ -766,6 +787,13 @@ fn lower_stmt(ctx: &mut LoweringCtx, s: &HirSentencia) -> Result<(), String> {
         }
         HirSentencia::Asignacion { simbodo, valor } => {
             let op = lower_expr(ctx, valor);
+            if let Some(&gid) = ctx.globals.get(simbodo) {
+                ctx.emitir_stmt(MirStmt::AsignacionGlobal {
+                    global: gid,
+                    valor: MirRvalue::Use(op),
+                });
+                return Ok(());
+            }
             let local = ctx.local_de_simbodo(*simbodo, TipoSem::Desconocido);
             if ctx.capturadas.contains(simbodo) {
                 ctx.emitir_stmt(MirStmt::Asignacion {
@@ -1088,7 +1116,18 @@ fn lower_stmt(ctx: &mut LoweringCtx, s: &HirSentencia) -> Result<(), String> {
 }
 
 /// Lowering de un item HIR a función MIR.
-fn lower_item(ctx_global: &mut MirPrograma, item: &HirItem) {
+fn lower_item(
+    ctx_global: &mut MirPrograma,
+    item: &HirItem,
+    globals: &std::collections::HashMap<SimbodoId, GlobalId>,
+) {
+    // Las funciones de módulos inlinados (nombre con prefijo alias_) no deben
+    // ver las globales del módulo principal: sus parámetros pueden colisionar
+    // con ids de símbodo de declaraciones top-level del principal.
+    let es_modulo = match item {
+        HirItem::Funcion { nombre, .. } => nombre.contains('_'),
+        _ => false,
+    };
     match item {
         HirItem::Funcion {
             nombre,
@@ -1100,7 +1139,11 @@ fn lower_item(ctx_global: &mut MirPrograma, item: &HirItem) {
             retorno,
             cuerpo,
         } => {
-            let mut ctx = LoweringCtx::nuevo();
+            let mut ctx = LoweringCtx::nuevo(if es_modulo {
+                std::collections::HashMap::new()
+            } else {
+                globals.clone()
+            });
             ctx.capturadas = celdas.iter().cloned().collect();
             let externas: std::collections::HashSet<SimbodoId> =
                 capturas_externas.iter().cloned().collect();
@@ -1138,9 +1181,9 @@ fn lower_item(ctx_global: &mut MirPrograma, item: &HirItem) {
             for st in cuerpo {
                 let _ = lower_stmt(&mut ctx, st);
             }
-            // Si no hay terminator en el bloque de entrada, añadir Return.
+            // Si no hay terminator en el bloque actual, añadir Return.
             if matches!(
-                ctx.bloque_mut(BlockId(0)).terminator,
+                ctx.bloque_mut(ctx.bloque_actual).terminator,
                 MirTerminator::Unreachable
             ) {
                 ctx.set_terminator(MirTerminator::Return(None));
@@ -1161,11 +1204,9 @@ fn lower_item(ctx_global: &mut MirPrograma, item: &HirItem) {
             valor,
             ..
         } => {
-            // Global.
-            ctx_global
-                .globals
-                .push((format!("g_{}", simbodo.0), tipo.clone()));
-            let _ = valor;
+            // Global: la inicialización se hace en la función __init de
+            // `lower_programa`; aquí no hay nada que bajar.
+            let _ = (simbodo, tipo, valor);
         }
         _ => {}
     }
@@ -1173,10 +1214,61 @@ fn lower_item(ctx_global: &mut MirPrograma, item: &HirItem) {
 
 /// Lowering de programa HIR a MIR.
 pub fn lower_programa(hir: &HirPrograma) -> MirPrograma {
-    let mut prog = MirPrograma::default();
+    // Primera pasada: identificar variables globales (HirItem::Declaracion) y
+    // asignarles un GlobalId.
+    let mut global_map: std::collections::HashMap<SimbodoId, GlobalId> =
+        std::collections::HashMap::new();
+    let mut global_types: Vec<TipoSem> = Vec::new();
     for item in &hir.items {
-        lower_item(&mut prog, item);
+        if let HirItem::Declaracion { simbodo, tipo, .. } = item {
+            let id = GlobalId(global_types.len());
+            global_map.insert(*simbodo, id);
+            global_types.push(tipo.clone());
+        }
     }
+
+    // Segunda pasada: bajar items (funciones + declaraciones).
+    let mut prog = MirPrograma {
+        funciones: Vec::new(),
+        globals: global_types,
+    };
+    for item in &hir.items {
+        lower_item(&mut prog, item, &global_map);
+    }
+
+    // Construir función de inicialización de globales (`__init`) si hay alguna.
+    if !global_map.is_empty() {
+        let mut ctx = LoweringCtx::nuevo(global_map.clone());
+        // Para cada declaración global, bajar su valor y asignarlo al global.
+        for item in &hir.items {
+            if let HirItem::Declaracion { simbodo, valor, .. } = item {
+                let gid = global_map[simbodo];
+                let op = lower_expr(&mut ctx, valor);
+                // Materializar el operando en un rvalue Use.
+                ctx.emitir_stmt(MirStmt::AsignacionGlobal {
+                    global: gid,
+                    valor: MirRvalue::Use(op),
+                });
+            }
+        }
+        // Terminator de retorno.
+        if matches!(
+            ctx.bloque_mut(BlockId(0)).terminator,
+            MirTerminator::Unreachable
+        ) {
+            ctx.set_terminator(MirTerminator::Return(None));
+        }
+        let init_func = MirFunction {
+            nombre: "__init".to_string(),
+            params: Vec::new(),
+            retorno: TipoSem::Desconocido,
+            locals: ctx.locals,
+            bloques: ctx.bloques,
+            bloque_entrada: BlockId(0),
+        };
+        prog.funciones.push(init_func);
+    }
+
     prog
 }
 

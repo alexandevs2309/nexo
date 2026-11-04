@@ -124,6 +124,10 @@ pub struct MaquinaVirtual {
     nativos: HashMap<String, FuncionNativa>,
     /// Salida capturada de `mostrar`/`mostrar_sin_salto` (biblioteca estándar).
     salida: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Valores de las variables globales (inicializados por `__init`).
+    globals: Vec<Valor>,
+    /// Si ya se ejecutó `__init`.
+    inicializado: bool,
     /// Pila de regiones try activas.
     try_stack: Vec<(BlockId, BlockId, Option<usize>)>,
     pasos: usize,
@@ -144,6 +148,7 @@ impl MaquinaVirtual {
         limite_pasos: usize,
         limite_profundidad: usize,
     ) -> Self {
+        let n_globals = programa.globals.len();
         let mut indice = HashMap::new();
         for (i, f) in programa.funciones.iter().enumerate() {
             indice.entry(f.nombre.clone()).or_insert(i);
@@ -153,6 +158,8 @@ impl MaquinaVirtual {
             indice,
             nativos: HashMap::new(),
             salida: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            globals: vec![Valor::Nulo; n_globals],
+            inicializado: false,
             try_stack: Vec::new(),
             pasos: 0,
             limite_pasos,
@@ -1297,6 +1304,14 @@ impl MaquinaVirtual {
             return Err(ErrorVm::ProfundidadExcedida);
         }
 
+        // Inicializar globales una sola vez antes de `main`.
+        if f.nombre == "main" && !self.inicializado {
+            self.inicializado = true;
+            if let Some(idx) = self.indice_de("__init") {
+                let _ = self.ejecutar_indice(idx, &[])?;
+            }
+        }
+
         // Locales: ceros-nulos y parámetros asignados por posición.
         let mut locals: Vec<Valor> = vec![Valor::Nulo; f.locals.len()];
         if args.len() < f.params.len() {
@@ -1367,6 +1382,13 @@ impl MaquinaVirtual {
             MirStmt::Asignacion { destino, valor } => {
                 let v = self.evaluar_rvalue(locals, valor)?;
                 self.escribir_place(locals, destino, v)
+            }
+            MirStmt::AsignacionGlobal { global, valor } => {
+                let v = self.evaluar_rvalue(locals, valor)?;
+                if global.0 < self.globals.len() {
+                    self.globals[global.0] = v;
+                }
+                Ok(())
             }
             MirStmt::Llamada {
                 destino,
@@ -1700,6 +1722,10 @@ impl MaquinaVirtual {
                 })
             }
             MirOperand::Const(c) => Ok(const_a_valor(c)),
+            MirOperand::Global(g) => self.globals.get(g.0).cloned().ok_or(ErrorVm::TipoEsperado {
+                esperado: "global",
+                encontrado: "vacío",
+            }),
         }
     }
 

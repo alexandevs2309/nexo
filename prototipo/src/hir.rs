@@ -1238,6 +1238,7 @@ pub fn lower_programa(
     let mut res = ResolutorHir::nuevo();
     let mut cuerpo_principal: Vec<HirSentencia> = Vec::new();
     let mut tiene_main_usuario = false;
+    let mut ultima_es_expresion_bare = false;
 
     // Pre-paso: registrar los nombres de las funciones de primer nivel en el
     // ámbito raíz (permite llamadas anticipadas y recursión), igual que
@@ -1272,6 +1273,7 @@ pub fn lower_programa(
                 publico,
                 ..
             } => {
+                ultima_es_expresion_bare = false;
                 let val = lower_expresion(valor, ctx, &mut res);
                 let id = res.insertar(nombre, None);
                 res.variables.insert(nombre.clone());
@@ -1350,7 +1352,19 @@ pub fn lower_programa(
                 });
             }
             Sentencia::Expresion(e) => {
-                items.push(HirItem::Expresion(lower_expresion(e, ctx, &mut res)));
+                ultima_es_expresion_bare = true;
+                if tiene_main_usuario {
+                    items.push(HirItem::Expresion(lower_expresion(e, ctx, &mut res)));
+                } else {
+                    match lower_sentencia(
+                        &Sentencia::Expresion(e.clone()),
+                        ctx,
+                        &mut res,
+                    ) {
+                        Ok(hs) => cuerpo_principal.push(hs),
+                        Err(err) => errores.push(err),
+                    }
+                }
             }
             Sentencia::IntentarRescatar {
                 cuerpo_intentar,
@@ -1410,6 +1424,7 @@ pub fn lower_programa(
                 // Sentencias de nivel superior (mostrar, si, mientras, ...) se
                 // agrupan en una función `main` sintética para que el motor VM
                 // (que exige `main`) pueda ejecutarlas.
+                ultima_es_expresion_bare = false;
                 match lower_sentencia(otro, ctx, &mut res) {
                     Ok(hs) => cuerpo_principal.push(hs),
                     Err(e) => errores.push(e),
@@ -1420,6 +1435,15 @@ pub fn lower_programa(
     // Si no hay `main` de usuario pero se acumularon sentencias de nivel
     // superior, sintetizar `funcion main()` para el motor VM.
     if !tiene_main_usuario && !cuerpo_principal.is_empty() {
+        // Si la última sentencia es una expresión, convertirla en `retornar`
+        // para que el CLI imprima su valor (como hace el Tree-Walk).
+        let mut cuerpo = cuerpo_principal;
+        if ultima_es_expresion_bare {
+            if let Some(HirSentencia::Expresion(e)) = cuerpo.last().cloned() {
+                cuerpo.pop();
+                cuerpo.push(HirSentencia::Retornar(Some(e)));
+            }
+        }
         let id = res.insertar("main", None);
         res.funciones.insert("main".to_string());
         items.push(HirItem::Funcion {
@@ -1430,7 +1454,7 @@ pub fn lower_programa(
             capturas_externas: Vec::new(),
             celdas: Vec::new(),
             retorno: TipoSem::Desconocido,
-            cuerpo: cuerpo_principal,
+            cuerpo,
         });
     }
     if !errores.is_empty() {

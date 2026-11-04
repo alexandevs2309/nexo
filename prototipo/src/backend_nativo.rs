@@ -152,6 +152,9 @@ fn generar_stmt(out: &mut String, stmt: &MirStmt, indent: usize) {
             out.push_str(&format!("{}// intentar no soportado\n", pad));
         }
         MirStmt::SalirTry => {}
+        MirStmt::AsignacionGlobal { .. } => {
+            out.push_str(&format!("{}// global no soportado\n", pad));
+        }
         MirStmt::Nop => {}
     }
 }
@@ -202,6 +205,7 @@ fn generar_operando(op: &MirOperand) -> String {
     match op {
         MirOperand::Copy(l) => format!("l{}", l.0),
         MirOperand::Move(l) => format!("l{}", l.0),
+        MirOperand::Global(_) => "0".to_string(),
         MirOperand::Const(c) => match c {
             MirConst::Entero(n) => n.to_string(),
             MirConst::Logico(b) => {
