@@ -1874,6 +1874,13 @@ impl MaquinaVirtual {
                     capturas: caps,
                 })
             }
+            MirRvalue::ObjetoModulo { prefijo, nombres } => {
+                let mut mapa = std::collections::BTreeMap::new();
+                for n in nombres {
+                    mapa.insert(n.clone(), Valor::Funcion(format!("{}_{}", prefijo, n)));
+                }
+                Ok(Valor::Objeto(mapa))
+            }
             MirRvalue::Longitud { base } => {
                 let base_v = self.operando_a_valor(locals, base)?;
                 let n = match &base_v {

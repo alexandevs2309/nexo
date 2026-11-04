@@ -86,6 +86,13 @@ pub enum HirExpresion {
         sino: Option<Vec<HirSentencia>>,
     },
     Otro(TipoSem),
+    /// Objeto-módulo: mapea nombres exportados a referencias de función
+    /// (Valor::Funcion(prefijo_nombre)). Usado por `usar`/`importar ... como alias`.
+    ModuloObjeto {
+        prefijo: String,
+        nombres: Vec<String>,
+        tipo: TipoSem,
+    },
 }
 
 /// Sentencia HIR.
@@ -1102,6 +1109,7 @@ fn cargar_modulo_items(
     ctx: &crate::semantico::ContextoSemantico,
     res: &mut ResolutorHir,
     nombres: Option<&Vec<String>>,
+    alias: Option<&str>,
 ) -> Vec<HirItem> {
     use std::path::PathBuf;
     // Resolver ruta relativa al archivo actual.
@@ -1165,12 +1173,55 @@ fn cargar_modulo_items(
             _ => false,
         });
     }
-    // Registrar las funciones importadas en el resolvedor actual para que las
-    // llamadas posteriores se resuelvan como directas.
-    for it in &items {
-        if let HirItem::Funcion { nombre, .. } = it {
-            res.funciones.insert(nombre.clone());
-            res.insertar(nombre, None);
+
+    // Si hay alias, prefijar las funciones importadas con `alias_` y registrar
+    // un objeto-módulo `alias` que mapea nombres -> Valor::Funcion(alias_nombre).
+    let mut nombres_exportados: Vec<String> = Vec::new();
+    if let Some(alias) = alias {
+        // Recolectar nombres de funciones exportadas (tras el filtro).
+        for it in &items {
+            if let HirItem::Funcion { nombre, .. } = it {
+                nombres_exportados.push(nombre.clone());
+            }
+        }
+        // Prefijar nombres de funciones.
+        for it in &mut items {
+            if let HirItem::Funcion { nombre, .. } = it {
+                *nombre = format!("{}_{}", alias, nombre);
+            }
+        }
+        // Registrar funciones prefijadas en el resolvedor.
+        for it in &items {
+            if let HirItem::Funcion { nombre, .. } = it {
+                res.funciones.insert(nombre.clone());
+                res.insertar(nombre, None);
+            }
+        }
+        // Crear objeto-módulo sintético.
+        if !nombres_exportados.is_empty() {
+            let id = res.insertar(alias, None);
+            res.variables.insert(alias.to_string());
+            items.push(HirItem::Declaracion {
+                simbodo: id,
+                tipo: TipoSem::Desconocido,
+                valor: HirExpresion::ModuloObjeto {
+                    prefijo: alias.to_string(),
+                    nombres: nombres_exportados,
+                    tipo: TipoSem::Desconocido,
+                },
+                mutable: false,
+                es_const: false,
+                publico: false,
+            });
+        }
+    } else {
+        // Registrar las funciones importadas en el resolvedor actual para que las
+        // llamadas posteriores se resuelvan como directas.
+        for it in &items {
+            if let HirItem::Funcion { nombre, .. } = it {
+                res.funciones.insert(nombre.clone());
+                res.insertar(nombre, None);
+            }
         }
     }
     // Incorporar clausuras anidadas (ya están en hir.items tras lower_programa).
@@ -1325,7 +1376,7 @@ pub fn lower_programa(
                 });
             }
             Sentencia::Importar { ruta, alias, .. } => {
-                let mods = cargar_modulo_items(ruta, ctx, &mut res, None);
+                let mods = cargar_modulo_items(ruta, ctx, &mut res, None, alias.as_deref());
                 items.push(HirItem::Importar {
                     ruta: ruta.clone(),
                     alias: alias.clone(),
@@ -1346,7 +1397,8 @@ pub fn lower_programa(
                 nombres,
                 ..
             } => {
-                let mods = cargar_modulo_items(ruta, ctx, &mut res, nombres.as_ref());
+                let mods =
+                    cargar_modulo_items(ruta, ctx, &mut res, nombres.as_ref(), alias.as_deref());
                 items.push(HirItem::Usar {
                     ruta: ruta.clone(),
                     alias: alias.clone(),

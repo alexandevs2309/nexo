@@ -99,6 +99,11 @@ pub enum MirRvalue {
     Longitud {
         base: MirOperand,
     },
+    /// Objeto-módulo: mapea nombres a Valor::Funcion(prefijo_nombre).
+    ObjetoModulo {
+        prefijo: String,
+        nombres: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -695,6 +700,24 @@ fn lower_expr(ctx: &mut LoweringCtx, e: &HirExpresion) -> MirOperand {
                     inicio: i,
                     fin: f,
                     inclusivo: *inclusivo,
+                },
+            });
+            MirOperand::Copy(tmp)
+        }
+        HirExpresion::ModuloObjeto {
+            prefijo,
+            nombres,
+            tipo,
+        } => {
+            let tmp = ctx.nuevo_temp(tipo.clone());
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local: tmp,
+                    projection: vec![],
+                },
+                valor: MirRvalue::ObjetoModulo {
+                    prefijo: prefijo.clone(),
+                    nombres: nombres.clone(),
                 },
             });
             MirOperand::Copy(tmp)

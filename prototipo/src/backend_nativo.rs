@@ -256,5 +256,6 @@ fn generar_rvalue(r: &MirRvalue) -> String {
         MirRvalue::Clausura { .. } => "0".to_string(),
         MirRvalue::CrearCelda { .. } => "0".to_string(),
         MirRvalue::LeerCelda { .. } => "0".to_string(),
+        MirRvalue::ObjetoModulo { .. } => "0".to_string(),
     }
 }

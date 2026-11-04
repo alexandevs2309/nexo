@@ -122,6 +122,7 @@ fn sustituir_constantes(r: &mut MirRvalue, conocidos: &HashMap<usize, MirConst>)
         }
         MirRvalue::CrearCelda { valor } => sustituir_operando(valor, conocidos),
         MirRvalue::LeerCelda { base } => sustituir_operando(base, conocidos),
+        MirRvalue::ObjetoModulo { .. } => {}
         MirRvalue::Use(op) => sustituir_operando(op, conocidos),
     }
 }
