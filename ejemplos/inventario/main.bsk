@@ -1,0 +1,189 @@
+// Inventario BASILISCO — aplicación de consola
+// Datos: [id, nombre, precio, existencia]
+// Ejecutar desde prototipo: cargo run -- run ../ejemplos/inventario/main.bsk
+
+const ARCHIVO = "datos/inventario.json"
+
+funcion buscar_id(productos, id) -> entero {
+    sea i = 0
+    mientras i < longitud(productos) {
+        si productos[i][0] == id {
+            retornar i
+        }
+        i = i + 1
+    }
+    retornar -1
+}
+
+funcion guardar(productos) {
+    escribir_archivo(ARCHIVO, json_serializar(productos))
+}
+
+funcion cargar() {
+    si existe_archivo(ARCHIVO) {
+        intentar {
+            retornar json_parsear(leer_archivo(ARCHIVO))
+        } rescatar e {
+            mostrar("AVISO: no se pudo leer el inventario: " + e)
+            retornar json_parsear("[]")
+        }
+    }
+    retornar json_parsear("[]")
+}
+
+funcion listar(productos) {
+    mostrar("")
+    mostrar("===== EXISTENCIAS =====")
+    si longitud(productos) == 0 {
+        mostrar("No hay productos registrados.")
+    } sino {
+        sea i = 0
+        mientras i < longitud(productos) {
+            sea p = productos[i]
+            mostrar("ID: " + texto(p[0]) + " | " + p[1] + " | Precio: " + texto(p[2]) + " | Stock: " + texto(p[3]))
+            i = i + 1
+        }
+    }
+}
+
+funcion agregar_producto(productos) {
+    mostrar("ID del producto:")
+    sea id = leer_entero()
+    si buscar_id(productos, id) >= 0 {
+        mostrar("ERROR: ya existe un producto con ese ID.")
+        retornar productos
+    }
+    mostrar("Nombre:")
+    sea nombre = recortar(leer())
+    si es_vacio(nombre) {
+        mostrar("ERROR: el nombre no puede estar vacío.")
+        retornar productos
+    }
+    mostrar("Precio:")
+    sea precio = leer_decimal()
+    si precio < 0 {
+        mostrar("ERROR: el precio no puede ser negativo.")
+        retornar productos
+    }
+    mostrar("Existencia inicial:")
+    sea stock = leer_entero()
+    si stock < 0 {
+        mostrar("ERROR: la existencia no puede ser negativa.")
+        retornar productos
+    }
+    retornar agregar(productos, [id, nombre, precio, stock])
+}
+
+funcion entrada(productos) {
+    mostrar("ID del producto:")
+    sea id = leer_entero()
+    sea pos = buscar_id(productos, id)
+    si pos < 0 {
+        mostrar("Producto no encontrado.")
+        retornar productos
+    }
+    mostrar("Cantidad recibida:")
+    sea cantidad = leer_entero()
+    si cantidad <= 0 {
+        mostrar("La cantidad debe ser mayor que cero.")
+        retornar productos
+    }
+    sea p = productos[pos]
+    sea actualizado = [p[0], p[1], p[2], p[3] + cantidad]
+    productos[pos] = actualizado
+    mostrar("Entrada registrada. Nuevo stock: " + texto(actualizado[3]))
+    retornar productos
+}
+
+funcion salida(productos) {
+    mostrar("ID del producto:")
+    sea id = leer_entero()
+    sea pos = buscar_id(productos, id)
+    si pos < 0 {
+        mostrar("Producto no encontrado.")
+        retornar productos
+    }
+    mostrar("Cantidad despachada:")
+    sea cantidad = leer_entero()
+    si cantidad <= 0 {
+        mostrar("La cantidad debe ser mayor que cero.")
+        retornar productos
+    }
+    sea p = productos[pos]
+    si cantidad > p[3] {
+        mostrar("OPERACIÓN RECHAZADA: stock insuficiente.")
+        retornar productos
+    }
+    sea actualizado = [p[0], p[1], p[2], p[3] - cantidad]
+    productos[pos] = actualizado
+    mostrar("Salida registrada. Nuevo stock: " + texto(actualizado[3]))
+    retornar productos
+}
+
+funcion consultar(productos) {
+    mostrar("ID del producto:")
+    sea id = leer_entero()
+    sea pos = buscar_id(productos, id)
+    si pos < 0 {
+        mostrar("Producto no encontrado.")
+    } sino {
+        sea p = productos[pos]
+        mostrar("ID: " + texto(p[0]))
+        mostrar("Nombre: " + p[1])
+        mostrar("Precio: " + texto(p[2]))
+        mostrar("Existencia: " + texto(p[3]))
+    }
+}
+
+funcion valor_inventario(productos) -> decimal {
+    sea total = 0.0
+    sea i = 0
+    mientras i < longitud(productos) {
+        sea p = productos[i]
+        total = total + (p[2] * p[3])
+        i = i + 1
+    }
+    retornar total
+}
+
+funcion main() {
+    var productos = cargar()
+    var opcion = 0
+    mostrar("================================")
+    mostrar("      BASILISCO INVENTARIO")
+    mostrar("================================")
+    mientras opcion != 7 {
+        mostrar("")
+        mostrar("1. Listar productos")
+        mostrar("2. Registrar producto")
+        mostrar("3. Registrar entrada")
+        mostrar("4. Registrar salida")
+        mostrar("5. Consultar producto")
+        mostrar("6. Valor total del inventario")
+        mostrar("7. Guardar y salir")
+        mostrar_sin_salto("Seleccione: ")
+        opcion = leer_entero()
+
+        si opcion == 1 {
+            listar(productos)
+        } sino si opcion == 2 {
+            productos = agregar_producto(productos)
+            guardar(productos)
+        } sino si opcion == 3 {
+            productos = entrada(productos)
+            guardar(productos)
+        } sino si opcion == 4 {
+            productos = salida(productos)
+            guardar(productos)
+        } sino si opcion == 5 {
+            consultar(productos)
+        } sino si opcion == 6 {
+            mostrar("Valor total: " + texto(valor_inventario(productos)))
+        } sino si opcion == 7 {
+            guardar(productos)
+            mostrar("Inventario guardado. Hasta luego.")
+        } sino {
+            mostrar("Opción inválida.")
+        }
+    }
+}
