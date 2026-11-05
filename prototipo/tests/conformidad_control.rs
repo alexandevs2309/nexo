@@ -4,18 +4,52 @@
 //! Cada bloque cita la sección del ADR que verifica. Casos límite con
 //! resultado esperado explícito.
 
-use basilisco::{CausaError, Entorno, ErrorEjecucion, Lexer, Parser, Sentencia, Valor};
+use basilisco::{CausaError, ErrorEjecucion, Sentencia};
+use basilisco::{ContextoSemantico, Entorno, Lexer, Parser, Valor, hir, mir, vm};
 
-/// Ejecuta un programa completo y devuelve el valor de la última expresión.
-fn ejecutar_programa(fuente: &str) -> Result<Option<Valor>, String> {
+/// Ejecuta un programa completo vía el motor VM.
+fn vm_ejecutar(fuente: &str) -> Result<Option<Valor>, String> {
     let tokens = Lexer::nuevo(fuente)
         .tokenizar()
         .map_err(|e| format!("léxico: {e}"))?;
     let ss = Parser::nuevo(tokens)
         .parsear_programa()
         .map_err(|e| format!("sintaxis: {e}"))?;
-    let mut env = Entorno::nueva();
-    env.ejecutar_programa(&ss).map_err(|e| e.mensaje)
+    let mut ctx = ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    let hir = match hir::lower_programa(&ss, &ctx) {
+        Ok(h) => h,
+        Err(_) => return Err("HIR lowering error".to_string()),
+    };
+    let mir = mir::lower_programa(&hir);
+    let mut maquina = vm::MaquinaVirtual::nuevo(mir);
+    maquina.registrar_stdlib();
+    let Some(idx) = maquina.indice_de("main") else {
+        return Err("el programa no define `funcion main()`".to_string());
+    };
+    maquina.ejecutar_indice(idx, &[]).map_err(|e| e.to_string())
+}
+
+/// Ejecuta un programa completo verificando paridad Tree-Walk y VM.
+fn ejecutar_programa(fuente: &str) -> Result<Option<Valor>, String> {
+    let tw = Lexer::nuevo(fuente)
+        .tokenizar()
+        .map_err(|e| format!("léxico: {e}"))
+        .and_then(|tk| {
+            Parser::nuevo(tk)
+                .parsear_programa()
+                .map_err(|e| format!("sintaxis: {e}"))
+        })
+        .and_then(|ss| {
+            Entorno::nueva()
+                .ejecutar_programa(&ss)
+                .map_err(|e| e.mensaje)
+        });
+    let vmr = vm_ejecutar(fuente);
+    if let (Ok(a), Ok(b)) = (&tw, &vmr) {
+        assert_eq!(*a, *b, "\nFUENTE:\n{fuente}");
+    }
+    tw
 }
 
 /// Ejecuta un programa y devuelve el error de ejecución tipado.

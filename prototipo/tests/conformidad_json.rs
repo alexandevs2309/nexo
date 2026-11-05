@@ -3,17 +3,52 @@
 //! Cubre `json_parsear`, `json_serializar` y `json_obtener` según la especificación
 //! de la Fase 3.1-3.3 (estabilizacion-basilisco-0.6.0.md).
 
-use basilisco::{Entorno, ErrorEjecucion, Lexer, Parser, Valor};
+use basilisco::{ContextoSemantico, Entorno, ErrorEjecucion, Lexer, Parser, Valor, hir, mir, vm};
 use std::collections::BTreeMap;
 
 // ------------------------------------------------------------------ Helpers
+
+fn vm_ejecutar(fuente: &str) -> Result<Option<Valor>, String> {
+    let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido");
+    let ss = Parser::nuevo(tokens)
+        .parsear_programa()
+        .expect("sintaxis válida");
+    let mut ctx = ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    let h = hir::lower_programa(&ss, &ctx).map_err(|e| format!("HIR: {:?}", e))?;
+    let mir = mir::lower_programa(&h);
+    let mut maquina = vm::MaquinaVirtual::nuevo(mir);
+    maquina.registrar_stdlib();
+    let Some(idx) = maquina.indice_de("main") else {
+        return Err("el programa no define `funcion main()`".to_string());
+    };
+    maquina.ejecutar_indice(idx, &[]).map_err(|e| e.to_string())
+}
+
+fn valores_equivalentes(a: &Valor, b: &Valor) -> bool {
+    match (a, b) {
+        (Valor::Real(x), Valor::Real(y)) => {
+            x.to_bits() == y.to_bits() || (x.is_nan() && y.is_nan())
+        }
+        _ => a == b,
+    }
+}
 
 fn ejecutar(fuente: &str) -> Result<Option<Valor>, ErrorEjecucion> {
     let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico válido");
     let sentencias = Parser::nuevo(tokens)
         .parsear_programa()
         .expect("sintaxis válida");
-    Entorno::nueva().ejecutar_programa(&sentencias)
+    let tw = Entorno::nueva().ejecutar_programa(&sentencias);
+    let vmr = vm_ejecutar(fuente);
+    if let (Ok(ref v), Ok(vmv)) = (tw.as_ref(), vmr.as_ref()) {
+        let vv = vmv.clone().unwrap_or(Valor::Nulo);
+        assert!(
+            valores_equivalentes(v.as_ref().unwrap_or(&Valor::Nulo), &vv),
+            "paridad TW/VM: {fuente}\nTW: {v:?}\nVM: {vmv:?}"
+        );
+    }
+    tw
 }
 
 fn ejecutar_ok(fuente: &str) -> Valor {

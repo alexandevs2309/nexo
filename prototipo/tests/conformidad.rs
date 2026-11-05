@@ -4,7 +4,29 @@
 //! Cada bloque cita la sección del ADR que verifica. Casos límite con
 //! resultado esperado explícito.
 
+use basilisco::{ContextoSemantico, hir, mir, vm};
 use basilisco::{Lexer, Parser, Valor, evaluar};
+
+fn vm_evaluar_expr(fuente: &str) -> Result<Valor, String> {
+    let src = format!("funcion main() {{ retornar {fuente} }}");
+    let tokens = Lexer::nuevo(&src).tokenizar().map_err(|e| e.to_string())?;
+    let ss = Parser::nuevo(tokens)
+        .parsear_programa()
+        .map_err(|e| e.to_string())?;
+    let mut ctx = ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    let tir = hir::lower_programa(&ss, &ctx).map_err(|e| format!("HIR: {:?}", e))?;
+    let mir = mir::lower_programa(&tir);
+    let mut maquina = vm::MaquinaVirtual::nuevo(mir);
+    maquina.registrar_stdlib();
+    let idx = maquina
+        .indice_de("main")
+        .ok_or_else(|| "sin main".to_string())?;
+    maquina
+        .ejecutar_indice(idx, &[])
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "sin valor".to_string())
+}
 
 fn ejecutar(fuente: &str) -> Result<Valor, String> {
     let tokens = Lexer::nuevo(fuente)
@@ -13,7 +35,19 @@ fn ejecutar(fuente: &str) -> Result<Valor, String> {
     let expr = Parser::nuevo(tokens)
         .parsear_expresion()
         .map_err(|e| format!("sintaxis: {e}"))?;
-    evaluar(&expr).map_err(|e| e.mensaje)
+    let tw = evaluar(&expr).map_err(|e| e.mensaje);
+    // Paridad: si el Tree-Walk produce valor, la VM también y con el mismo valor.
+    if let Ok(v) = &tw
+        && let Ok(vmv) = vm_evaluar_expr(fuente)
+    {
+        // Comparar semánticamente con NaN igual a NaN.
+        let par = match (v, &vmv) {
+            (Valor::Real(a), Valor::Real(b)) => a.to_bits() == b.to_bits(),
+            (a, b) => a == b,
+        };
+        assert!(par, "paridad TW/VM en: {fuente} (TW={v:?} VM={vmv:?})");
+    }
+    tw
 }
 
 fn ok(fuente: &str) -> Valor {

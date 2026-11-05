@@ -1190,12 +1190,35 @@ fn cargar_modulo_items(
         }
     }
     // Bajar a HIR con un resolvedor compartido.
-    let hir = match crate::hir::lower_programa_con_resolutor(&ast, &ctx_mod, res) {
+    let (hir, cuerpo_modulo) = match crate::hir::lower_programa_con_resolutor(&ast, &ctx_mod, res) {
         Ok(h) => h,
         Err(_) => return Vec::new(),
     };
     // Filtrar por nombres si se pidió.
     let mut items = hir.items;
+    // Las declaraciones de nivel superior del módulo van en cuerpo_principal;
+    // las convertimos a HirItem::Declaracion para que se inicialicen en __init.
+    for st in &cuerpo_modulo {
+        if let HirSentencia::Declaracion {
+            simbodo,
+            valor,
+            tipo,
+            mutable,
+            es_const,
+            publico,
+            ..
+        } = st
+        {
+            items.push(HirItem::Declaracion {
+                simbodo: *simbodo,
+                tipo: tipo.clone(),
+                valor: valor.clone(),
+                mutable: *mutable,
+                es_const: *es_const,
+                publico: *publico,
+            });
+        }
+    }
     if let Some(nombres) = nombres {
         let set: std::collections::HashSet<&String> = nombres.iter().collect();
         items.retain(|it| match it {
@@ -1272,7 +1295,9 @@ pub fn lower_programa(
     ctx: &crate::semantico::ContextoSemantico,
 ) -> Result<HirPrograma, Vec<String>> {
     let mut res = ResolutorHir::nuevo();
-    lower_programa_con_resolutor(ast, ctx, &mut res)
+    let (hir, _cuerpo_principal): (HirPrograma, Vec<HirSentencia>) =
+        lower_programa_con_resolutor(ast, ctx, &mut res)?;
+    Ok(hir)
 }
 
 /// Versión que permite reutilizar un resolvedor (para inlining de módulos).
@@ -1280,12 +1305,12 @@ pub fn lower_programa_con_resolutor(
     ast: &[Sentencia],
     ctx: &crate::semantico::ContextoSemantico,
     res: &mut ResolutorHir,
-) -> Result<HirPrograma, Vec<String>> {
+) -> Result<(HirPrograma, Vec<HirSentencia>), Vec<String>> {
     let mut items = Vec::new();
     let mut errores = Vec::new();
     let mut cuerpo_principal: Vec<HirSentencia> = Vec::new();
     let mut tiene_main_usuario = false;
-    let mut ultima_es_expresion_bare = false;
+    let mut temp_expresiones: Vec<SimbodoId> = Vec::new();
 
     // Pre-paso: registrar los nombres de las funciones de primer nivel en el
     // ámbito raíz (permite llamadas anticipadas y recursión), igual que
@@ -1320,7 +1345,6 @@ pub fn lower_programa_con_resolutor(
                 publico,
                 ..
             } => {
-                ultima_es_expresion_bare = false;
                 let val = lower_expresion(valor, ctx, res);
                 let id = res.insertar(nombre, None);
                 res.variables.insert(nombre.clone());
@@ -1328,7 +1352,10 @@ pub fn lower_programa_con_resolutor(
                     .as_ref()
                     .map(crate::semantico::tipo_anotacion_a_sem)
                     .unwrap_or(TipoSem::Desconocido);
-                items.push(HirItem::Declaracion {
+                // Las declaraciones de nivel superior se ejecutan en `main`,
+                // no en `__init`, para mantener el orden de ejecución con
+                // el resto de sentencias del programa.
+                cuerpo_principal.push(HirSentencia::Declaracion {
                     simbodo: id,
                     tipo,
                     valor: val,
@@ -1399,14 +1426,22 @@ pub fn lower_programa_con_resolutor(
                 });
             }
             Sentencia::Expresion(e) => {
-                ultima_es_expresion_bare = true;
                 if tiene_main_usuario {
                     items.push(HirItem::Expresion(lower_expresion(e, ctx, res)));
                 } else {
-                    match lower_sentencia(&Sentencia::Expresion(e.clone()), ctx, res) {
-                        Ok(hs) => cuerpo_principal.push(hs),
-                        Err(err) => errores.push(err),
-                    }
+                    // Capturar el valor para que el main sintético pueda
+                    // retornar la última expresión (el bloque no produce valor).
+                    let tmp =
+                        res.insertar(format!("$expr_{}", temp_expresiones.len()).as_str(), None);
+                    cuerpo_principal.push(HirSentencia::Declaracion {
+                        simbodo: tmp,
+                        tipo: TipoSem::Desconocido,
+                        valor: lower_expresion(e, ctx, res),
+                        mutable: false,
+                        es_const: false,
+                        publico: false,
+                    });
+                    temp_expresiones.push(tmp);
                 }
             }
             Sentencia::IntentarRescatar {
@@ -1464,7 +1499,6 @@ pub fn lower_programa_con_resolutor(
                 // Sentencias de nivel superior (mostrar, si, mientras, ...) se
                 // agrupan en una función `main` sintética para que el motor VM
                 // (que exige `main`) pueda ejecutarlas.
-                ultima_es_expresion_bare = false;
                 match lower_sentencia(otro, ctx, res) {
                     Ok(hs) => cuerpo_principal.push(hs),
                     Err(e) => errores.push(e),
@@ -1477,11 +1511,12 @@ pub fn lower_programa_con_resolutor(
     if !tiene_main_usuario && !cuerpo_principal.is_empty() {
         // Si la última sentencia es una expresión, convertirla en `retornar`
         // para que el CLI imprima su valor (como hace el Tree-Walk).
-        let mut cuerpo = cuerpo_principal;
-        if ultima_es_expresion_bare && let Some(HirSentencia::Expresion(e)) = cuerpo.last().cloned()
-        {
-            cuerpo.pop();
-            cuerpo.push(HirSentencia::Retornar(Some(e)));
+        let mut cuerpo = cuerpo_principal.clone();
+        if let Some(&tmp) = temp_expresiones.last() {
+            cuerpo.push(HirSentencia::Retornar(Some(HirExpresion::Variable(
+                tmp,
+                TipoSem::Desconocido,
+            ))));
         }
         let id = res.insertar("main", None);
         res.funciones.insert("main".to_string());
@@ -1501,5 +1536,5 @@ pub fn lower_programa_con_resolutor(
     }
     // Incorporar las clausuras recolectadas durante el lowering.
     items.append(&mut res.clausuras);
-    Ok(HirPrograma { items })
+    Ok((HirPrograma { items }, cuerpo_principal))
 }

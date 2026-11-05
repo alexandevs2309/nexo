@@ -1076,6 +1076,7 @@ impl MaquinaVirtual {
                         esperado: "escritura exitosa",
                         encontrado: "error de escritura",
                     })?;
+                let _ = escritor.flush();
                 Ok(Valor::Nulo)
             }),
         );
@@ -1109,6 +1110,7 @@ impl MaquinaVirtual {
                     esperado: "escritura exitosa",
                     encontrado: "error de escritura",
                 })?;
+                let _ = escritor.flush();
                 Ok(Valor::Nulo)
             }),
         );
@@ -1117,6 +1119,9 @@ impl MaquinaVirtual {
             std::sync::Arc::new(|args: &[Valor]| match args.first() {
                 Some(Valor::Archivo(arc)) => {
                     let mut guard = arc.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(w) = guard.escritor.as_mut() {
+                        let _ = w.flush();
+                    }
                     guard.cerrado = true;
                     guard.lector = None;
                     guard.escritor = None;
@@ -1355,7 +1360,7 @@ impl MaquinaVirtual {
             let mut saltar_a_rescue: Option<BlockId> = None;
             for stmt in &bloque.stmts {
                 self.paso()?;
-                if let Err(e) = self.ejecutar_stmt(&mut locals, stmt) {
+                if let Err(e) = self.ejecutar_stmt(&mut locals, &f.locals, stmt) {
                     if let Some((rescue, _merge, var_local)) = self.try_stack.last().cloned() {
                         if let Some(vl) = var_local
                             && vl < locals.len()
@@ -1376,7 +1381,7 @@ impl MaquinaVirtual {
             }
 
             // Terminador: salto al siguiente bloque o retorno.
-            match self.ejecutar_terminador(&mut locals, &bloque.terminator) {
+            match self.ejecutar_terminador(&mut locals, f, &bloque.terminator) {
                 Ok(Transicion::Salto(nuevo)) => bloque_actual = nuevo,
                 Ok(Transicion::Retornar(valor)) => return Ok(valor),
                 Err(e) => {
@@ -1397,15 +1402,22 @@ impl MaquinaVirtual {
     }
 
     /// Ejecuta una sentencia no-terminadora.
-    fn ejecutar_stmt(&mut self, locals: &mut [Valor], stmt: &MirStmt) -> Result<(), ErrorVm> {
+    fn ejecutar_stmt(
+        &mut self,
+        locals: &mut [Valor],
+        local_types: &[crate::semantico::TipoSem],
+        stmt: &MirStmt,
+    ) -> Result<(), ErrorVm> {
         match stmt {
             MirStmt::Asignacion { destino, valor } => {
                 let v = self.evaluar_rvalue(locals, valor)?;
-                self.escribir_place(locals, destino, v)
+                self.escribir_place(locals, local_types, destino, v)
             }
             MirStmt::AsignacionGlobal { global, valor } => {
                 let v = self.evaluar_rvalue(locals, valor)?;
-                if global.0 < self.globals.len() {
+                if let Some(t) = self.programa.globals.get(global.0) {
+                    self.globals[global.0] = convertir_tipo(v, t);
+                } else if global.0 < self.globals.len() {
                     self.globals[global.0] = v;
                 }
                 Ok(())
@@ -1421,7 +1433,7 @@ impl MaquinaVirtual {
                     if self.funciones_sin_retorno.contains(callee) {
                         self.sin_retorno_locals.insert(dest.local.0);
                     }
-                    self.escribir_place(locals, dest, r)?;
+                    self.escribir_place(locals, local_types, dest, r)?;
                 }
                 Ok(())
             }
@@ -1449,7 +1461,7 @@ impl MaquinaVirtual {
                 }
                 let r = self.llamar(&nombre, &args)?;
                 if let Some(dest) = destino {
-                    self.escribir_place(locals, dest, r)?;
+                    self.escribir_place(locals, local_types, dest, r)?;
                 }
                 Ok(())
             }
@@ -1486,6 +1498,7 @@ impl MaquinaVirtual {
     fn ejecutar_terminador(
         &mut self,
         locals: &mut [Valor],
+        f: &crate::mir::MirFunction,
         t: &MirTerminator,
     ) -> Result<Transicion, ErrorVm> {
         match t {
@@ -1507,6 +1520,11 @@ impl MaquinaVirtual {
             MirTerminator::Return(op) => match op {
                 Some(op) => {
                     let v = self.operando_a_valor(locals, op)?;
+                    let v = if f.retorno == crate::semantico::TipoSem::Desconocido {
+                        v
+                    } else {
+                        convertir_tipo(v, &f.retorno)
+                    };
                     Ok(Transicion::Retornar(Some(v)))
                 }
                 None => Ok(Transicion::Retornar(None)),
@@ -1522,7 +1540,7 @@ impl MaquinaVirtual {
                 match self.llamar(callee, &args) {
                     Ok(v) => {
                         if let Some(dest) = destino {
-                            self.escribir_place(locals, dest, v)?;
+                            self.escribir_place(locals, &f.locals, dest, v)?;
                         }
                         Ok(Transicion::Salto(*bloque_ok))
                     }
@@ -1803,9 +1821,15 @@ impl MaquinaVirtual {
     fn escribir_place(
         &self,
         locals: &mut [Valor],
+        local_types: &[crate::semantico::TipoSem],
         place: &MirPlace,
         valor: Valor,
     ) -> Result<(), ErrorVm> {
+        let valor = if place.projection.is_empty() {
+            self.convertir_tipo_opt(valor, local_types.get(place.local.0))
+        } else {
+            valor
+        };
         let indice = match place.projection.as_slice() {
             [MirProjection::Indice(op)] => {
                 let Valor::Entero(i) = self.operando_a_valor(locals, op)? else {
@@ -2064,8 +2088,8 @@ fn aplicar_binop(op: &MirBinOp, a: &Valor, b: &Valor) -> Result<Valor, ErrorVm> 
         MirBinOp::Multiplicacion => a.multiplicacion(b).map_err(ErrorVm::Aritmetico),
         MirBinOp::Division => a.division(b).map_err(ErrorVm::Aritmetico),
         MirBinOp::Modulo => a.modulo(b).map_err(ErrorVm::Aritmetico),
-        MirBinOp::Igual => Ok(Valor::Logico(a == b)),
-        MirBinOp::Distinto => Ok(Valor::Logico(a != b)),
+        MirBinOp::Igual => comparar_igualdad(a, b, true),
+        MirBinOp::Distinto => comparar_igualdad(a, b, false),
         MirBinOp::Menor => comparar(a, b, |o| o.is_lt()),
         MirBinOp::MenorIgual => comparar(a, b, |o| o.is_le()),
         MirBinOp::Mayor => comparar(a, b, |o| o.is_gt()),
@@ -2262,4 +2286,74 @@ fn tipo_compat_valor(valor: &Valor, tipo: &crate::semantico::TipoSem) -> bool {
 /// `convertir_para_tipo` para funciones sin anotación).
 fn valor_compat_valor(a: &Valor, b: &Valor) -> bool {
     std::mem::discriminant(a) == std::mem::discriminant(b)
+}
+
+/// Igualdad con conversiones implícitas ADR-0005 §1.4 (entero↔decimal↔real).
+fn comparar_igualdad(a: &Valor, b: &Valor, igual: bool) -> Result<Valor, ErrorVm> {
+    use crate::valor::FACTOR_ESCALA;
+    let resultado = match (a, b) {
+        (Valor::Entero(x), Valor::Entero(y)) => x == y,
+        (Valor::Entero(x), Valor::Decimal(y)) => (*x as i128 * FACTOR_ESCALA) == *y,
+        (Valor::Decimal(x), Valor::Entero(y)) => *x == (*y as i128 * FACTOR_ESCALA),
+        (Valor::Entero(x), Valor::Real(y)) => (*x as f64) == *y,
+        (Valor::Real(x), Valor::Entero(y)) => *x == (*y as f64),
+        (Valor::Decimal(x), Valor::Decimal(y)) => x == y,
+        (Valor::Real(x), Valor::Real(y)) => x == y,
+        _ => a == b,
+    };
+    Ok(Valor::Logico(if igual { resultado } else { !resultado }))
+}
+
+/// Convierte `v` al tipo `t` con las conversiones implícitas ADR-0005 §1.4.
+/// Si la conversión no está permitida, devuelve `v` sin cambios.
+fn convertir_tipo(v: Valor, t: &crate::semantico::TipoSem) -> Valor {
+    use crate::semantico::TipoSem;
+    match t {
+        TipoSem::Entero => v,
+        TipoSem::Decimal => match v {
+            Valor::Entero(n) => Valor::decimal_desde_entero(n),
+            Valor::Decimal(_) => v,
+            _ => v,
+        },
+        TipoSem::Real => match v {
+            Valor::Entero(n) => Valor::Real(n as f64),
+            Valor::Real(_) => v,
+            _ => v,
+        },
+        TipoSem::Logico => v,
+        TipoSem::Texto => v,
+        TipoSem::Nulo => v,
+        TipoSem::Lista(elem) => match v {
+            Valor::Arreglo(elems) | Valor::Lista(elems) => {
+                Valor::Lista(convertir_elementos(elems, elem))
+            }
+            _ => v,
+        },
+        TipoSem::Arreglo(elem, n) => match v {
+            Valor::Lista(elems) | Valor::Arreglo(elems) if elems.len() == *n => {
+                Valor::Arreglo(convertir_elementos(elems, elem))
+            }
+            _ => v,
+        },
+        TipoSem::Coleccion(elem) => match v {
+            Valor::Arreglo(elems) | Valor::Lista(elems) => {
+                Valor::Lista(convertir_elementos(elems, elem))
+            }
+            _ => v,
+        },
+        TipoSem::Funcion { .. } | TipoSem::Desconocido => v,
+    }
+}
+
+fn convertir_elementos(elems: Vec<Valor>, elem: &crate::semantico::TipoSem) -> Vec<Valor> {
+    elems.into_iter().map(|e| convertir_tipo(e, elem)).collect()
+}
+
+impl MaquinaVirtual {
+    fn convertir_tipo_opt(&self, v: Valor, t: Option<&crate::semantico::TipoSem>) -> Valor {
+        match t {
+            Some(t) => convertir_tipo(v, t),
+            None => v,
+        }
+    }
 }

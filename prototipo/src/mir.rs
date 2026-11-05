@@ -1236,6 +1236,11 @@ pub fn lower_programa(hir: &HirPrograma) -> MirPrograma {
         lower_item(&mut prog, item, &global_map);
     }
 
+    eprintln!(
+        "[DEBUG MIR] global_map has {} entries: {:?}",
+        global_map.len(),
+        global_map.keys().collect::<Vec<_>>()
+    );
     // Construir función de inicialización de globales (`__init`) si hay alguna.
     if !global_map.is_empty() {
         let mut ctx = LoweringCtx::nuevo(global_map.clone());
