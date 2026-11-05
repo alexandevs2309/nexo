@@ -1310,7 +1310,7 @@ pub fn lower_programa_con_resolutor(
     let mut errores = Vec::new();
     let mut cuerpo_principal: Vec<HirSentencia> = Vec::new();
     let mut tiene_main_usuario = false;
-    let mut temp_expresiones: Vec<SimbodoId> = Vec::new();
+    let mut ultima_es_expresion_bare = false;
 
     // Pre-paso: registrar los nombres de las funciones de primer nivel en el
     // ámbito raíz (permite llamadas anticipadas y recursión), igual que
@@ -1426,22 +1426,16 @@ pub fn lower_programa_con_resolutor(
                 });
             }
             Sentencia::Expresion(e) => {
+                ultima_es_expresion_bare = true;
                 if tiene_main_usuario {
                     items.push(HirItem::Expresion(lower_expresion(e, ctx, res)));
                 } else {
-                    // Capturar el valor para que el main sintético pueda
-                    // retornar la última expresión (el bloque no produce valor).
-                    let tmp =
-                        res.insertar(format!("$expr_{}", temp_expresiones.len()).as_str(), None);
-                    cuerpo_principal.push(HirSentencia::Declaracion {
-                        simbodo: tmp,
-                        tipo: TipoSem::Desconocido,
-                        valor: lower_expresion(e, ctx, res),
-                        mutable: false,
-                        es_const: false,
-                        publico: false,
-                    });
-                    temp_expresiones.push(tmp);
+                    // Bajar la expresión como sentencia (descarta el valor);
+                    // el valor del programa será el de la última expresión.
+                    match lower_sentencia(&Sentencia::Expresion(e.clone()), ctx, res) {
+                        Ok(hs) => cuerpo_principal.push(hs),
+                        Err(err) => errores.push(err),
+                    }
                 }
             }
             Sentencia::IntentarRescatar {
@@ -1499,6 +1493,7 @@ pub fn lower_programa_con_resolutor(
                 // Sentencias de nivel superior (mostrar, si, mientras, ...) se
                 // agrupan en una función `main` sintética para que el motor VM
                 // (que exige `main`) pueda ejecutarlas.
+                ultima_es_expresion_bare = false;
                 match lower_sentencia(otro, ctx, res) {
                     Ok(hs) => cuerpo_principal.push(hs),
                     Err(e) => errores.push(e),
@@ -1512,11 +1507,10 @@ pub fn lower_programa_con_resolutor(
         // Si la última sentencia es una expresión, convertirla en `retornar`
         // para que el CLI imprima su valor (como hace el Tree-Walk).
         let mut cuerpo = cuerpo_principal.clone();
-        if let Some(&tmp) = temp_expresiones.last() {
-            cuerpo.push(HirSentencia::Retornar(Some(HirExpresion::Variable(
-                tmp,
-                TipoSem::Desconocido,
-            ))));
+        if ultima_es_expresion_bare && let Some(HirSentencia::Expresion(e)) = cuerpo.last().cloned()
+        {
+            cuerpo.pop();
+            cuerpo.push(HirSentencia::Retornar(Some(e)));
         }
         let id = res.insertar("main", None);
         res.funciones.insert("main".to_string());

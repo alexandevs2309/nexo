@@ -1461,6 +1461,9 @@ impl MaquinaVirtual {
                 }
                 let r = self.llamar(&nombre, &args)?;
                 if let Some(dest) = destino {
+                    if self.funciones_sin_retorno.contains(&nombre) {
+                        self.sin_retorno_locals.insert(dest.local.0);
+                    }
                     self.escribir_place(locals, local_types, dest, r)?;
                 }
                 Ok(())

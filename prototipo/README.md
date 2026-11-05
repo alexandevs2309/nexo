@@ -1,13 +1,13 @@
-# BASILISCO 0.5.0 (en desarrollo)
+# BASILISCO 0.7.0
 
 Intérprete de un lenguaje de programación con sintaxis orientada al español. Esta versión permite ejecutar programas y proyectos desde la línea de comandos, con soporte para módulos, importaciones y manifiestos de proyecto.
 
 ## Instalación
 
-Cuando BASILISCO 0.5.0 esté publicado en crates.io:
+BASILISCO 0.7.0 está publicado en crates.io:
 
 ```sh
-cargo install basilisco --version 0.5.0
+cargo install basilisco --version 0.7.0
 ```
 
 También puedes compilarlo desde el repositorio:
