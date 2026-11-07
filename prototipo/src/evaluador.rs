@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::thread;
 
 use crate::cargador::{CargadorModulos, SimbodoExportado};
@@ -136,6 +136,11 @@ static CACHE_MODULOS: LazyLock<Mutex<HashMap<PathBuf, Entorno>>> =
 static TAREAS: LazyLock<Mutex<Vec<Option<thread::JoinHandle<Result<Valor, String>>>>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
+/// Canales de comunicación entre tareas (buffer + condvar).
+#[allow(clippy::type_complexity)]
+pub(crate) static CANALES: LazyLock<Mutex<Vec<(Arc<Mutex<Vec<Valor>>>, Arc<Condvar>)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
 /// Nombres reservados que no pueden reutilizarse como funciones de usuario.
 pub const NOMBRES_RESERVADOS: &[&str] = &[
     "si",
@@ -204,6 +209,9 @@ pub const NOMBRES_RESERVADOS: &[&str] = &[
     "leer_archivo",
     "escribir_archivo",
     "iniciar_tarea",
+    "crear_canal",
+    "enviar",
+    "recibir",
     "esperar_tarea",
     "cargar_ffi",
     "llamar_ffi",
@@ -3226,6 +3234,9 @@ fn es_builtin(nombre: &str) -> bool {
             | "escribir_archivo"
             | "iniciar_tarea"
             | "esperar_tarea"
+            | "crear_canal"
+            | "enviar"
+            | "recibir"
             | "cargar_ffi"
             | "llamar_ffi"
             | "descargar_ffi"
@@ -5057,6 +5068,100 @@ fn evaluar_builtin(
                     columna,
                 )),
             }
+        }
+        "crear_canal" => {
+            let mut canales = CANALES.lock().unwrap();
+            let id = canales.len();
+            canales.push((
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                std::sync::Arc::new(std::sync::Condvar::new()),
+            ));
+            Ok(Valor::Entero(id as i64))
+        }
+        "enviar" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let id = match &args[0] {
+                Valor::Entero(v) => *v as usize,
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "entero (id de canal)".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            let valor = args[1].clone();
+            let canales = CANALES.lock().unwrap();
+            if id >= canales.len() {
+                return Err(err_builtin(
+                    CausaError::VariableNoDefinida(format!("canal {}", id)),
+                    linea,
+                    columna,
+                ));
+            }
+            let (buf, cv) = &canales[id];
+            let buf = std::sync::Arc::clone(buf);
+            let cv = std::sync::Arc::clone(cv);
+            drop(canales);
+            buf.lock().unwrap().push(valor);
+            cv.notify_one();
+            Ok(Valor::Nulo)
+        }
+        "recibir" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let id = match &args[0] {
+                Valor::Entero(v) => *v as usize,
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "entero (id de canal)".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            let canales = CANALES.lock().unwrap();
+            if id >= canales.len() {
+                return Err(err_builtin(
+                    CausaError::VariableNoDefinida(format!("canal {}", id)),
+                    linea,
+                    columna,
+                ));
+            }
+            let (buf, cv) = &canales[id];
+            let buf = std::sync::Arc::clone(buf);
+            let cv = std::sync::Arc::clone(cv);
+            drop(canales);
+            let mut guard = buf.lock().unwrap();
+            while guard.is_empty() {
+                guard = cv.wait(guard).unwrap();
+            }
+            Ok(guard.remove(0))
         }
         "cargar_ffi" => {
             if args.len() != 1 {

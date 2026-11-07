@@ -1241,6 +1241,77 @@ impl MaquinaVirtual {
             }),
         );
         self.registrar_nativo(
+            "crear_canal",
+            std::sync::Arc::new(|_args: &[Valor]| {
+                let mut canales = crate::evaluador::CANALES.lock().unwrap();
+                let id = canales.len();
+                canales.push((
+                    std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                    std::sync::Arc::new(std::sync::Condvar::new()),
+                ));
+                Ok(Valor::Entero(id as i64))
+            }),
+        );
+        self.registrar_nativo(
+            "enviar",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let id = match args.first() {
+                    Some(Valor::Entero(v)) => *v as usize,
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "entero (id de canal)",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let valor = args.get(1).cloned().unwrap_or(Valor::Nulo);
+                let canales = crate::evaluador::CANALES.lock().unwrap();
+                if id >= canales.len() {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "canal válido",
+                        encontrado: "canal inexistente",
+                    });
+                }
+                let (buf, cv) = &canales[id];
+                let buf = std::sync::Arc::clone(buf);
+                let cv = std::sync::Arc::clone(cv);
+                drop(canales);
+                buf.lock().unwrap().push(valor);
+                cv.notify_one();
+                Ok(Valor::Nulo)
+            }),
+        );
+        self.registrar_nativo(
+            "recibir",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let id = match args.first() {
+                    Some(Valor::Entero(v)) => *v as usize,
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "entero (id de canal)",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let canales = crate::evaluador::CANALES.lock().unwrap();
+                if id >= canales.len() {
+                    return Err(ErrorVm::TipoEsperado {
+                        esperado: "canal válido",
+                        encontrado: "canal inexistente",
+                    });
+                }
+                let (buf, cv) = &canales[id];
+                let buf = std::sync::Arc::clone(buf);
+                let cv = std::sync::Arc::clone(cv);
+                drop(canales);
+                let mut guard = buf.lock().unwrap();
+                while guard.is_empty() {
+                    guard = cv.wait(guard).unwrap();
+                }
+                Ok(guard.remove(0))
+            }),
+        );
+        self.registrar_nativo(
             "eliminar",
             std::sync::Arc::new(|args: &[Valor]| match (args.first(), args.get(1)) {
                 (Some(Valor::Arreglo(v)), Some(Valor::Entero(i))) => match (*i).try_into() {
@@ -1329,8 +1400,8 @@ impl MaquinaVirtual {
         }
         self.sin_retorno_locals.clear();
 
-        // Inicializar globales una sola vez antes de `main`.
-        if f.nombre == "main" && !self.inicializado {
+        // Inicializar globales una sola vez antes de ejecutar cualquier función.
+        if !self.inicializado {
             self.inicializado = true;
             if let Some(idx) = self.indice_de("__init") {
                 let _ = self.ejecutar_indice(idx, &[])?;
@@ -1747,9 +1818,15 @@ impl MaquinaVirtual {
             return Err(ErrorVm::FuncionNoEncontrada(func_name));
         }
         let programa = self.programa.clone();
+        let globals = self.globals.clone();
+        let salida = std::sync::Arc::clone(&self.salida);
         let handle = std::thread::spawn(move || {
             let mut vm = MaquinaVirtual::nuevo(programa);
             vm.registrar_stdlib();
+            // Compartir el estado global (incluye canales) sin re-ejecutar __init.
+            vm.globals = globals;
+            vm.salida = salida;
+            vm.inicializado = true; // no re-ejecutar __init
             vm.ejecutar(&func_name, &[])
                 .map(|v| v.unwrap_or(Valor::Nulo))
                 .map_err(|e| e.to_string())
