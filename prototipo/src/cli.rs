@@ -786,25 +786,32 @@ fn inicializar_proyecto(ruta: Option<PathBuf>) -> ExitCode {
 
 fn probar_ruta(ruta: Option<PathBuf>) -> ExitCode {
     let base = ruta.unwrap_or_else(|| PathBuf::from("."));
-    let entradas = match fs::read_dir(&base) {
-        Ok(entradas) => entradas,
-        Err(e) => {
-            eprintln!("error: no se pudo leer '{}': {e}", base.display());
-            return ExitCode::from(1);
+    // Descubrir archivos .bsk recursivamente.
+    let mut archivos: Vec<PathBuf> = Vec::new();
+    fn recorrer(dir: &Path, archivos: &mut Vec<PathBuf>) {
+        if let Ok(entradas) = fs::read_dir(dir) {
+            for entrada in entradas.filter_map(|e| e.ok()) {
+                let ruta = entrada.path();
+                if ruta.is_dir() {
+                    recorrer(&ruta, archivos);
+                } else if ruta
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case(EXT_CANONICA))
+                    .unwrap_or(false)
+                {
+                    archivos.push(ruta);
+                }
+            }
         }
-    };
-
-    let mut archivos: Vec<PathBuf> = entradas
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case(EXT_CANONICA))
-                .unwrap_or(false)
-        })
-        .collect();
+    }
+    recorrer(&base, &mut archivos);
     archivos.sort();
+
+    if archivos.is_empty() {
+        eprintln!("no se encontraron archivos .bsk en '{}'", base.display());
+        return ExitCode::from(1);
+    }
 
     if archivos.is_empty() {
         eprintln!("no se encontraron archivos .bsk en '{}'", base.display());
