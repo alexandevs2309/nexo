@@ -1,0 +1,27 @@
+# Gestor de tareas simple
+
+funcion mostrar_tarea(t) {
+  mostrar t[0]
+  mostrar t[1]
+  mostrar t[2]
+}
+
+funcion main() {
+  sea tareas = []
+
+  # Agregar tareas
+  sea t1 = ["P", "Estudiar Rust", "pendiente"]
+  sea t2 = ["P", "Leer libro", "pendiente"]
+  sea t3 = ["P", "Ejercicio", "pendiente"]
+  tareas = agregar(tareas, t1)
+  tareas = agregar(tareas, t2)
+  tareas = agregar(tareas, t3)
+
+  mostrar "=== Lista de tareas ==="
+  para cada t en tareas {
+    mostrar_tarea(t)
+  }
+
+  mostrar "Total: "
+  mostrar longitud(tareas)
+}
