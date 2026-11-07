@@ -1,13 +1,33 @@
-publico funcion Inventario() {
+# Biblioteca de inventario BASILISCO
+
+publico funcion crear_inventario() {
   retornar []
 }
 
-publico funcion agregar_producto(inv, nombre, cantidad) {
-  # agregar producto al inventario
-  retornar inv
+publico funcion agregar_producto(inv, nombre, cantidad, precio) {
+  sea producto = [nombre, cantidad, precio]
+  retornar agregar(inv, producto)
+}
+
+publico funcion buscar_producto(inv, nombre) {
+  para cada p en inv {
+    si p[0] == nombre {
+      retornar p
+    }
+  }
+  retornar nulo
 }
 
 publico funcion valor_total(inv) {
-  # calcular valor total
-  retornar 0
+  sea total = 0.0
+  para cada p en inv {
+    total = total + p[1] * p[2]
+  }
+  retornar total
+}
+
+publico funcion listar_productos(inv) {
+  para cada p en inv {
+    mostrar "  - " + p[0] + " (cantidad: " + p[1] + ", precio: " + p[2] + ")"
+  }
 }

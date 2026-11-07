@@ -1,9 +1,21 @@
-usar "lib.bsk" { Inventario, agregar_producto, valor_total }
+funcion Inventario() {
+  retornar []
+}
+
+funcion agregar_producto(inv, nombre, cantidad) {
+  # agregar producto al inventario
+  retornar inv
+}
+
+funcion valor_total(inv) {
+  # calcular valor total
+  retornar 0
+}
 
 sea inv = Inventario()
 agregar_producto(inv, "manzana", 10)
 agregar_producto(inv, "pera", 5)
-mostrar "Productos:"
+mostrar "Productos: "
 mostrar longitud(inv)
-mostrar "Valor total:"
+mostrar "Valor total: "
 mostrar valor_total(inv)
