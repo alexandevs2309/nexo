@@ -55,6 +55,57 @@ fn funcion_soportada(f: &MirFunction) -> bool {
     f.params.iter().all(|(_, t)| es_entero(t))
         && es_entero(&f.retorno)
         && f.locals.iter().all(es_entero)
+        && f.bloques
+            .iter()
+            .all(|b| b.stmts.iter().all(stmt_soportado) && terminator_soportado(&b.terminator))
+}
+
+fn stmt_soportado(stmt: &MirStmt) -> bool {
+    match stmt {
+        MirStmt::Asignacion { valor, .. } => rvalue_soportado(valor),
+        MirStmt::Llamada { argumentos, .. } => argumentos.iter().all(operando_soportado),
+        MirStmt::LlamadaIndirecta { .. } => false,
+        MirStmt::EntrarTry { .. } | MirStmt::SalirTry => false,
+        MirStmt::AsignacionGlobal { .. } => false,
+        MirStmt::Nop => true,
+    }
+}
+
+fn terminator_soportado(t: &MirTerminator) -> bool {
+    match t {
+        MirTerminator::Goto(_) | MirTerminator::Unreachable => true,
+        MirTerminator::SwitchInt {
+            discriminante,
+            casos,
+            por_defecto: _,
+        } => operando_soportado(discriminante) && casos.iter().all(|_| true),
+        MirTerminator::Return(op) => op.as_ref().map(operando_soportado).unwrap_or(true),
+        MirTerminator::Invoke { .. } => false,
+    }
+}
+
+fn operando_soportado(op: &MirOperand) -> bool {
+    match op {
+        MirOperand::Copy(_) | MirOperand::Move(_) | MirOperand::Const(_) => true,
+        MirOperand::Global(_) => false,
+    }
+}
+
+fn rvalue_soportado(r: &MirRvalue) -> bool {
+    match r {
+        MirRvalue::Use(op) => operando_soportado(op),
+        MirRvalue::BinOp { lhs, rhs, .. } => operando_soportado(lhs) && operando_soportado(rhs),
+        MirRvalue::UnOp { operand, .. } => operando_soportado(operand),
+        MirRvalue::CrearCelda { valor } => operando_soportado(valor),
+        MirRvalue::LeerCelda { base } => operando_soportado(base),
+        MirRvalue::Agregado { .. }
+        | MirRvalue::Indice { .. }
+        | MirRvalue::Campo { .. }
+        | MirRvalue::Longitud { .. }
+        | MirRvalue::Rango { .. }
+        | MirRvalue::Clausura { .. }
+        | MirRvalue::ObjetoModulo { .. } => false,
+    }
 }
 
 fn es_entero(t: &TipoSem) -> bool {
@@ -252,14 +303,32 @@ fn generar_rvalue(r: &MirRvalue) -> String {
                 MirUnOp::No => format!("(if {} == 0 {{ 1 }} else {{ 0 }})", v),
             }
         }
-        MirRvalue::Agregado { .. } => "0".to_string(),
-        MirRvalue::Indice { .. } => "0".to_string(),
-        MirRvalue::Campo { .. } => "0".to_string(),
-        MirRvalue::Longitud { .. } => "0".to_string(),
-        MirRvalue::Rango { .. } => "0".to_string(),
-        MirRvalue::Clausura { .. } => "0".to_string(),
-        MirRvalue::CrearCelda { .. } => "0".to_string(),
-        MirRvalue::LeerCelda { .. } => "0".to_string(),
-        MirRvalue::ObjetoModulo { .. } => "0".to_string(),
+        MirRvalue::Agregado { .. } => {
+            "compile_error!(\"backend nativo: agregado no soportado\")".to_string()
+        }
+        MirRvalue::Indice { .. } => {
+            "compile_error!(\"backend nativo: indice no soportado\")".to_string()
+        }
+        MirRvalue::Campo { .. } => {
+            "compile_error!(\"backend nativo: campo no soportado\")".to_string()
+        }
+        MirRvalue::Longitud { .. } => {
+            "compile_error!(\"backend nativo: longitud no soportada\")".to_string()
+        }
+        MirRvalue::Rango { .. } => {
+            "compile_error!(\"backend nativo: rango no soportado\")".to_string()
+        }
+        MirRvalue::Clausura { .. } => {
+            "compile_error!(\"backend nativo: clausura no soportada\")".to_string()
+        }
+        MirRvalue::CrearCelda { .. } => {
+            "compile_error!(\"backend nativo: celda no soportada\")".to_string()
+        }
+        MirRvalue::LeerCelda { .. } => {
+            "compile_error!(\"backend nativo: celda no soportada\")".to_string()
+        }
+        MirRvalue::ObjetoModulo { .. } => {
+            "compile_error!(\"backend nativo: modulo no soportado\")".to_string()
+        }
     }
 }
