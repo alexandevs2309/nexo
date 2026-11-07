@@ -177,3 +177,44 @@ El código es limpio (clippy/fmt en verde), bien estructurado y testeado dentro 
   importador declare explícitamente todas las dependencias transitivas:
   `usar "lib.bsk" { triple, doble }`. La inlining automática de dependencias
   transitivas queda como trabajo futuro.
+
+## DT-06/07: backends nativo y WASM con soporte de texto (2026-11-07)
+
+**Backend nativo (DT-06) — soporte de texto real:**
+
+- Tipos soportados: `entero`, `lógico` y `texto` (parámetros anotados, locales
+  inferidos y retorno). Los locales `Desconocido` se refinan con inferencia de
+  tipos en dos niveles: (1) punto fijo a nivel de programa para los retornos de
+  cada función, (2) punto fijo por función para los locales, incluyendo los
+  destinos de `Llamada`.
+- Concatenación texto+texto vía `format!` (`String + String` no compila en
+  Rust). Comparaciones de texto (`==`, `!=`, `<`, …) usan `PartialEq`/`Ord`.
+- E/S: `mostrar` → `println!`, `mostrar_sin_salto` → `print!`; el destino de
+  la llamada queda en su valor nulo (0), igual que en la VM.
+- Escape correcto de literales: `\`, `"`, `\n`, `\r`, `\t`.
+- **Paridad estricta:** la suma mixta texto/entero NO se convierte
+  silenciosamente. La VM la rechaza (error aritmético) y el análisis semántico
+  la rechaza antes de llegar al backend; además el gate `sumas_homogeneas`
+  rechaza la función como defensa en profundidad.
+- **Nunca salida silenciosa:** si `main` no es generable (llamadas a nativas de
+  stdlib como `longitud`, colecciones, excepciones, …), el `.rs` generado
+  contiene `compile_error!(...)` — el build falla con diagnóstico explícito.
+- El punto de entrada solo imprime el valor de retorno de `main` si retorna
+  valor (declarado o inferido); si `main` no retorna, solo la ejecuta (igual
+  que el CLI con la VM).
+- Tests diferenciales nuevos (7): concatenación, parámetro texto, escape,
+  condicional sobre texto, texto en bucle, salida de `mostrar`, rechazo de no
+  generables.
+
+**Backend WASM (DT-07):**
+
+- `generar_rust_wasm` ahora usa el subconjunto **puro entero/lógico**
+  (`generar_funciones_enteras`): las funciones con `texto` o E/S se omiten con
+  comentario, porque `String` no cruza el ABI C de los exports WASM. Test
+  nuevo: `backend_wasm_omite_funciones_texto`.
+
+**Hallazgo (pendiente, front-end):** el análisis semántico rechaza `"texto" +
+entero` con el código E1007 y mensaje "comparación incompatible entre texto y
+entero" — el comportamiento es correcto (rechaza) pero el mensaje/código es
+confuso para una suma; debería ser E1001 ("tipos incompatibles") o similar.
+Queda como deuda menor de mensajes de error.

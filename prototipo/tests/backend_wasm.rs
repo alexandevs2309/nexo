@@ -118,3 +118,15 @@ fn backend_wasm_genera_export() {
     assert!(rust.contains("#[no_mangle]"));
     assert!(rust.contains("pub extern \"C\" fn bsk_main"));
 }
+
+#[test]
+fn backend_wasm_omite_funciones_texto() {
+    // El subconjunto WASM es puro entero: `String` no cruza el ABI C de los
+    // exports, así que las funciones con texto se omiten (comentario explícito).
+    let src =
+        "funcion saluda() -> texto { retornar \"hola\" }\nfuncion main() -> entero { retornar 7 }";
+    let rust = generar(src);
+    assert!(rust.contains("pub extern \"C\" fn bsk_main"));
+    assert!(!rust.contains("pub extern \"C\" fn bsk_saluda"));
+    assert!(rust.contains("omitida"));
+}

@@ -93,3 +93,79 @@ fn backend_nativo_genera_codigo_no_vacio() {
     assert!(rust.contains("fn bsk_main"));
     assert!(rust.contains("fn main()"));
 }
+
+#[test]
+fn backend_nativo_texto_concatenacion() {
+    let src = "funcion main() -> texto { retornar \"Hola\" + \" \" + \"Mundo\" }";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_texto_parametro() {
+    let src = "funcion saludar(nombre: texto) -> texto { retornar \"Hola, \" + nombre + \"!\" }\nfuncion main() -> texto { retornar saludar(\"Mundo\") }";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_texto_escape() {
+    // Comillas y barra invertida dentro del literal.
+    let src = "funcion main() -> texto { retornar \"comillas: \\\"x\\\" y barra \\\\ fin\" }";
+    let rust = generar(src);
+    assert!(rust.contains("\\\"x\\\""));
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_texto_condicional() {
+    let src =
+        "funcion main() -> entero { si \"abc\" == \"abc\" { retornar 1 } sino { retornar 0 } }";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_texto_en_bucle() {
+    let src = "funcion construir(n: entero) -> texto { sea s = \"\"\n sea i = 0\n mientras i < n { s = s + \"*\"\n i = i + 1 }\n retornar s }\nfuncion main() -> texto { retornar construir(5) }";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+    assert_eq!(salida, "*****");
+}
+
+#[test]
+fn backend_nativo_mostrar_salida() {
+    // `mostrar`/`mostrar_sin_salto` se generan como E/S nativa (println!/print!).
+    let src = "funcion main() { mostrar \"Hola\"\n mostrar 42\n mostrar_sin_salto \"sin\" }";
+    let rust = generar(src);
+    assert!(rust.contains("println!"));
+    assert!(rust.contains("print!"));
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, "Hola\n42\nsin");
+}
+
+#[test]
+fn backend_nativo_rechaza_operaciones_no_generables() {
+    // Llamadas a nativas no generables (longitud) o main no soportada deben
+    // producir compile_error! — nunca una salida silenciosa incorrecta.
+    let src = "funcion main() -> entero { retornar longitud(\"abc\") }";
+    let rust = generar(src);
+    assert!(rust.contains("compile_error!"));
+}
