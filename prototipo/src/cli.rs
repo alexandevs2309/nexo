@@ -201,10 +201,7 @@ pub fn main() -> ExitCode {
             eprintln!("Publicación de paquetes (pendiente de implementación completa).");
             ExitCode::from(0)
         }
-        "repl" => {
-            eprintln!("REPL interactivo (pendiente de implementación).");
-            ExitCode::SUCCESS
-        }
+        "repl" => repl(),
         "nuevo" => {
             if args.len() >= 2 && args[1].to_string_lossy() == "proyecto" {
                 // Parsear --plantilla=...
@@ -501,6 +498,61 @@ pub fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn repl() -> ExitCode {
+    use std::io::{self, BufRead, Write};
+    let stdin = io::stdin();
+    let mut env = Entorno::nueva();
+    let mut buffer = String::new();
+    let mut acumulado = String::new();
+    println!("{NOMBRE} REPL (escribe 'salir' para terminar)");
+    loop {
+        print!(">>> ");
+        let _ = io::stdout().flush();
+        buffer.clear();
+        match stdin.lock().read_line(&mut buffer) {
+            Ok(0) => break, // EOF
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("error de lectura: {e}");
+                break;
+            }
+        }
+        let linea = buffer.trim();
+        if linea == "salir" || linea == "exit" || linea == "quit" {
+            break;
+        }
+        if linea.is_empty() {
+            continue;
+        }
+        acumulado.push_str(linea);
+        acumulado.push('\n');
+        // Intentar parsear y ejecutar.
+        let tokens = match Lexer::nuevo(&acumulado).tokenizar() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("léxico: {e}");
+                acumulado.clear();
+                continue;
+            }
+        };
+        let sentencias = match Parser::nuevo(tokens).parsear_programa() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("sintaxis: {e}");
+                acumulado.clear();
+                continue;
+            }
+        };
+        match env.ejecutar_programa(&sentencias) {
+            Ok(Some(v)) => println!("{v}"),
+            Ok(None) => {}
+            Err(e) => eprintln!("error: {e}"),
+        }
+        acumulado.clear();
+    }
+    ExitCode::SUCCESS
 }
 
 fn ayuda() {
