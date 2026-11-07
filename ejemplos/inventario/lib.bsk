@@ -1,0 +1,13 @@
+publico funcion Inventario() {
+  retornar []
+}
+
+publico funcion agregar_producto(inv, nombre, cantidad) {
+  # agregar producto al inventario
+  retornar inv
+}
+
+publico funcion valor_total(inv) {
+  # calcular valor total
+  retornar 0
+}

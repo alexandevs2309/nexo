@@ -1,0 +1,16 @@
+funcion factorial(n: entero) -> entero {
+  si n < 2 { retornar 1 }
+  sino { retornar n * factorial(n - 1) }
+}
+
+funcion fibonacci(n: entero) -> entero {
+  si n < 2 { retornar n }
+  sino { retornar fibonacci(n - 1) + fibonacci(n - 2) }
+}
+
+sea fact10 = factorial(10)
+sea fib15 = fibonacci(15)
+mostrar "Factorial de 10 = "
+mostrar fact10
+mostrar "Fibonacci(15) = "
+mostrar fib15
