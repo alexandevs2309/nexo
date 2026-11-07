@@ -1,0 +1,26 @@
+# Calculadora simple
+
+funcion sumar(a, b) { retornar a + b }
+funcion restar(a, b) { retornar a - b }
+funcion multiplicar(a, b) { retornar a * b }
+funcion dividir(a, b) {
+  si b == 0 {
+    mostrar "Error: division por cero"
+    retornar 0
+  }
+  retornar a / b
+}
+
+funcion main() {
+  mostrar "=== Calculadora ==="
+  mostrar "2 + 3 = "
+  mostrar sumar(2, 3)
+  mostrar "10 - 4 = "
+  mostrar restar(10, 4)
+  mostrar "6 * 7 = "
+  mostrar multiplicar(6, 7)
+  mostrar "20 / 5 = "
+  mostrar dividir(20, 5)
+  mostrar "10 / 0 = "
+  mostrar dividir(10, 0)
+}
