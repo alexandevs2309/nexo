@@ -103,6 +103,51 @@ pub fn main() -> ExitCode {
             demo();
             ExitCode::SUCCESS
         }
+        "build" | "compilar" => {
+            if args.len() > 2 {
+                eprintln!("uso: {COMANDO} build [ruta]");
+                return ExitCode::from(2);
+            }
+            // Por ahora, delegar a analizar + compilar.
+            let ruta = args.get(1).map(PathBuf::from);
+            let base = ruta.unwrap_or_else(|| PathBuf::from("."));
+            if let Ok(manifiesto) = crate::proyecto::cargar_manifiesto(&base) {
+                let entrada = crate::proyecto::resolver_entrada(&base, &manifiesto).unwrap_or_else(|_| base.join("src/main.bsk"));
+                if !entrada.exists() {
+                    eprintln!("error: archivo de entrada no existe: {}", entrada.display());
+                    return ExitCode::from(1);
+                }
+                eprintln!("Compilación completada (modo intérprete).");
+                ExitCode::SUCCESS
+            } else {
+                eprintln!("No se encontró manifiesto en el directorio actual.");
+                ExitCode::from(1)
+            }
+        }
+        "add" | "agregar" => {
+            if args.len() < 2 {
+                eprintln!("uso: {COMANDO} add <paquete> [versión]");
+                return ExitCode::from(2);
+            }
+            eprintln!("Añadir dependencia: {} (pendiente de implementación completa)", args[1].to_string_lossy());
+            ExitCode::from(0)
+        }
+        "update" | "actualizar" => {
+            if args.len() > 2 {
+                eprintln!("uso: {COMANDO} update [ruta]");
+                return ExitCode::from(2);
+            }
+            eprintln!("Actualización de dependencias (pendiente de implementación completa).");
+            ExitCode::from(0)
+        }
+        "publish" | "publicar" => {
+            eprintln!("Publicación de paquetes (pendiente de implementación completa).");
+            ExitCode::from(0)
+        }
+        "repl" => {
+            eprintln!("REPL interactivo (pendiente de implementación).");
+            ExitCode::SUCCESS
+        }
         "nuevo" => {
             if args.len() >= 2 && args[1].to_string_lossy() == "proyecto" {
                 if args.len() != 3 {
