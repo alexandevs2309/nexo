@@ -50,26 +50,43 @@ pub fn main() -> ExitCode {
     *MOTOR_PREFERIDO.lock().unwrap() = motor;
 
     if args.is_empty() {
-        demo();
-        return ExitCode::SUCCESS;
+        // Si hay un proyecto válido, ejecutarlo; si no, mostrar ayuda.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        if crate::proyecto::cargar_manifiesto(&cwd).is_ok() {
+            return ejecutar_archivo_con_root(
+                &crate::proyecto::resolver_entrada(
+                    &cwd,
+                    &crate::proyecto::cargar_manifiesto(&cwd).unwrap(),
+                )
+                .unwrap_or_else(|_| cwd.join("src/main.bsk")),
+                &cwd,
+            );
+        }
+        // No interactivo: mostrar ayuda.
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            // REPL futuro
+            eprintln!("No se encontró un proyecto en el directorio actual.");
+            ayuda();
+            return ExitCode::from(2);
+        } else {
+            ayuda();
+            return ExitCode::SUCCESS;
+        }
     }
 
     let comando = args[0].to_string_lossy();
     // Ejecución directa: `bsk archivo.bsk` o `bsk archivo` (resuelve extensión).
-    // Solo si el argumento parece un archivo (tiene extensión o existe como archivo).
     if args.len() == 1 {
         let candidato = PathBuf::from(&*comando);
-        let es_archivo = candidato.extension().is_some() || candidato.is_file();
-        if es_archivo {
-            // Si no tiene extensión, intentar resolver .bsk
-            let ruta = if candidato.extension().is_none() {
-                let con_ext = candidato.with_extension(EXT_CANONICA);
-                if con_ext.exists() { con_ext } else { candidato }
-            } else {
-                candidato
-            };
-            if ruta.exists() && ruta.is_file() {
-                return ejecutar_archivo(&ruta);
+        // Si tiene extensión de archivo, ejecutar directamente.
+        if candidato.extension().is_some() && candidato.is_file() {
+            return ejecutar_archivo(&candidato);
+        }
+        // Si no tiene extensión, intentar resolver .bsk
+        if candidato.extension().is_none() {
+            let con_ext = candidato.with_extension(EXT_CANONICA);
+            if con_ext.is_file() {
+                return ejecutar_archivo(&con_ext);
             }
         }
     }
@@ -321,19 +338,19 @@ pub fn main() -> ExitCode {
                 }
             }
         }
+        "fmt" | "formatear" => {
+            if args.len() != 2 {
+                eprintln!("uso: {COMANDO} fmt <archivo.bsk>");
+                return ExitCode::from(2);
+            }
+            formatear_archivo(Path::new(&args[1]))
+        }
         "check" | "analizar" => {
             if args.len() != 2 {
                 eprintln!("uso: {COMANDO} analizar <archivo.bsk|archivo.nexo>");
                 return ExitCode::from(2);
             }
             analizar_archivo(Path::new(&args[1]))
-        }
-        "formatear" => {
-            if args.len() != 2 {
-                eprintln!("uso: {COMANDO} formatear <archivo.bsk|archivo.nexo>");
-                return ExitCode::from(2);
-            }
-            formatear_archivo(Path::new(&args[1]))
         }
         "inicializar" => {
             if args.len() > 2 {
