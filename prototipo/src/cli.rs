@@ -166,14 +166,36 @@ pub fn main() -> ExitCode {
             };
             let mir = mir::lower_programa(&hir);
             let rust_code = backend_nativo::generar_rust(&mir);
-            let salida = ruta.with_extension("rs");
-            match fs::write(&salida, rust_code) {
+            let salida_rs = ruta.with_extension("rs");
+            let salida_bin = ruta.with_extension(if cfg!(windows) { "exe" } else { "" });
+            match fs::write(&salida_rs, rust_code) {
                 Ok(_) => {
-                    println!("Código Rust generado: {}", salida.display());
-                    ExitCode::SUCCESS
+                    println!("Código Rust generado: {}", salida_rs.display());
+                    // Compilar con rustc.
+                    let out = std::process::Command::new("rustc")
+                        .arg("-O")
+                        .arg(&salida_rs)
+                        .arg("-o")
+                        .arg(&salida_bin)
+                        .output();
+                    match out {
+                        Ok(o) if o.status.success() => {
+                            println!("Binario compilado: {}", salida_bin.display());
+                            ExitCode::SUCCESS
+                        }
+                        Ok(o) => {
+                            eprintln!("rustc falló:");
+                            eprintln!("{}", String::from_utf8_lossy(&o.stderr));
+                            ExitCode::from(1)
+                        }
+                        Err(e) => {
+                            eprintln!("no se pudo ejecutar rustc: {e}");
+                            ExitCode::from(1)
+                        }
+                    }
                 }
                 Err(e) => {
-                    eprintln!("error: no se pudo escribir '{}': {e}", salida.display());
+                    eprintln!("error: no se pudo escribir '{}': {e}", salida_rs.display());
                     ExitCode::from(1)
                 }
             }
