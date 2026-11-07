@@ -786,8 +786,8 @@ fn lower_expresion(
     e: &Expresion,
     ctx: &crate::semantico::ContextoSemantico,
     res: &mut ResolutorHir,
-) -> HirExpresion {
-    match e {
+) -> Result<HirExpresion, String> {
+    Ok(match e {
         Expresion::Literal { valor, .. } => {
             use crate::valor::Valor;
             let tipo = match valor {
@@ -818,26 +818,26 @@ fn lower_expresion(
             HirExpresion::Variable(id, tipo)
         }
         Expresion::Suma(a, b) => {
-            let ha = lower_expresion(a, ctx, res);
-            let hb = lower_expresion(b, ctx, res);
+            let ha = lower_expresion(a, ctx, res)?;
+            let hb = lower_expresion(b, ctx, res)?;
             let t = TipoSem::Desconocido;
             HirExpresion::Suma(Box::new(ha), Box::new(hb), t)
         }
         Expresion::Resta(a, b) => {
-            let ha = lower_expresion(a, ctx, res);
-            let hb = lower_expresion(b, ctx, res);
+            let ha = lower_expresion(a, ctx, res)?;
+            let hb = lower_expresion(b, ctx, res)?;
             let t = TipoSem::Desconocido;
             HirExpresion::Resta(Box::new(ha), Box::new(hb), t)
         }
         Expresion::Multiplicacion(a, b) => {
-            let ha = lower_expresion(a, ctx, res);
-            let hb = lower_expresion(b, ctx, res);
+            let ha = lower_expresion(a, ctx, res)?;
+            let hb = lower_expresion(b, ctx, res)?;
             let t = TipoSem::Desconocido;
             HirExpresion::Multiplicacion(Box::new(ha), Box::new(hb), t)
         }
         Expresion::Division(a, b) => {
-            let ha = lower_expresion(a, ctx, res);
-            let hb = lower_expresion(b, ctx, res);
+            let ha = lower_expresion(a, ctx, res)?;
+            let hb = lower_expresion(b, ctx, res)?;
             let t = TipoSem::Desconocido;
             HirExpresion::Division(Box::new(ha), Box::new(hb), t)
         }
@@ -847,7 +847,7 @@ fn lower_expresion(
             let args: Vec<HirExpresion> = argumentos
                 .iter()
                 .map(|a| lower_expresion(a, ctx, res))
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             if res.funciones.contains(nombre) {
                 HirExpresion::Llamada {
                     nombre: nombre.clone(),
@@ -876,8 +876,8 @@ fn lower_expresion(
             inclusivo,
             ..
         } => {
-            let hi = lower_expresion(inicio, ctx, res);
-            let hf = lower_expresion(fin, ctx, res);
+            let hi = lower_expresion(inicio, ctx, res)?;
+            let hf = lower_expresion(fin, ctx, res)?;
             HirExpresion::Rango {
                 inicio: Box::new(hi),
                 fin: Box::new(hf),
@@ -886,69 +886,70 @@ fn lower_expresion(
             }
         }
         Expresion::Modulo(a, b) => HirExpresion::Modulo(
-            Box::new(lower_expresion(a, ctx, res)),
-            Box::new(lower_expresion(b, ctx, res)),
+            Box::new(lower_expresion(a, ctx, res)?),
+            Box::new(lower_expresion(b, ctx, res)?),
             TipoSem::Desconocido,
         ),
         Expresion::IgualIgual(a, b) => HirExpresion::IgualIgual(
-            Box::new(lower_expresion(a, ctx, res)),
-            Box::new(lower_expresion(b, ctx, res)),
+            Box::new(lower_expresion(a, ctx, res)?),
+            Box::new(lower_expresion(b, ctx, res)?),
             TipoSem::Desconocido,
         ),
         Expresion::Distinto(a, b) => HirExpresion::Distinto(
-            Box::new(lower_expresion(a, ctx, res)),
-            Box::new(lower_expresion(b, ctx, res)),
+            Box::new(lower_expresion(a, ctx, res)?),
+            Box::new(lower_expresion(b, ctx, res)?),
             TipoSem::Desconocido,
         ),
         Expresion::Menor(a, b) => HirExpresion::Menor(
-            Box::new(lower_expresion(a, ctx, res)),
-            Box::new(lower_expresion(b, ctx, res)),
+            Box::new(lower_expresion(a, ctx, res)?),
+            Box::new(lower_expresion(b, ctx, res)?),
             TipoSem::Desconocido,
         ),
         Expresion::MenorIgual(a, b) => HirExpresion::MenorIgual(
-            Box::new(lower_expresion(a, ctx, res)),
-            Box::new(lower_expresion(b, ctx, res)),
+            Box::new(lower_expresion(a, ctx, res)?),
+            Box::new(lower_expresion(b, ctx, res)?),
             TipoSem::Desconocido,
         ),
         Expresion::Mayor(a, b) => HirExpresion::Mayor(
-            Box::new(lower_expresion(a, ctx, res)),
-            Box::new(lower_expresion(b, ctx, res)),
+            Box::new(lower_expresion(a, ctx, res)?),
+            Box::new(lower_expresion(b, ctx, res)?),
             TipoSem::Desconocido,
         ),
         Expresion::MayorIgual(a, b) => HirExpresion::MayorIgual(
-            Box::new(lower_expresion(a, ctx, res)),
-            Box::new(lower_expresion(b, ctx, res)),
+            Box::new(lower_expresion(a, ctx, res)?),
+            Box::new(lower_expresion(b, ctx, res)?),
             TipoSem::Desconocido,
         ),
-        Expresion::No(a) => {
-            HirExpresion::No(Box::new(lower_expresion(a, ctx, res)), TipoSem::Desconocido)
-        }
+        Expresion::No(a) => HirExpresion::No(
+            Box::new(lower_expresion(a, ctx, res)?),
+            TipoSem::Desconocido,
+        ),
         Expresion::Y(a, b) => HirExpresion::Y(
-            Box::new(lower_expresion(a, ctx, res)),
-            Box::new(lower_expresion(b, ctx, res)),
+            Box::new(lower_expresion(a, ctx, res)?),
+            Box::new(lower_expresion(b, ctx, res)?),
             TipoSem::Desconocido,
         ),
         Expresion::O(a, b) => HirExpresion::O(
-            Box::new(lower_expresion(a, ctx, res)),
-            Box::new(lower_expresion(b, ctx, res)),
+            Box::new(lower_expresion(a, ctx, res)?),
+            Box::new(lower_expresion(b, ctx, res)?),
             TipoSem::Desconocido,
         ),
         Expresion::ArregloLiteral { elementos, .. } => HirExpresion::ArregloLiteral {
             elementos: elementos
                 .iter()
                 .map(|e| lower_expresion(e, ctx, res))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             tipo: TipoSem::Desconocido,
         },
         Expresion::Indice { objeto, indice, .. } => HirExpresion::Indice {
-            objeto: Box::new(lower_expresion(objeto, ctx, res)),
-            indice: Box::new(lower_expresion(indice, ctx, res)),
+            objeto: Box::new(lower_expresion(objeto, ctx, res)?),
+            indice: Box::new(lower_expresion(indice, ctx, res)?),
             tipo: TipoSem::Desconocido,
         },
         Expresion::Acceso {
             objeto, miembro, ..
         } => HirExpresion::Acceso {
-            objeto: Box::new(lower_expresion(objeto, ctx, res)),
+            objeto: Box::new(lower_expresion(objeto, ctx, res)?),
             miembro: miembro.clone(),
             tipo: TipoSem::Desconocido,
         },
@@ -1002,15 +1003,7 @@ fn lower_expresion(
             // Bajar el cuerpo con el ámbito actual (params registrados).
             let mut body: Vec<HirSentencia> = Vec::new();
             for st in cuerpo {
-                match lower_sentencia(st, ctx, res) {
-                    Ok(hs) => body.push(hs),
-                    Err(_e) => {
-                        // Ignorar errores en el cuerpo de la lambda; el lowering
-                        // principal los habrá capturado o el verificador los detectará.
-                        // No silenciamos con filter_map para que el error sea visible
-                        // como HirSentencia vacía (no se agrega), pero no panic.
-                    }
-                }
+                body.push(lower_sentencia(st, ctx, res)?);
             }
             let capturadas_ids: Vec<SimbodoId> = capturadas_por_anidados
                 .iter()
@@ -1046,14 +1039,14 @@ fn lower_expresion(
         Expresion::LlamadaIndirecta {
             callee, argumentos, ..
         } => HirExpresion::LlamadaIndirecta {
-            callee: Box::new(lower_expresion(callee, ctx, res)),
+            callee: Box::new(lower_expresion(callee, ctx, res)?),
             argumentos: argumentos
                 .iter()
                 .map(|a| lower_expresion(a, ctx, res))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             tipo: TipoSem::Desconocido,
         },
-    }
+    })
 }
 
 /// Lowering AST -> HIR.
@@ -1074,7 +1067,7 @@ fn lower_sentencia(
         } => {
             // Igual que el semántico: se evalúa el inicializador ANTES de
             // declarar (léxico: `sea a = a + 1` lee la `a` exterior).
-            let valor_hir = lower_expresion(valor, ctx, res);
+            let valor_hir = lower_expresion(valor, ctx, res)?;
             let id = res.insertar(nombre, None);
             res.variables.insert(nombre.clone());
             let tipo = tipo_anotacion
@@ -1096,7 +1089,7 @@ fn lower_sentencia(
                 .unwrap_or_else(|| res.insertar(nombre, None));
             Ok(HirSentencia::Asignacion {
                 simbodo: id,
-                valor: lower_expresion(valor, ctx, res),
+                valor: lower_expresion(valor, ctx, res)?,
             })
         }
         Sentencia::AsignacionIndice {
@@ -1105,12 +1098,15 @@ fn lower_sentencia(
             valor,
             ..
         } => Ok(HirSentencia::AsignacionIndice {
-            objeto: lower_expresion(objeto, ctx, res),
-            indice: lower_expresion(indice, ctx, res),
-            valor: lower_expresion(valor, ctx, res),
+            objeto: lower_expresion(objeto, ctx, res)?,
+            indice: lower_expresion(indice, ctx, res)?,
+            valor: lower_expresion(valor, ctx, res)?,
         }),
         Sentencia::Retorno { valor, .. } => Ok(HirSentencia::Retornar(
-            valor.as_ref().map(|v| lower_expresion(v, ctx, res)),
+            valor
+                .as_ref()
+                .map(|v| lower_expresion(v, ctx, res))
+                .transpose()?,
         )),
         Sentencia::Si {
             condicion,
@@ -1118,7 +1114,7 @@ fn lower_sentencia(
             rama_sino,
             ..
         } => {
-            let cond = lower_expresion(condicion, ctx, res);
+            let cond = lower_expresion(condicion, ctx, res)?;
             res.entrar();
             let mut entonces: Vec<HirSentencia> = Vec::new();
             for st in rama_si {
@@ -1157,7 +1153,7 @@ fn lower_sentencia(
         Sentencia::Mientras {
             condicion, cuerpo, ..
         } => {
-            let cond = lower_expresion(condicion, ctx, res);
+            let cond = lower_expresion(condicion, ctx, res)?;
             res.entrar();
             let mut body: Vec<HirSentencia> = Vec::new();
             for st in cuerpo {
@@ -1192,24 +1188,24 @@ fn lower_sentencia(
         }
         Sentencia::Mostrar { valor, .. } => Ok(HirSentencia::Expresion(HirExpresion::Llamada {
             nombre: "mostrar".to_string(),
-            argumentos: vec![lower_expresion(valor, ctx, res)],
+            argumentos: vec![lower_expresion(valor, ctx, res)?],
             tipo: TipoSem::Desconocido,
         })),
         Sentencia::MostrarSinSalto { valor, .. } => {
             Ok(HirSentencia::Expresion(HirExpresion::Llamada {
                 nombre: "mostrar_sin_salto".to_string(),
-                argumentos: vec![lower_expresion(valor, ctx, res)],
+                argumentos: vec![lower_expresion(valor, ctx, res)?],
                 tipo: TipoSem::Desconocido,
             }))
         }
-        Sentencia::Expresion(e) => Ok(HirSentencia::Expresion(lower_expresion(e, ctx, res))),
+        Sentencia::Expresion(e) => Ok(HirSentencia::Expresion(lower_expresion(e, ctx, res)?)),
         Sentencia::ParaCada {
             variable,
             iterable,
             cuerpo,
             ..
         } => {
-            let iterable_hir = lower_expresion(iterable, ctx, res);
+            let iterable_hir = lower_expresion(iterable, ctx, res)?;
             res.entrar();
             let var_id = res.insertar(variable, None);
             res.variables.insert(variable.clone());
@@ -1339,14 +1335,7 @@ fn lower_sentencia(
             }
             let mut body: Vec<HirSentencia> = Vec::new();
             for st in cuerpo {
-                match lower_sentencia(st, ctx, res) {
-                    Ok(hs) => body.push(hs),
-                    Err(_e) => {
-                        // No silenciamos con filter_map; errores en el cuerpo de
-                        // una función anidada se omiten sin panic. El verificador
-                        // HIR o el análisis semántico habrán reportado el error.
-                    }
-                }
+                body.push(lower_sentencia(st, ctx, res)?);
             }
             let capturadas_ids: Vec<SimbodoId> = capturadas_por_anidados
                 .iter()
@@ -1873,7 +1862,7 @@ pub fn lower_programa_con_resolutor(
                 publico,
                 ..
             } => {
-                let val = lower_expresion(valor, ctx, res);
+                let val = lower_expresion(valor, ctx, res).map_err(|e| vec![e])?;
                 let id = res.insertar(nombre, None);
                 res.variables.insert(nombre.clone());
                 let tipo = tipo_anotacion
@@ -1975,7 +1964,9 @@ pub fn lower_programa_con_resolutor(
             Sentencia::Expresion(e) => {
                 ultima_es_expresion_bare = true;
                 if tiene_main_usuario {
-                    items.push(HirItem::Expresion(lower_expresion(e, ctx, res)));
+                    items.push(HirItem::Expresion(
+                        lower_expresion(e, ctx, res).map_err(|e| vec![e])?,
+                    ));
                 } else {
                     // Bajar la expresión como sentencia (descarta el valor);
                     // el valor del programa será el de la última expresión.
