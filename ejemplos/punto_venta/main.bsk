@@ -1,0 +1,35 @@
+funcion Inventario() {
+  retornar []
+}
+
+funcion agregar_item(venta, nombre, cantidad, precio) {
+  sea item = [nombre, cantidad, precio]
+  retornar agregar(venta, item)
+}
+
+funcion calcular_total(venta) {
+  sea total = 0.0
+  para cada item en venta {
+    total = total + item[1] * item[2]
+  }
+  retornar total
+}
+
+funcion imprimir_ticket(venta) {
+  mostrar "=== TICKET ==="
+  para cada item en venta {
+    mostrar item[0]
+    mostrar item[1]
+    mostrar item[2]
+    mostrar item[1] * item[2]
+  }
+  mostrar "Total: "
+  mostrar calcular_total(venta)
+}
+
+sea venta = Inventario()
+sea venta = agregar_item(venta, "cafe", 2, 3.5)
+sea venta = agregar_item(venta, "pan", 3, 1.2)
+sea venta = agregar_item(venta, "leche", 1, 2.0)
+
+imprimir_ticket(venta)

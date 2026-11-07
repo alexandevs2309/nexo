@@ -1,0 +1,29 @@
+publico funcion crear_venta() {
+  retornar []
+}
+
+publico funcion agregar_item(venta, nombre, cantidad, precio) {
+  # agregar producto al inventario
+  sea item = [nombre, cantidad, precio]
+  retornar agregar(venta, item)
+}
+
+publico funcion calcular_total(venta) {
+  sea total = 0.0
+  para cada item en venta {
+    total = total + item[1] * item[2]
+  }
+  retornar total
+}
+
+publico funcion imprimir_ticket(venta) {
+  mostrar "=== TICKET ==="
+  para cada item en venta {
+    mostrar item[0]
+    mostrar item[1]
+    mostrar item[2]
+    mostrar item[1] * item[2]
+  }
+  mostrar "Total: "
+  mostrar calcular_total(venta)
+}
