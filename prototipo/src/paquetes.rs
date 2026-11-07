@@ -243,7 +243,11 @@ fn resolver_recursivo(
     Ok(())
 }
 
-fn resolver_dependencia(dep: &Dependencia, base: &Path) -> Result<DependenciaResuelta, String> {
+/// Resuelve una única dependencia contra el sistema de archivos. Pública para
+/// que `bsk add` pueda pre-verificar resolubilidad antes de editar el
+/// manifiesto. `base` debe ser el directorio del proyecto (idealmente
+/// canonicalizado).
+pub fn resolver_dependencia(dep: &Dependencia, base: &Path) -> Result<DependenciaResuelta, String> {
     let mut candidatos: Vec<PathBuf> = Vec::new();
     if let Some(ruta) = &dep.ruta {
         candidatos.push(base.join(ruta));
@@ -707,7 +711,9 @@ pub fn nombre_valido(nombre: &str) -> bool {
             .is_some_and(|c| c.is_ascii_alphanumeric())
 }
 
-fn version_valida(version: &str) -> bool {
+/// Comprueba si una cadena es una versión aceptable (`*`, SemVer suelto,
+/// rangos `^`/`~`/`>=`). Pública para `bsk add`.
+pub fn version_valida(version: &str) -> bool {
     version == "*"
         || (!version.is_empty()
             && version

@@ -854,3 +854,241 @@ fn paquete_remoto_nonce_repetido() {
 
     fs::remove_dir_all(&base).ok();
 }
+
+// --- DT-21: `bsk add` ---
+
+#[test]
+fn add_agrega_y_bloquea() {
+    let base = raiz("add-ok");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"app\"\nversion = \"0.1.0\"\n\n[dependencias]\n",
+    );
+    crear_dependencia(
+        &base,
+        "util",
+        "0.1.0",
+        "funcion doble(x) { retornar x * 2 }",
+    );
+    let out = ejecutar(&base, &["add", "util", "0.1.0"]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    let manifiesto = fs::read_to_string(base.join("basilisco.toml")).unwrap();
+    assert!(manifiesto.contains("util = \"0.1.0\""), "{manifiesto}");
+    let bloqueo = fs::read_to_string(base.join("basilisco.lock")).unwrap();
+    assert!(bloqueo.contains("util"), "{bloqueo}");
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn add_rechaza_duplicada() {
+    let base = raiz("add-dup");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"app\"\nversion = \"0.1.0\"\n\n[dependencias]\nutil = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "util", "0.1.0", "funcion uno() { retornar 1 }");
+    let out = ejecutar(&base, &["add", "util", "0.1.0"]);
+    assert!(!out.status.success());
+    assert!(
+        texto(&out.stderr).contains("ya está"),
+        "{}",
+        texto(&out.stderr)
+    );
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn add_rechaza_inexistente_y_no_toca_manifiesto() {
+    let base = raiz("add-missing");
+    let manifiesto_original =
+        "[paquete]\nnombre = \"app\"\nversion = \"0.1.0\"\n\n[dependencias]\n";
+    escribir(&base, "basilisco.toml", manifiesto_original);
+    let out = ejecutar(&base, &["add", "fantasma"]);
+    assert!(!out.status.success());
+    assert!(
+        texto(&out.stderr).contains("no se pudo resolver"),
+        "{}",
+        texto(&out.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(base.join("basilisco.toml")).unwrap(),
+        manifiesto_original
+    );
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn add_con_ruta_fuera_del_proyecto() {
+    let base = raiz("add-ruta");
+    escribir(
+        &base,
+        "proyecto/basilisco.toml",
+        "[paquete]\nnombre = \"app\"\nversion = \"0.1.0\"\n\n[dependencias]\n",
+    );
+    escribir(
+        &base,
+        "vecino/basilisco.toml",
+        "[paquete]\nnombre = \"vecino\"\nversion = \"0.1.0\"\n",
+    );
+    escribir(
+        &base,
+        "vecino/lib.bsk",
+        "funcion saludo() { mostrar \"hola\" }",
+    );
+    let proyecto = base.join("proyecto");
+    let out = ejecutar(&proyecto, &["add", "vecino", "0.1.0", "--ruta=../vecino"]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    let manifiesto = fs::read_to_string(proyecto.join("basilisco.toml")).unwrap();
+    assert!(manifiesto.contains("ruta = \"../vecino\""), "{manifiesto}");
+    assert!(manifiesto.contains("autorizado = true"), "{manifiesto}");
+    fs::remove_dir_all(&base).ok();
+}
+
+// --- DT-21: `bsk update` ---
+
+#[test]
+fn update_acepta_cambios_y_reescribe_bloqueo() {
+    let base = raiz("update-drift");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"app\"\nversion = \"0.1.0\"\n\n[dependencias]\nutil = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "util", "0.1.0", "funcion uno() { retornar 1 }");
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    // Cambiar la dependencia después de instalar: `instalar` debe fallar.
+    escribir(
+        &base,
+        "paquetes/util/lib.bsk",
+        "funcion dos() { retornar 2 }",
+    );
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(
+        !out.status.success(),
+        "instalar debió fallar por hash alterado"
+    );
+    // `update` acepta el cambio, reescribe el bloqueo y la caché.
+    let out = ejecutar(&base, &["update"]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    // Con el bloqueo actualizado, `instalar` vuelve a pasar.
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn update_falla_sin_manifiesto() {
+    let base = raiz("update-sin-manifiesto");
+    let out = ejecutar(&base, &["update"]);
+    assert!(!out.status.success());
+    assert!(
+        texto(&out.stderr).contains("error"),
+        "{}",
+        texto(&out.stderr)
+    );
+    fs::remove_dir_all(&base).ok();
+}
+
+// --- DT-22/23: `bsk publish` ---
+
+#[test]
+fn publica_bpk_valido_sin_firma() {
+    let base = raiz("publish-simple");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"mi-lib\"\nversion = \"1.2.3\"\n\n[dependencias]\n",
+    );
+    escribir(
+        &base,
+        "lib.bsk",
+        "publico funcion suma(a, b) { retornar a + b }",
+    );
+    escribir(&base, "src/main.bsk", "mostrar suma(2, 3)");
+    let out = ejecutar(&base, &["publish"]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    let bpk = base.join("dist/mi-lib-1.2.3.bpk");
+    assert!(bpk.exists(), "no existe {}", bpk.display());
+    let bytes = fs::read(&bpk).unwrap();
+    basilisco::cliente_remoto::validar_bpk(&bytes).expect("el BPK debe validar");
+    // Sin --clave no hay sidecar de metadatos firmados.
+    assert!(!bpk.with_extension("json").exists());
+    // Extracción round-trip.
+    let extraido = base.join("extraido");
+    basilisco::cliente_remoto::extraer_bpk(&bytes, &extraido).unwrap();
+    assert_eq!(
+        fs::read_to_string(extraido.join("lib.bsk")).unwrap(),
+        "publico funcion suma(a, b) { retornar a + b }"
+    );
+    assert_eq!(
+        fs::read_to_string(extraido.join("src/main.bsk")).unwrap(),
+        "mostrar suma(2, 3)"
+    );
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn publica_firmado_y_verifica_firma() {
+    let base = raiz("publish-firmado");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"mi-lib\"\nversion = \"1.2.3\"\n\n[dependencias]\n",
+    );
+    escribir(&base, "lib.bsk", "publico funcion uno() { retornar 1 }");
+    let clave_hex = "0123456789abcdeffedcba98765432100123456789abcdeffedcba9876543210";
+    let arg = format!("--clave={clave_hex}");
+    let out = ejecutar(&base, &["publish", &arg]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    let json = fs::read_to_string(base.join("dist/mi-lib-1.2.3.json")).unwrap();
+    let meta: basilisco::paquetes::MetadatosPaquete = serde_json::from_str(&json).unwrap();
+    let firma = meta.firma.clone().expect("debe incluir firma");
+    let clave_publica = hex::decode(meta.clave.as_deref().expect("debe incluir clave")).unwrap();
+    basilisco::paquetes::verificar_firma_metadatos(&meta, &firma, &clave_publica)
+        .expect("la firma debe verificar");
+    // El sha256 de los metadatos corresponde al artefacto completo.
+    let bytes = fs::read(base.join("dist/mi-lib-1.2.3.bpk")).unwrap();
+    assert_eq!(meta.sha256, basilisco::paquetes::sha256_hex(&bytes));
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn publica_rechaza_version_no_semver() {
+    let base = raiz("publish-semver");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"mi-lib\"\nversion = \"dev\"\n\n[dependencias]\n",
+    );
+    escribir(&base, "lib.bsk", "publico funcion uno() { retornar 1 }");
+    let out = ejecutar(&base, &["publish"]);
+    assert!(!out.status.success());
+    assert!(
+        texto(&out.stderr).contains("SemVer"),
+        "{}",
+        texto(&out.stderr)
+    );
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn publica_rechaza_clave_invalida() {
+    let base = raiz("publish-clave-mala");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"mi-lib\"\nversion = \"1.0.0\"\n\n[dependencias]\n",
+    );
+    escribir(&base, "lib.bsk", "publico funcion uno() { retornar 1 }");
+    let out = ejecutar(&base, &["publish", "--clave=nohex"]);
+    assert!(!out.status.success());
+    assert!(
+        texto(&out.stderr).contains("clave privada inválida"),
+        "{}",
+        texto(&out.stderr)
+    );
+    fs::remove_dir_all(&base).ok();
+}

@@ -264,6 +264,64 @@ pub fn validar_bpk(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Construye un artefacto BPK: ZIP con `BPK-MANIFEST.toml` en la raíz y los
+/// archivos del paquete bajo `payload/`. `archivos` son rutas relativas
+/// (normalizadas NFC, separador '/') con su contenido. Devuelve los bytes del
+/// ZIP listos para validar, firmar y publicar.
+pub fn crear_bpk(manifiesto_toml: &str, archivos: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
+    if manifiesto_toml.trim().is_empty() {
+        return Err("BPK-MANIFEST.toml vacío".to_string());
+    }
+    if archivos.is_empty() {
+        return Err("paquete sin archivos en payload".to_string());
+    }
+    const MAX_TOTAL: u64 = 100 * 1024 * 1024;
+    let mut total = 0u64;
+    let mut nombres: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (ruta, contenido) in archivos {
+        if ruta.is_empty()
+            || ruta.contains("..")
+            || ruta.starts_with('/')
+            || ruta.contains('\\')
+            || ruta.contains('\0')
+        {
+            return Err(format!("ruta de payload inválida: {ruta}"));
+        }
+        for comp in ruta.split('/') {
+            if comp.is_empty() || comp == "." || comp == ".." {
+                return Err(format!("componente de ruta inválido: {ruta}"));
+            }
+        }
+        let normalizada: String = ruta.nfc().collect();
+        if normalizada != *ruta {
+            return Err(format!("ruta no normalizada en NFC: {ruta}"));
+        }
+        if !nombres.insert(ruta.clone()) {
+            return Err(format!("archivo duplicado en payload: {ruta}"));
+        }
+        total += contenido.len() as u64;
+        if total > MAX_TOTAL {
+            return Err("paquete demasiado grande".to_string());
+        }
+    }
+    let cursor = Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(cursor);
+    let opciones = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    zip.start_file("BPK-MANIFEST.toml", opciones)
+        .map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut zip, manifiesto_toml.as_bytes()).map_err(|e| e.to_string())?;
+    for (ruta, contenido) in archivos {
+        let nombre = format!("payload/{ruta}");
+        zip.start_file(nombre.as_str(), opciones)
+            .map_err(|e| e.to_string())?;
+        std::io::Write::write_all(&mut zip, contenido).map_err(|e| e.to_string())?;
+    }
+    zip.finish()
+        .map(|c| c.into_inner())
+        .map_err(|e| e.to_string())
+}
+
 pub fn extraer_bpk(bytes: &[u8], destino: &Path) -> Result<PathBuf, String> {
     validar_bpk(bytes)?;
     // (resto igual que antes)

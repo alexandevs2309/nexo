@@ -218,3 +218,65 @@ entero` con el código E1007 y mensaje "comparación incompatible entre texto y
 entero" — el comportamiento es correcto (rechaza) pero el mensaje/código es
 confuso para una suma; debería ser E1001 ("tipos incompatibles") o similar.
 Queda como deuda menor de mensajes de error.
+
+## G4: comandos de paquetes reales — add, update, publish con BPK (2026-11-07)
+
+Se eliminaron los tres stubs del CLI de paquetes (antes solo imprimían
+"pendiente de implementación completa"). El ecosistema de paquetes queda
+operativo de extremo a extremo: `inicializar → add → instalar → update →
+publish`, con verificación de integridad y firmas Ed25519 en cada paso.
+
+**`bsk add <paquete> [versión] [--ruta=<ruta>]` (DT-21):**
+
+- Valida nombre (`nombre_valido`) y versión (`version_valida`, ahora `pub`).
+- Rechaza duplicadas consultando el manifiesto cargado.
+- **Pre-verifica resolubilidad** con `resolver_dependencia` (ahora `pub`)
+  *antes* de tocar el manifiesto: si la dependencia no se puede resolver, el
+  `basilisco.toml` queda intacto (no hay estados rotos).
+- Edita el manifiesto conservando el resto del archivo (comentarios incluidos)
+  mediante `insertar_dependencia_en_toml`, que inserta al final de la sección
+  `[dependencias]` (o crea la sección al final si no existe).
+- `--ruta` fuera del proyecto → `autorizado = true` con aviso visible (el
+  resolver sigue limitando al directorio padre).
+- Al final ejecuta la instalación completa (resolver + bloqueo).
+
+**`bsk update [ruta]` (DT-22):**
+
+- Ignora el bloqueo previo: limpia `.basilisco/cache` (la fuente manda sobre
+  la caché), re-resuelve todo y reescribe `basilisco.lock`.
+- Útil exactamente cuando `instalar` falla por "integridad comprometida"
+  (hash alterado intencionalmente): `update` acepta el cambio local y
+  re-sincroniza.
+
+**`bsk publish [ruta] [--clave=<hex32>] [--salida=<archivo>]` (DT-23):**
+
+- Recopila todos los `.bsk` del proyecto (`recoger_fuentes_bsk`): raíz y
+  subdirectorios recursivos, excluyendo `.basilisco/`, `paquetes/`, `vendor/`,
+  `dist/` y directorios ocultos; límites 1000 archivos / 100 MB total /
+  10 MB por archivo; rutas normalizadas NFC y validadas.
+- Verifica SemVer estricto (la versión `*` o `dev` no es publicable).
+- Genera el artefacto BPK R2 con el nuevo constructor
+  `cliente_remoto::crear_bpk`: ZIP con `BPK-MANIFEST.toml` en la raíz y los
+  archivos bajo `payload/`, con sha256 por archivo en el manifiesto. El
+  constructor valida rutas (traversal, `\0`, `\`, NFC, duplicados) y límites
+  antes de escribir el ZIP.
+- **Autocomprobación doble:** el artefacto generado pasa por `validar_bpk`
+  antes de escribirse, y las firmas generadas pasan por
+  `verificar_firma_metadatos` antes de devolverse. Nunca se publica un
+  artefacto o firma que no verifique.
+- `--clave` (semilla Ed25519 en hex, 32 bytes) firma los metadatos y escribe
+  el sidecar `.json` junto al artefacto (`MetadatosPaquete` serializado, con
+  `sha256` del artefacto completo, `registry_id = "local"`, `key_id = "key1"`
+  — coincide con el almacén de confianza del resolver — y `nonce` =
+  timestamp en nanos, anti-replay).
+- Sin `--clave` no se escribe sidecar (publicación anónima explícita).
+
+**Tests nuevos (10, en `tests/paquetes.rs`, total 39):** add agrega+y-bloquea,
+add rechaza duplicada, add rechaza inexistente sin tocar manifiesto, add con
+ruta externa y autorización, update acepta cambios y reescribe bloqueo,
+update falla sin manifiesto, publish BPK válido sin firma (+ extracción
+round-trip), publish firmado con verificación de firma y sha256, publish
+rechaza no-SemVer, publish rechaza clave inválida.
+
+**Estado:** 802 tests pasando, 0 fallos; `cargo fmt --check` y
+`cargo clippy --all-targets --all-features -- -D warnings` limpios.

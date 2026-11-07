@@ -202,26 +202,24 @@ pub fn main() -> ExitCode {
         }
         "add" | "agregar" => {
             if args.len() < 2 {
-                eprintln!("uso: {COMANDO} add <paquete> [versión]");
+                eprintln!("uso: {COMANDO} add <paquete> [versión] [--ruta=<ruta>]");
                 return ExitCode::from(2);
             }
-            eprintln!(
-                "Añadir dependencia: {} (pendiente de implementación completa)",
-                args[1].to_string_lossy()
-            );
-            ExitCode::from(0)
+            agregar_dependencia(args[1].to_str().unwrap_or(""), &args[2..])
         }
         "update" | "actualizar" => {
             if args.len() > 2 {
                 eprintln!("uso: {COMANDO} update [ruta]");
                 return ExitCode::from(2);
             }
-            eprintln!("Actualización de dependencias (pendiente de implementación completa).");
-            ExitCode::from(0)
+            actualizar_paquetes(args.get(1).map(PathBuf::from))
         }
         "publish" | "publicar" => {
-            eprintln!("Publicación de paquetes (pendiente de implementación completa).");
-            ExitCode::from(0)
+            if args.len() > 4 {
+                eprintln!("uso: {COMANDO} publish [ruta] [--clave=<hex32>] [--salida=<archivo>]");
+                return ExitCode::from(2);
+            }
+            publicar_paquete(&args[1..])
         }
         "repl" => repl(),
         "nuevo" => {
@@ -594,6 +592,9 @@ fn ayuda() {
     println!("  {COMANDO} inicializar [ruta]     crea un proyecto mínimo");
     println!("  {COMANDO} probar [ruta]          ejecuta archivos .bsk");
     println!("  {COMANDO} instalar [ruta]        resuelve dependencias y escribe {BLOQUEO}");
+    println!("  {COMANDO} add <paquete> [ver]    agrega una dependencia y la instala");
+    println!("  {COMANDO} update [ruta]          re-resuelve dependencias y reescribe {BLOQUEO}");
+    println!("  {COMANDO} publish [ruta]         empaqueta el proyecto en un artefacto .bpk");
     println!("  {COMANDO} paquetes [ruta]        lista las dependencias del bloqueo");
     println!("  {COMANDO} demo                   ejecuta una demostración");
     println!("  {COMANDO} --version              muestra la versión");
@@ -1140,6 +1141,498 @@ fn instalar_paquetes(ruta: Option<PathBuf>) -> ExitCode {
     }
     println!("bloqueo escrito: {}", base.join(BLOQUEO).display());
     ExitCode::SUCCESS
+}
+
+/// `bsk add <paquete> [versión] [--ruta=<ruta>]`: agrega la dependencia al
+/// `[dependencias]` del manifiesto y ejecuta la instalación (resolución +
+/// bloqueo). Si la dependencia no se puede resolver, el manifiesto no se toca.
+fn agregar_dependencia(nombre: &str, resto: &[OsString]) -> ExitCode {
+    let mut version = "*".to_string();
+    let mut ruta: Option<String> = None;
+    let mut hubo_posicional = false;
+    for arg in resto {
+        let s = arg.to_string_lossy().to_string();
+        if let Some(r) = s.strip_prefix("--ruta=") {
+            ruta = Some(r.to_string());
+        } else if s.starts_with("--") {
+            eprintln!("error: opción desconocida: {s}");
+            return ExitCode::from(2);
+        } else if !hubo_posicional {
+            version = s;
+            hubo_posicional = true;
+        } else {
+            eprintln!("uso: {COMANDO} add <paquete> [versión] [--ruta=<ruta>]");
+            return ExitCode::from(2);
+        }
+    }
+    if !paquetes::nombre_valido(nombre) {
+        eprintln!("error: nombre de paquete inválido '{nombre}'");
+        return ExitCode::from(3);
+    }
+    if !paquetes::version_valida(&version) {
+        eprintln!("error: versión inválida '{version}'");
+        return ExitCode::from(3);
+    }
+    let base = PathBuf::from(".");
+    let manifiesto = match paquetes::cargar_manifiesto(&base) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    if manifiesto.dependencias.iter().any(|d| d.nombre == nombre) {
+        eprintln!(
+            "error: la dependencia '{nombre}' ya está en {}",
+            base.join(paquetes::MANIFIESTO).display()
+        );
+        return ExitCode::from(3);
+    }
+    // Si la ruta explícita apunta fuera del proyecto, se autoriza de forma
+    // explícita (el resolver sigue limitando al directorio padre).
+    let mut autorizado = false;
+    if let Some(r) = &ruta {
+        let base_canonical = fs::canonicalize(&base).unwrap_or_else(|_| base.clone());
+        if let Ok(c) = fs::canonicalize(base_canonical.join(r))
+            && !c.starts_with(&base_canonical)
+        {
+            autorizado = true;
+            println!("aviso: la ruta '{r}' está fuera del proyecto; se marca autorizado = true");
+        }
+    }
+    let dep = paquetes::Dependencia {
+        nombre: nombre.to_string(),
+        version: version.clone(),
+        ruta: ruta.clone(),
+        hash: None,
+        firma: None,
+        clave: None,
+        registro: None,
+        nonce: None,
+        expira: None,
+        autorizado,
+    };
+    // Pre-verificar resolubilidad sin tocar el manifiesto.
+    let base_canonical = fs::canonicalize(&base).unwrap_or_else(|_| base.clone());
+    if let Err(e) = paquetes::resolver_dependencia(&dep, &base_canonical) {
+        eprintln!("error: no se pudo resolver '{nombre}': {e}");
+        eprintln!("el manifiesto no se modificó");
+        return ExitCode::from(3);
+    }
+    // Editar el manifiesto conservando el resto del archivo.
+    let ruta_manifiesto = base.join(paquetes::MANIFIESTO);
+    let texto = match fs::read_to_string(&ruta_manifiesto) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!(
+                "error: no se pudo leer '{}': {e}",
+                ruta_manifiesto.display()
+            );
+            return ExitCode::from(3);
+        }
+    };
+    let ruta_escapada = ruta.as_deref().map(escapar_toml);
+    let version_escapada = escapar_toml(&version);
+    let entrada = match (&ruta_escapada, autorizado) {
+        (Some(r), true) => format!(
+            "{nombre} = {{ version = \"{version_escapada}\", ruta = \"{r}\", autorizado = true }}"
+        ),
+        (Some(r), false) => {
+            format!("{nombre} = {{ version = \"{version_escapada}\", ruta = \"{r}\" }}")
+        }
+        (None, _) => format!("{nombre} = \"{version_escapada}\""),
+    };
+    let nuevo = match insertar_dependencia_en_toml(&texto, &entrada) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    if let Err(e) = fs::write(&ruta_manifiesto, &nuevo) {
+        eprintln!(
+            "error: no se pudo escribir '{}': {e}",
+            ruta_manifiesto.display()
+        );
+        return ExitCode::from(3);
+    }
+    println!("dependencia agregada: {entrada}");
+    // Re-instalar para resolver todo y reescribir el bloqueo.
+    instalar_paquetes(Some(base))
+}
+
+/// Inserta `entrada` al final de la sección `[dependencias]` del TOML,
+/// conservando el resto del archivo (comentarios incluidos). Si la sección no
+/// existe, se agrega al final.
+fn insertar_dependencia_en_toml(texto: &str, entrada: &str) -> Result<String, String> {
+    if entrada.contains('\n') {
+        return Err("entrada de dependencia inválida".to_string());
+    }
+    let mut lineas: Vec<String> = texto.lines().map(str::to_string).collect();
+    match lineas.iter().position(|l| l.trim() == "[dependencias]") {
+        Some(i) => {
+            let mut fin = lineas.len();
+            for (j, l) in lineas.iter().enumerate().skip(i + 1) {
+                if l.trim_start().starts_with('[') {
+                    fin = j;
+                    break;
+                }
+            }
+            lineas.insert(fin, entrada.to_string());
+        }
+        None => {
+            if lineas.last().is_some_and(|l| !l.trim().is_empty()) {
+                lineas.push(String::new());
+            }
+            lineas.push("[dependencias]".to_string());
+            lineas.push(entrada.to_string());
+        }
+    }
+    let mut salida = lineas.join("\n");
+    if !salida.ends_with('\n') {
+        salida.push('\n');
+    }
+    Ok(salida)
+}
+
+fn escapar_toml(texto: &str) -> String {
+    texto.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// `bsk update [ruta]`: re-resuelve todas las dependencias ignorando el
+/// bloqueo previo (acepta los cambios locales) y reescribe `basilisco.lock`.
+fn actualizar_paquetes(ruta: Option<PathBuf>) -> ExitCode {
+    let base = ruta.unwrap_or_else(|| PathBuf::from("."));
+    let manifiesto = match paquetes::cargar_manifiesto(&base) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    // La fuente manda: la caché se reconstruye con los hashes nuevos.
+    let cache = base.join(".basilisco").join("cache");
+    if cache.exists()
+        && let Err(e) = fs::remove_dir_all(&cache)
+    {
+        eprintln!(
+            "error: no se pudo limpiar la caché '{}': {e}",
+            cache.display()
+        );
+        return ExitCode::from(3);
+    }
+    let resueltas = match paquetes::resolver_dependencias(&manifiesto, &base) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    if let Err(e) = paquetes::escribir_bloqueo(&base, &resueltas) {
+        eprintln!("error: {e}");
+        return ExitCode::from(3);
+    }
+    println!(
+        "{} {}: {} dependencia(s) actualizada(s)",
+        manifiesto.paquete.nombre,
+        manifiesto.paquete.version,
+        resueltas.len()
+    );
+    for dep in &resueltas {
+        println!("  {} {} -> {}", dep.nombre, dep.version, dep.ruta.display());
+    }
+    println!("bloqueo reescrito: {}", base.join(BLOQUEO).display());
+    ExitCode::SUCCESS
+}
+
+#[derive(serde::Serialize)]
+struct BpkFormato {
+    name: &'static str,
+    version: &'static str,
+}
+
+#[derive(serde::Serialize)]
+struct BpkPaquete {
+    namespace: String,
+    name: String,
+    version: String,
+}
+
+#[derive(serde::Serialize)]
+struct BpkArchivo {
+    path: String,
+    size: i64,
+    sha256: String,
+}
+
+#[derive(serde::Serialize)]
+struct BpkManifiesto {
+    format: BpkFormato,
+    package: BpkPaquete,
+    files: Vec<BpkArchivo>,
+}
+
+/// `bsk publish [ruta] [--clave=<hex32>] [--salida=<archivo>]`: empaqueta los
+/// `.bsk` del proyecto en un artefacto BPK (R2), lo auto-valida y, si se
+/// proporciona clave privada Ed25519, firma los metadatos y escribe el
+/// sidecar `.json` junto al artefacto.
+fn publicar_paquete(args: &[OsString]) -> ExitCode {
+    let mut base = PathBuf::from(".");
+    let mut clave_hex: Option<String> = None;
+    let mut salida: Option<PathBuf> = None;
+    for arg in args {
+        let s = arg.to_string_lossy().to_string();
+        if let Some(k) = s.strip_prefix("--clave=") {
+            clave_hex = Some(k.to_string());
+        } else if let Some(o) = s.strip_prefix("--salida=") {
+            salida = Some(PathBuf::from(o));
+        } else if s.starts_with("--") {
+            eprintln!("error: opción desconocida: {s}");
+            return ExitCode::from(2);
+        } else {
+            base = PathBuf::from(&s);
+        }
+    }
+    let manifiesto = match paquetes::cargar_manifiesto(&base) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    // El validador BPK exige SemVer estricto (la versión `*` no es publicable).
+    if semver::Version::parse(&manifiesto.paquete.version).is_err() {
+        eprintln!(
+            "error: la versión '{}' no es SemVer estricto (se requiere X.Y.Z para publicar)",
+            manifiesto.paquete.version
+        );
+        return ExitCode::from(3);
+    }
+    let fuentes = match recoger_fuentes_bsk(&base) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    let mut payload: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut archivos: Vec<BpkArchivo> = Vec::new();
+    for (relativa, ruta) in &fuentes {
+        let contenido = match fs::read(ruta) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: no se pudo leer '{}': {e}", ruta.display());
+                return ExitCode::from(3);
+            }
+        };
+        archivos.push(BpkArchivo {
+            path: relativa.clone(),
+            size: contenido.len() as i64,
+            sha256: paquetes::sha256_hex(&contenido),
+        });
+        payload.push((relativa.clone(), contenido));
+    }
+    let manifiesto_bpk = BpkManifiesto {
+        format: BpkFormato {
+            name: "BASILISCO_PACKAGE",
+            version: "1.0",
+        },
+        package: BpkPaquete {
+            namespace: manifiesto.paquete.nombre.clone(),
+            name: manifiesto.paquete.nombre.clone(),
+            version: manifiesto.paquete.version.clone(),
+        },
+        files: archivos,
+    };
+    let manifest_toml = match toml::to_string_pretty(&manifiesto_bpk) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: no se pudo generar el manifiesto BPK: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    let bytes = match crate::cliente_remoto::crear_bpk(&manifest_toml, &payload) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(3);
+        }
+    };
+    // Autocomprobación: nunca publicar un artefacto que no pase el validador.
+    if let Err(e) = crate::cliente_remoto::validar_bpk(&bytes) {
+        eprintln!("error interno: el paquete generado no pasa la validación: {e}");
+        return ExitCode::from(3);
+    }
+    let destino = salida.unwrap_or_else(|| {
+        base.join("dist").join(format!(
+            "{}-{}.bpk",
+            manifiesto.paquete.nombre, manifiesto.paquete.version
+        ))
+    });
+    if let Some(padre) = destino.parent()
+        && let Err(e) = fs::create_dir_all(padre)
+    {
+        eprintln!("error: no se pudo crear '{}': {e}", padre.display());
+        return ExitCode::from(3);
+    }
+    if let Err(e) = fs::write(&destino, &bytes) {
+        eprintln!("error: no se pudo escribir '{}': {e}", destino.display());
+        return ExitCode::from(3);
+    }
+    println!(
+        "Paquete: {} {}",
+        manifiesto.paquete.nombre, manifiesto.paquete.version
+    );
+    println!(
+        "  artefacto: {} ({} bytes, {} archivo(s))",
+        destino.display(),
+        bytes.len(),
+        payload.len()
+    );
+    println!("  sha256: {}", paquetes::sha256_hex(&bytes));
+    if let Some(clave) = &clave_hex {
+        match firmar_paquete(clave, &manifiesto, &bytes) {
+            Ok(meta) => {
+                let json_ruta = destino.with_extension("json");
+                let escritura = serde_json::to_string_pretty(&meta)
+                    .map_err(|e| e.to_string())
+                    .and_then(|j| fs::write(&json_ruta, j).map_err(|e| e.to_string()));
+                match escritura {
+                    Ok(()) => {
+                        println!("  metadatos firmados: {}", json_ruta.display());
+                        if let Some(clave_publica) = &meta.clave {
+                            println!("  clave pública (hex): {clave_publica}");
+                        }
+                        println!(
+                            "  registry_id: {} key_id: {} nonce: {}",
+                            meta.registry_id, meta.key_id, meta.nonce
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("error: no se pudieron escribir los metadatos firmados: {e}");
+                        return ExitCode::from(3);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(3);
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Firma los metadatos del paquete con la clave privada Ed25519 (`--clave`,
+/// 32 bytes en hex) y auto-verifica la firma antes de devolverlos. El
+/// `key_id` "key1" coincide con el que usa el resolver local para confiar.
+fn firmar_paquete(
+    clave_hex: &str,
+    manifiesto: &paquetes::Manifiesto,
+    artefacto: &[u8],
+) -> Result<paquetes::MetadatosPaquete, String> {
+    let clave_bytes = hex::decode(clave_hex)
+        .map_err(|_| "clave privada inválida: se esperaba hex".to_string())?;
+    if clave_bytes.len() != 32 {
+        return Err("clave privada inválida: se esperaban 32 bytes (64 hex)".to_string());
+    }
+    let clave = ed25519_dalek::SigningKey::from_bytes(
+        clave_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| "clave privada inválida".to_string())?,
+    );
+    let publica = clave.verifying_key();
+    let publico_hex = hex::encode(publica.as_bytes());
+    let ahora = chrono::Utc::now();
+    let nonce = format!("{:x}", ahora.timestamp_nanos_opt().unwrap_or_default());
+    let meta = paquetes::MetadatosPaquete {
+        namespace: manifiesto.paquete.nombre.clone(),
+        name: manifiesto.paquete.nombre.clone(),
+        version: manifiesto.paquete.version.clone(),
+        sha256: paquetes::sha256_hex(artefacto),
+        published_at: ahora.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        registry_id: "local".to_string(),
+        key_id: "key1".to_string(),
+        nonce,
+        expires_at: (ahora + chrono::Duration::days(365))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        firma: None,
+        clave: None,
+    };
+    let firma = paquetes::firmar_metadatos(&meta, clave.as_bytes())?;
+    // Autocomprobación: la firma debe verificar con la clave pública derivada.
+    paquetes::verificar_firma_metadatos(&meta, &firma, publica.as_bytes())?;
+    let mut meta = meta;
+    meta.firma = Some(firma);
+    meta.clave = Some(publico_hex);
+    Ok(meta)
+}
+
+/// Recopila todos los `.bsk` del proyecto para el payload del BPK: raíz y
+/// subdirectorios recursivos, excluyendo cachés (`.basilisco`), dependencias
+/// locales (`paquetes/`, `vendor/`), salidas (`dist/`) y directorios ocultos.
+fn recoger_fuentes_bsk(base: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    use unicode_normalization::UnicodeNormalization;
+    const MAX_ARCHIVOS: usize = 1000;
+    const MAX_TOTAL: u64 = 100 * 1024 * 1024;
+    const MAX_ARCHIVO: u64 = 10 * 1024 * 1024;
+    let mut archivos: Vec<(String, PathBuf)> = Vec::new();
+    let mut total = 0u64;
+    fn recorrer(
+        dir: &Path,
+        base: &Path,
+        archivos: &mut Vec<(String, PathBuf)>,
+        total: &mut u64,
+    ) -> Result<(), String> {
+        if archivos.len() >= MAX_ARCHIVOS {
+            return Err("demasiados archivos en el paquete".to_string());
+        }
+        let entradas = fs::read_dir(dir).map_err(|e| e.to_string())?;
+        for entrada in entradas.filter_map(|e| e.ok()) {
+            let ruta = entrada.path();
+            let nombre = entrada.file_name().to_string_lossy().to_string();
+            if ruta.is_dir() {
+                if nombre.starts_with('.')
+                    || matches!(nombre.as_str(), "paquetes" | "vendor" | "dist")
+                {
+                    continue;
+                }
+                recorrer(&ruta, base, archivos, total)?;
+            } else if ruta.extension().and_then(|e| e.to_str()) == Some("bsk") {
+                let relativa = ruta
+                    .strip_prefix(base)
+                    .map_err(|_| "ruta interna inválida".to_string())?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let normalizada: String = relativa.nfc().collect();
+                if normalizada != relativa {
+                    return Err(format!(
+                        "nombre de archivo no normalizado en NFC: {relativa}"
+                    ));
+                }
+                if relativa.is_empty() || relativa.contains("..") || relativa.starts_with('/') {
+                    return Err(format!("ruta de payload inválida: {relativa}"));
+                }
+                let meta = fs::metadata(&ruta).map_err(|e| e.to_string())?;
+                if meta.len() > MAX_ARCHIVO {
+                    return Err(format!("archivo demasiado grande: {relativa}"));
+                }
+                *total += meta.len();
+                if *total > MAX_TOTAL {
+                    return Err("paquete demasiado grande".to_string());
+                }
+                archivos.push((relativa, ruta));
+            }
+        }
+        Ok(())
+    }
+    recorrer(base, base, &mut archivos, &mut total)?;
+    if archivos.is_empty() {
+        return Err("no hay archivos .bsk para publicar".to_string());
+    }
+    archivos.sort();
+    Ok(archivos)
 }
 
 fn listar_paquetes(ruta: Option<PathBuf>) -> ExitCode {
