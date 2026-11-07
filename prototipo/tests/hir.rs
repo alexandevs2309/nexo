@@ -96,3 +96,29 @@ fn hir_lower_usar() {
         _ => panic!("esperaba Usar"),
     }
 }
+
+#[test]
+fn hir_verificador_rechaza_tipos_literal_mal() {
+    let src = "funcion main() -> logico { retornar (1 + 2) > \"x\" }";
+    let tokens = Lexer::nuevo(src).tokenizar().unwrap();
+    let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+    let mut ctx = ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    let res = hir::lower_programa(&ss, &ctx);
+    if let Ok(hir_prog) = res {
+        assert!(!hir::VerificadorHir::verificar(&hir_prog));
+    }
+}
+
+#[test]
+fn hir_verificador_rechaza_params_duplicados() {
+    let src = "funcion f(x, x) { retornar x }\nf(1, 2)";
+    let tokens = Lexer::nuevo(src).tokenizar().unwrap();
+    let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+    let mut ctx = ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    // lower_programa debe fallar o verificar devolver false.
+    if let Ok(hir_prog) = hir::lower_programa(&ss, &ctx) {
+        assert!(!hir::VerificadorHir::verificar(&hir_prog));
+    }
+}

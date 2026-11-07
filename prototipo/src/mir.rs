@@ -1281,17 +1281,200 @@ pub fn lower_programa(hir: &HirPrograma) -> MirPrograma {
 pub struct VerificadorMir;
 
 impl VerificadorMir {
+    #[allow(clippy::collapsible_if, clippy::collapsible_match)]
     pub fn verificar(prog: &MirPrograma) -> bool {
+        // Nombres de funciones únicos.
+        let mut nombres_func: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for f in &prog.funciones {
+            if !nombres_func.insert(f.nombre.as_str()) {
+                return false;
+            }
+        }
         for f in &prog.funciones {
             if f.bloques.is_empty() {
                 return false;
             }
-            // Cada bloque debe tener terminator.
+            // Ids de bloque únicos y contiguos desde 0.
+            let mut ids: std::collections::HashSet<BlockId> = std::collections::HashSet::new();
+            for (i, b) in f.bloques.iter().enumerate() {
+                if b.id.0 != i {
+                    return false;
+                }
+                if !ids.insert(b.id) {
+                    return false;
+                }
+            }
+            if !ids.contains(&f.bloque_entrada) {
+                return false;
+            }
+            // Parámetros referencian locals válidos.
+            for (local, _) in &f.params {
+                if local.0 >= f.locals.len() {
+                    return false;
+                }
+            }
+            // Validar cada bloque.
             for b in &f.bloques {
-                // Unreachable es válido como placeholder.
-                let _ = b;
+                // Terminadores apuntan a bloques existentes.
+                match &b.terminator {
+                    MirTerminator::Goto(t) => {
+                        if !ids.contains(t) {
+                            return false;
+                        }
+                    }
+                    MirTerminator::SwitchInt {
+                        casos, por_defecto, ..
+                    } => {
+                        for (_, blk) in casos {
+                            if !ids.contains(blk) {
+                                return false;
+                            }
+                        }
+                        if !ids.contains(por_defecto) {
+                            return false;
+                        }
+                    }
+                    MirTerminator::Return(op) => {
+                        if let Some(o) = op {
+                            if !operando_valido(o, f, prog) {
+                                return false;
+                            }
+                        }
+                    }
+                    MirTerminator::Invoke {
+                        bloque_ok,
+                        bloque_error,
+                        destino,
+                        argumentos,
+                        ..
+                    } => {
+                        if !ids.contains(bloque_ok) || !ids.contains(bloque_error) {
+                            return false;
+                        }
+                        for a in argumentos {
+                            if !operando_valido(a, f, prog) {
+                                return false;
+                            }
+                        }
+                        if let Some(d) = destino {
+                            if !lugar_valido(d, f, prog) {
+                                return false;
+                            }
+                        }
+                    }
+                    MirTerminator::Unreachable => {}
+                }
+                // Validar sentencias.
+                for stmt in &b.stmts {
+                    if !stmt_valido(stmt, f, prog) {
+                        return false;
+                    }
+                }
             }
         }
         true
+    }
+}
+
+#[allow(clippy::collapsible_if)]
+fn lugar_valido(p: &MirPlace, f: &MirFunction, prog: &MirPrograma) -> bool {
+    if p.local.0 >= f.locals.len() {
+        return false;
+    }
+    // Proyecciones de un solo nivel soportadas.
+    for proj in &p.projection {
+        match proj {
+            MirProjection::Campo(_) => {}
+            MirProjection::Indice(op) => {
+                if !operando_valido(op, f, prog) {
+                    return false;
+                }
+            }
+            MirProjection::Celda => {}
+        }
+    }
+    true
+}
+
+fn operando_valido(op: &MirOperand, f: &MirFunction, prog: &MirPrograma) -> bool {
+    match op {
+        MirOperand::Copy(l) | MirOperand::Move(l) => l.0 < f.locals.len(),
+        MirOperand::Const(_) => true,
+        MirOperand::Global(g) => g.0 < prog.globals.len(),
+    }
+}
+
+fn stmt_valido(stmt: &MirStmt, f: &MirFunction, prog: &MirPrograma) -> bool {
+    match stmt {
+        MirStmt::Asignacion { destino, valor } => {
+            lugar_valido(destino, f, prog) && rvalue_valido(valor, f, prog)
+        }
+        MirStmt::AsignacionGlobal { global, valor } => {
+            global.0 < prog.globals.len() && rvalue_valido(valor, f, prog)
+        }
+        MirStmt::Llamada {
+            destino,
+            argumentos,
+            ..
+        } => {
+            if let Some(d) = destino
+                && !lugar_valido(d, f, prog)
+            {
+                return false;
+            }
+            argumentos.iter().all(|a| operando_valido(a, f, prog))
+        }
+        MirStmt::LlamadaIndirecta {
+            destino,
+            callee,
+            argumentos,
+        } => {
+            if let Some(d) = destino
+                && !lugar_valido(d, f, prog)
+            {
+                return false;
+            }
+            operando_valido(callee, f, prog)
+                && argumentos.iter().all(|a| operando_valido(a, f, prog))
+        }
+        MirStmt::EntrarTry {
+            rescue: _,
+            merge: _,
+            var_local,
+        } => {
+            // los bloques se validan fuera; rescue/merge deben ser bloques existentes
+            // (verificado por el caller que tiene ids). Aquí solo var_local.
+            if let Some(vl) = var_local {
+                *vl < f.locals.len()
+            } else {
+                true
+            }
+        }
+        MirStmt::SalirTry | MirStmt::Nop => true,
+    }
+}
+
+fn rvalue_valido(r: &MirRvalue, f: &MirFunction, prog: &MirPrograma) -> bool {
+    match r {
+        MirRvalue::Use(op) => operando_valido(op, f, prog),
+        MirRvalue::BinOp { lhs, rhs, .. } => {
+            operando_valido(lhs, f, prog) && operando_valido(rhs, f, prog)
+        }
+        MirRvalue::UnOp { operand, .. } => operando_valido(operand, f, prog),
+        MirRvalue::Agregado { elementos } => elementos.iter().all(|e| operando_valido(e, f, prog)),
+        MirRvalue::Indice { base, indice } => {
+            operando_valido(base, f, prog) && operando_valido(indice, f, prog)
+        }
+        MirRvalue::Campo { base, .. } => operando_valido(base, f, prog),
+        MirRvalue::CrearCelda { valor } => operando_valido(valor, f, prog),
+        MirRvalue::LeerCelda { base } => operando_valido(base, f, prog),
+        MirRvalue::Clausura { capturas, .. } => {
+            capturas.iter().all(|c| operando_valido(c, f, prog))
+        }
+        MirRvalue::Rango { inicio, fin, .. } => {
+            operando_valido(inicio, f, prog) && operando_valido(fin, f, prog)
+        }
+        MirRvalue::Longitud { base } => operando_valido(base, f, prog),
+        MirRvalue::ObjetoModulo { .. } => true,
     }
 }

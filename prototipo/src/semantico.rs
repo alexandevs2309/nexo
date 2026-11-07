@@ -444,7 +444,16 @@ impl ContextoSemantico {
                 );
                 self.scopes.push(HashMap::new());
                 self.gestor.entrar();
+                let mut vistos: std::collections::HashSet<&str> = std::collections::HashSet::new();
                 for (pname, pta) in &parametros {
+                    if !vistos.insert(pname.as_str()) {
+                        self.error(
+                            CausaError::DeclaracionDuplicada(pname.clone()),
+                            linea,
+                            columna,
+                        );
+                        continue;
+                    }
                     let tipo = pta
                         .as_ref()
                         .map(tipo_anotacion_a_sem)
