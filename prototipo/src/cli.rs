@@ -112,7 +112,8 @@ pub fn main() -> ExitCode {
             let ruta = args.get(1).map(PathBuf::from);
             let base = ruta.unwrap_or_else(|| PathBuf::from("."));
             if let Ok(manifiesto) = crate::proyecto::cargar_manifiesto(&base) {
-                let entrada = crate::proyecto::resolver_entrada(&base, &manifiesto).unwrap_or_else(|_| base.join("src/main.bsk"));
+                let entrada = crate::proyecto::resolver_entrada(&base, &manifiesto)
+                    .unwrap_or_else(|_| base.join("src/main.bsk"));
                 if !entrada.exists() {
                     eprintln!("error: archivo de entrada no existe: {}", entrada.display());
                     return ExitCode::from(1);
@@ -129,7 +130,10 @@ pub fn main() -> ExitCode {
                 eprintln!("uso: {COMANDO} add <paquete> [versión]");
                 return ExitCode::from(2);
             }
-            eprintln!("Añadir dependencia: {} (pendiente de implementación completa)", args[1].to_string_lossy());
+            eprintln!(
+                "Añadir dependencia: {} (pendiente de implementación completa)",
+                args[1].to_string_lossy()
+            );
             ExitCode::from(0)
         }
         "update" | "actualizar" => {
@@ -150,13 +154,26 @@ pub fn main() -> ExitCode {
         }
         "nuevo" => {
             if args.len() >= 2 && args[1].to_string_lossy() == "proyecto" {
-                if args.len() != 3 {
-                    eprintln!("uso: {COMANDO} nuevo proyecto <nombre>");
+                // Parsear --plantilla=...
+                let mut plantilla = "consola".to_string();
+                let mut nombre_idx = 2;
+                for (i, arg) in args.iter().enumerate().skip(2) {
+                    let arg = arg.to_string_lossy();
+                    if let Some(p) = arg.strip_prefix("--plantilla=") {
+                        plantilla = p.to_string();
+                    } else {
+                        nombre_idx = i;
+                    }
+                }
+                if nombre_idx >= args.len() {
+                    eprintln!(
+                        "uso: {COMANDO} nuevo proyecto <nombre> [--plantilla=consola|inventario|tareas]"
+                    );
                     return ExitCode::from(2);
                 }
-                let nombre = args[2].to_string_lossy().to_string();
+                let nombre = args[nombre_idx].to_string_lossy().to_string();
                 let destino = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                match crate::proyecto::crear_proyecto(&destino, &nombre) {
+                match crate::proyecto::crear_proyecto_con_plantilla(&destino, &nombre, &plantilla) {
                     Ok(dir) => {
                         println!("Proyecto creado: {}", dir.display());
                         println!("Ejecuta tu programa con: {COMANDO} run");

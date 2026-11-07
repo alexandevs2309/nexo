@@ -148,6 +148,14 @@ pub fn validar_nombre_proyecto(nombre: &str) -> Result<(), ErrorManifiesto> {
 
 /// Crea un proyecto nuevo en `destino/<nombre>`.
 pub fn crear_proyecto(destino: &Path, nombre: &str) -> Result<PathBuf, ErrorManifiesto> {
+    crear_proyecto_con_plantilla(destino, nombre, "consola")
+}
+
+pub fn crear_proyecto_con_plantilla(
+    destino: &Path,
+    nombre: &str,
+    plantilla: &str,
+) -> Result<PathBuf, ErrorManifiesto> {
     validar_nombre_proyecto(nombre)?;
 
     let proyecto_dir = destino.join(nombre);
@@ -182,11 +190,21 @@ pub fn crear_proyecto(destino: &Path, nombre: &str) -> Result<PathBuf, ErrorMani
         ),
         (
             src_dir.join("main.bsk"),
-            "mostrar \"Hola, BASILISCO!\"\n".to_string(),
+            match plantilla {
+                "consola" => "mostrar \"Hola, BASILISCO!\"\n".to_string(),
+                "inventario" => "usar \"lib.bsk\" { Inventario, agregar_producto }\n\nsea inv = Inventario()\nagregar_producto(inv, \"manzana\", 10)\nmostrar inv\n".to_string(),
+                "tareas" => "sea id = iniciar_tarea(\"tarea\")\nmostrar esperar_tarea(id)\n".to_string(),
+                _ => "mostrar \"Hola, BASILISCO!\"\n".to_string(),
+            },
         ),
         (
             src_dir.join("lib.bsk"),
-            "publico funcion saludar(nombre) {\n  retornar \"Hola, \" + nombre\n}\n".to_string(),
+            match plantilla {
+                "consola" => "publico funcion saludar(nombre) {\n  retornar \"Hola, \" + nombre\n}\n".to_string(),
+                "inventario" => "publico funcion Inventario() {\n  retornar { \"productos\": [] }\n}\n\npublico funcion agregar_producto(inv, nombre, cantidad) {\n  // agregar producto al inventario\n}\n".to_string(),
+                "tareas" => "publico funcion tarea() {\n  retornar 42\n}\n".to_string(),
+                _ => "publico funcion saludar(nombre) {\n  retornar \"Hola, \" + nombre\n}\n".to_string(),
+            },
         ),
         (
             proyecto_dir.join("README.md"),
