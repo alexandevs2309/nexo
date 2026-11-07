@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use crate::cargador::CargadorModulos;
 use crate::formateador;
 use crate::paquetes::{self, BLOQUEO};
-use crate::{ContextoSemantico, Entorno, Lexer, Parser, Valor, evaluar};
+use crate::{ContextoSemantico, Entorno, Lexer, Parser, Valor, backend_nativo, evaluar, hir, mir};
 
 pub const NOMBRE: &str = "BASILISCO";
 pub const COMANDO: &str = "basilisco";
@@ -105,24 +105,77 @@ pub fn main() -> ExitCode {
         }
         "build" | "compilar" => {
             if args.len() > 2 {
-                eprintln!("uso: {COMANDO} build [ruta]");
+                eprintln!("uso: {COMANDO} build [archivo.bsk]");
                 return ExitCode::from(2);
             }
-            // Por ahora, delegar a analizar + compilar.
-            let ruta = args.get(1).map(PathBuf::from);
-            let base = ruta.unwrap_or_else(|| PathBuf::from("."));
-            if let Ok(manifiesto) = crate::proyecto::cargar_manifiesto(&base) {
-                let entrada = crate::proyecto::resolver_entrada(&base, &manifiesto)
-                    .unwrap_or_else(|_| base.join("src/main.bsk"));
-                if !entrada.exists() {
-                    eprintln!("error: archivo de entrada no existe: {}", entrada.display());
+            let ruta = if args.len() == 2 {
+                PathBuf::from(&args[1])
+            } else {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                match crate::proyecto::cargar_manifiesto(&cwd) {
+                    Ok(m) => crate::proyecto::resolver_entrada(&cwd, &m)
+                        .unwrap_or_else(|_| cwd.join("src/main.bsk")),
+                    Err(_) => {
+                        eprintln!("No se encontró manifiesto. Usa: {COMANDO} build <archivo.bsk>");
+                        return ExitCode::from(1);
+                    }
+                }
+            };
+            if !ruta.exists() {
+                eprintln!("error: archivo no existe: {}", ruta.display());
+                return ExitCode::from(1);
+            }
+            let fuente = match fs::read_to_string(&ruta) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("error: no se pudo leer '{}': {e}", ruta.display());
                     return ExitCode::from(1);
                 }
-                eprintln!("Compilación completada (modo intérprete).");
-                ExitCode::SUCCESS
-            } else {
-                eprintln!("No se encontró manifiesto en el directorio actual.");
-                ExitCode::from(1)
+            };
+            let tokens =
+                match Lexer::con_archivo(&fuente, Some(ruta.display().to_string())).tokenizar() {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("error léxico: {e}");
+                        return ExitCode::from(1);
+                    }
+                };
+            let sentencias = match Parser::con_archivo(tokens, Some(ruta.display().to_string()))
+                .parsear_programa()
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error sintáctico: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            let mut ctx = ContextoSemantico::nuevo();
+            let errs = ctx.analizar_programa(&sentencias);
+            if !errs.is_empty() {
+                for e in errs {
+                    eprintln!("{}", e);
+                }
+                return ExitCode::from(1);
+            }
+            let hir = match hir::lower_programa(&sentencias, &ctx) {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("error HIR: {:?}", e);
+                    return ExitCode::from(1);
+                }
+            };
+            let mir = mir::lower_programa(&hir);
+            let rust_code = backend_nativo::generar_rust(&mir);
+            let salida = ruta.with_extension("rs");
+            match fs::write(&salida, rust_code) {
+                Ok(_) => {
+                    println!("Código Rust generado: {}", salida.display());
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("error: no se pudo escribir '{}': {e}", salida.display());
+                    ExitCode::from(1)
+                }
             }
         }
         "add" | "agregar" => {
@@ -421,7 +474,7 @@ pub fn main() -> ExitCode {
             }
             inicializar_proyecto(args.get(1).map(PathBuf::from))
         }
-        "probar" => {
+        "probar" | "test" => {
             if args.len() > 2 {
                 eprintln!("uso: {COMANDO} probar [ruta]");
                 return ExitCode::from(2);
