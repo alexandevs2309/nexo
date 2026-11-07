@@ -98,3 +98,31 @@ fn opt_const_propagacion_local() {
     assert_eq!(run_vm(src, false), run_vm(src, true));
     assert_eq!(run_vm(src, true), "OK:Some(Entero(15))");
 }
+
+#[test]
+fn opt_closures_preservan_semantica() {
+    let src = "funcion obtener() { retornar funcion (x) { retornar x + 1 } }\nfuncion main() -> entero { retornar obtener()(9) }";
+    assert_eq!(run_vm(src, false), run_vm(src, true));
+    assert_eq!(run_tw(src), run_vm(src, true));
+}
+
+#[test]
+fn opt_condicionales_anidados() {
+    let src = "funcion main() -> entero {\n  sea x = 0\n  si x == 0 {\n    si verdadero { retornar 1 } sino { retornar 2 }\n  } sino {\n    retornar 3\n  }\n}";
+    assert_eq!(run_vm(src, false), run_vm(src, true));
+    assert_eq!(run_tw(src), run_vm(src, true));
+}
+
+#[test]
+fn opt_mientras_con_romper() {
+    let src = "funcion main() -> entero {\n  sea i = 0\n  sea s = 0\n  mientras i < 10 {\n    i = i + 1\n    si i == 3 { continuar }\n    si i == 7 { romper }\n    s = s + i\n  }\n  retornar s\n}";
+    assert_eq!(run_vm(src, false), run_vm(src, true));
+    assert_eq!(run_tw(src), run_vm(src, true));
+}
+
+#[test]
+fn opt_intentar_rescatar() {
+    let src = "funcion main() -> entero {\n  intentar {\n    sea r = 10 / 2\n    retornar r\n  } rescatar e {\n    retornar 0\n  }\n}";
+    assert_eq!(run_vm(src, false), run_vm(src, true));
+    assert_eq!(run_tw(src), run_vm(src, true));
+}
