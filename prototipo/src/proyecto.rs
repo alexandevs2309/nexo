@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Manifiesto de un proyecto BASILISCO.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct Manifiesto {
     pub nombre: String,
     pub version: String,
@@ -38,113 +38,36 @@ impl std::fmt::Display for ErrorManifiesto {
 
 /// Parsea un manifiesto `basilisco.toml` desde su contenido.
 pub fn parsear_manifiesto(contenido: &str) -> Result<Manifiesto, ErrorManifiesto> {
-    let mut nombre: Option<String> = None;
-    let mut version: Option<String> = None;
-    let mut entrada: Option<String> = None;
-    let mut vistos: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for (idx, raw_line) in contenido.lines().enumerate() {
-        let linea_num = idx + 1;
-        // Eliminar comentario.
-        let sin_comentario = match raw_line.find('#') {
-            Some(pos) => &raw_line[..pos],
-            None => raw_line,
-        };
-        let trimmed = sin_comentario.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        // Parsear clave = "valor"
-        let partes: Vec<&str> = trimmed.splitn(2, '=').collect();
-        if partes.len() != 2 {
-            return Err(ErrorManifiesto {
-                mensaje: format!("se esperaba 'clave = \"valor\"', se obtuvo: {trimmed}"),
-                linea: linea_num,
-            });
-        }
-        let clave = partes[0].trim();
-        let valor_raw = partes[1].trim();
-
-        // Validar clave conocida.
-        match clave {
-            "nombre" | "version" | "entrada" => {}
-            _ => {
-                return Err(ErrorManifiesto {
-                    mensaje: format!("clave desconocida: '{clave}'"),
-                    linea: linea_num,
-                });
-            }
-        }
-
-        // Validar valor entre comillas dobles.
-        if !valor_raw.starts_with('"') || !valor_raw.ends_with('"') || valor_raw.len() < 2 {
-            return Err(ErrorManifiesto {
-                mensaje: format!("el valor de '{clave}' debe ser una cadena entre comillas dobles"),
-                linea: linea_num,
-            });
-        }
-        let valor = valor_raw[1..valor_raw.len() - 1].to_string();
-
-        // Validar clave duplicada.
-        if !vistos.insert(clave.to_string()) {
-            return Err(ErrorManifiesto {
-                mensaje: format!("clave duplicada: '{clave}'"),
-                linea: linea_num,
-            });
-        }
-
-        match clave {
-            "nombre" => nombre = Some(valor),
-            "version" => {
-                // Validar formato semántico: X.Y.Z
-                if !es_version_semantica(&valor) {
-                    return Err(ErrorManifiesto {
-                        mensaje: format!("versión inválida: '{valor}' (se espera X.Y.Z)"),
-                        linea: linea_num,
-                    });
-                }
-                version = Some(valor);
-            }
-            "entrada" => entrada = Some(valor),
-            _ => {}
-        }
-    }
-
-    let nombre = nombre.ok_or_else(|| ErrorManifiesto {
-        mensaje: "falta el campo obligatorio 'nombre'".to_string(),
+    let parsed: Manifiesto = toml::from_str(contenido).map_err(|e| ErrorManifiesto {
+        mensaje: format!("error de manifiesto TOML: {e}"),
         linea: 0,
     })?;
-    let version = version.ok_or_else(|| ErrorManifiesto {
-        mensaje: "falta el campo obligatorio 'version'".to_string(),
-        linea: 0,
-    })?;
-    let entrada = entrada.ok_or_else(|| ErrorManifiesto {
-        mensaje: "falta el campo obligatorio 'entrada'".to_string(),
-        linea: 0,
-    })?;
-
-    // Validar que entrada no sea absoluta ni escape.
-    if Path::new(&entrada).is_absolute() {
+    // Validar versión semántica.
+    if !es_version_semantica(&parsed.version) {
         return Err(ErrorManifiesto {
-            mensaje: format!("'entrada' no puede ser una ruta absoluta: '{entrada}'"),
+            mensaje: format!("versión inválida: '{}' (se espera X.Y.Z)", parsed.version),
             linea: 0,
         });
     }
-    for comp in Path::new(&entrada).components() {
+    // Validar que entrada no sea absoluta ni escape.
+    if std::path::Path::new(&parsed.entrada).is_absolute() {
+        return Err(ErrorManifiesto {
+            mensaje: format!(
+                "'entrada' no puede ser una ruta absoluta: '{}'",
+                parsed.entrada
+            ),
+            linea: 0,
+        });
+    }
+    for comp in std::path::Path::new(&parsed.entrada).components() {
         if comp == std::path::Component::ParentDir {
             return Err(ErrorManifiesto {
-                mensaje: format!("'entrada' no puede contener '..': '{entrada}'"),
+                mensaje: format!("'entrada' no puede contener '..': '{}'", parsed.entrada),
                 linea: 0,
             });
         }
     }
-
-    Ok(Manifiesto {
-        nombre,
-        version,
-        entrada,
-    })
+    Ok(parsed)
 }
 
 fn es_version_semantica(v: &str) -> bool {

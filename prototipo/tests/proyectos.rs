@@ -108,7 +108,9 @@ fn proyecto_manifiesto_clave_duplicada() {
     let (code, _stdout, stderr) = run_bsk(&proj, &["run"]);
     assert_ne!(code, 0);
     assert!(
-        stderr.contains("duplicada") || stderr.contains("duplicado"),
+        stderr.contains("duplicada")
+            || stderr.contains("duplicado")
+            || stderr.contains("duplicate"),
         "stderr: {stderr}"
     );
 }
