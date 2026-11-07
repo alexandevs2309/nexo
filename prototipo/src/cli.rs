@@ -55,6 +55,24 @@ pub fn main() -> ExitCode {
     }
 
     let comando = args[0].to_string_lossy();
+    // Ejecución directa: `bsk archivo.bsk` o `bsk archivo` (resuelve extensión).
+    // Solo si el argumento parece un archivo (tiene extensión o existe como archivo).
+    if args.len() == 1 {
+        let candidato = PathBuf::from(&*comando);
+        let es_archivo = candidato.extension().is_some() || candidato.is_file();
+        if es_archivo {
+            // Si no tiene extensión, intentar resolver .bsk
+            let ruta = if candidato.extension().is_none() {
+                let con_ext = candidato.with_extension(EXT_CANONICA);
+                if con_ext.exists() { con_ext } else { candidato }
+            } else {
+                candidato
+            };
+            if ruta.exists() && ruta.is_file() {
+                return ejecutar_archivo(&ruta);
+            }
+        }
+    }
     match comando.as_ref() {
         "--version" | "-V" | "version" => {
             println!("{NOMBRE} {}", env!("CARGO_PKG_VERSION"));
@@ -95,7 +113,7 @@ pub fn main() -> ExitCode {
                 crear_archivo_inicial(args.get(1).map(OsString::as_os_str))
             }
         }
-        "run" | "ejecutar" => {
+        "run" | "ejecutar" | "r" => {
             if args.len() == 1 {
                 // Buscar manifiesto en el directorio actual.
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -303,7 +321,7 @@ pub fn main() -> ExitCode {
                 }
             }
         }
-        "analizar" => {
+        "check" | "analizar" => {
             if args.len() != 2 {
                 eprintln!("uso: {COMANDO} analizar <archivo.bsk|archivo.nexo>");
                 return ExitCode::from(2);
@@ -360,6 +378,8 @@ fn ayuda() {
     println!("  {COMANDO} nuevo [archivo.bsk]   crea un programa inicial");
     println!("  {COMANDO} nuevo proyecto <nombre> crea un proyecto BASILISCO");
     println!("  {COMANDO} run [<archivo.bsk>] ejecuta un archivo o proyecto");
+    println!("  {COMANDO} <archivo.bsk>        ejecuta directamente (alias corto).");
+    println!("  {COMANDO}                      ejecuta el proyecto actual o abre REPL.");
     println!("  Opciones globales: --motor=arbol|vm (o BASILISCO_MOTOR=...) selecciona el motor.");
     println!("  {COMANDO} run <archivo.nexo>     ejecuta un programa legado");
     println!("  {COMANDO} run                   ejecuta el proyecto actual");
