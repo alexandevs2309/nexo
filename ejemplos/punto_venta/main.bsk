@@ -1,35 +1,19 @@
-funcion Inventario() {
-  retornar []
-}
+# Punto de venta: venta de mostrador con descuento por volumen.
+# Se ejecuta con: cd ejemplos/punto_venta && basilisco run main.bsk
 
-funcion agregar_item(venta, nombre, cantidad, precio) {
-  sea item = [nombre, cantidad, precio]
-  retornar agregar(venta, item)
-}
+usar "lib.bsk" como pv
 
-funcion calcular_total(venta) {
-  sea total = 0.0
-  para cada item en venta {
-    total = total + item[1] * item[2]
-  }
-  retornar total
-}
+sea venta = pv.crear_venta()
+venta = pv.agregar_item(venta, "cafe", 10, 3.5)
+venta = pv.agregar_item(venta, "pan", 20, 1.2)
+venta = pv.agregar_item(venta, "leche", 5, 2.0)
+venta = pv.agregar_item(venta, "queso", 3, 15.0)
+# Línea inválida (cantidad 0): se ignora.
+venta = pv.agregar_item(venta, "gratis", 0, 0.0)
 
-funcion imprimir_ticket(venta) {
-  mostrar "=== TICKET ==="
-  para cada item en venta {
-    mostrar item[0]
-    mostrar item[1]
-    mostrar item[2]
-    mostrar item[1] * item[2]
-  }
-  mostrar "Total: "
-  mostrar calcular_total(venta)
-}
+pv.imprimir_ticket(venta)
 
-sea venta = Inventario()
-sea venta = agregar_item(venta, "cafe", 2, 3.5)
-sea venta = agregar_item(venta, "pan", 3, 1.2)
-sea venta = agregar_item(venta, "leche", 1, 2.0)
-
-imprimir_ticket(venta)
+sea total = pv.calcular_total(venta)
+sea final = pv.descuento_volumen(total)
+mostrar "Total con descuento: "
+mostrar final

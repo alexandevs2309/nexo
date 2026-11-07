@@ -1638,39 +1638,66 @@ impl MaquinaVirtual {
                 .params
                 .iter()
                 .any(|(_, t)| *t != crate::semantico::TipoSem::Desconocido);
-            if anotados {
+            // Si un argumento necesita conversión numérica, se recolecta la
+            // llamada con los valores convertidos (paridad con Tree-Walk).
+            let convertidos: Option<Vec<Valor>> = if anotados {
+                let mut convertidos: Option<Vec<Valor>> = None;
                 for (i, (_, tipo)) in func.params.iter().enumerate() {
                     if *tipo == crate::semantico::TipoSem::Desconocido {
                         continue;
                     }
-                    if let Some(arg) = args.get(i)
-                        && !tipo_compat_valor(arg, tipo)
-                    {
-                        return Err(ErrorVm::TipoEsperado {
-                            esperado: "tipo anotado",
-                            encontrado: arg.nombre_tipo(),
-                        });
-                    }
-                }
-            } else if !func.params.is_empty() {
-                // Inferencia: primera llamada guarda tipos; siguientes validan.
-                if let Some(inferidos) = self.tipos_inferidos.get(callee).cloned() {
-                    for (i, t) in inferidos.iter().enumerate() {
-                        if let Some(arg) = args.get(i)
-                            && !valor_compat_valor(arg, t)
-                        {
-                            return Err(ErrorVm::TipoEsperado {
-                                esperado: t.nombre_tipo(),
-                                encontrado: arg.nombre_tipo(),
-                            });
+                    if let Some(arg) = args.get(i) {
+                        match convertir_a_tipo_anotado_escalar(arg, tipo) {
+                            Some(nuevo) => {
+                                if !tipo_compat_valor(arg, tipo) {
+                                    let conv = convertidos.get_or_insert_with(|| args.to_vec());
+                                    conv[i] = nuevo;
+                                }
+                            }
+                            None => {
+                                return Err(ErrorVm::TipoEsperado {
+                                    esperado: "tipo anotado",
+                                    encontrado: arg.nombre_tipo(),
+                                });
+                            }
                         }
                     }
+                }
+                convertidos
+            } else if !func.params.is_empty() {
+                // Inferencia: primera llamada guarda tipos; siguientes validan
+                // y convierten (paridad con `convertir_para_tipo` del Tree-Walk).
+                if let Some(inferidos) = self.tipos_inferidos.get(callee).cloned() {
+                    let mut convertidos: Option<Vec<Valor>> = None;
+                    for (i, t) in inferidos.iter().enumerate() {
+                        if let Some(arg) = args.get(i) {
+                            match convertir_para_tipo(t, arg) {
+                                Some(nuevo) => {
+                                    if !valor_compat_valor(arg, t) {
+                                        let conv = convertidos.get_or_insert_with(|| args.to_vec());
+                                        conv[i] = nuevo;
+                                    }
+                                }
+                                None => {
+                                    return Err(ErrorVm::TipoEsperado {
+                                        esperado: t.nombre_tipo(),
+                                        encontrado: arg.nombre_tipo(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    convertidos
                 } else {
                     self.tipos_inferidos
                         .insert(callee.to_string(), args.to_vec());
+                    None
                 }
-            }
-            let devuelto = self.ejecutar(callee, args)?;
+            } else {
+                None
+            };
+            let args_final: &[Valor] = convertidos.as_deref().unwrap_or(args);
+            let devuelto = self.ejecutar(callee, args_final)?;
             return Ok(devuelto.unwrap_or(Valor::Nulo));
         }
         // Orden superior: map/filtrar/reducir con clausura MIR. La VM es quien
@@ -2362,10 +2389,53 @@ fn tipo_compat_valor(valor: &Valor, tipo: &crate::semantico::TipoSem) -> bool {
     }
 }
 
-/// Compatibilidad por discriminante entre dos valores (paridad con
-/// `convertir_para_tipo` para funciones sin anotación).
+/// Compatibilidad entre dos valores para la inferencia de parámetros
+/// (paridad con `convertir_para_tipo` del Tree-Walk): mismo discriminante
+/// o ambas secuencias (`Arreglo`/`Lista`, que el resto de la VM —y
+/// `tipo_compat_valor` en la ruta anotada— tratan como un solo tipo).
 fn valor_compat_valor(a: &Valor, b: &Valor) -> bool {
+    if matches!(a, Valor::Arreglo(_) | Valor::Lista(_))
+        && matches!(b, Valor::Arreglo(_) | Valor::Lista(_))
+    {
+        return true;
+    }
     std::mem::discriminant(a) == std::mem::discriminant(b)
+}
+
+/// Convierte un argumento según el tipo observado en la primera llamada
+/// (paridad con `convertir_para_tipo` del evaluador Tree-Walk).
+fn convertir_para_tipo(viejo: &Valor, nuevo: &Valor) -> Option<Valor> {
+    match (viejo, nuevo) {
+        (Valor::Decimal(_), Valor::Entero(n)) => Some(Valor::decimal_desde_entero(*n)),
+        (Valor::Real(_), Valor::Entero(n)) => Some(Valor::Real(*n as f64)),
+        _ if valor_compat_valor(viejo, nuevo) => Some(nuevo.clone()),
+        _ => None,
+    }
+}
+
+/// Convierte un argumento escalar según su anotación (paridad con la parte
+/// escalar de `convertir_a_tipo_anotado` del evaluador Tree-Walk). Las
+/// secuencias anotadas se aceptan tal cual vía `tipo_compat_valor`; la
+/// conversión elemento a elemento de secuencias queda fuera de alcance.
+fn convertir_a_tipo_anotado_escalar(
+    valor: &Valor,
+    tipo: &crate::semantico::TipoSem,
+) -> Option<Valor> {
+    use crate::semantico::TipoSem;
+    match tipo {
+        TipoSem::Decimal => match valor {
+            Valor::Decimal(_) => Some(valor.clone()),
+            Valor::Entero(n) => Some(Valor::decimal_desde_entero(*n)),
+            _ => None,
+        },
+        TipoSem::Real => match valor {
+            Valor::Real(_) => Some(valor.clone()),
+            Valor::Entero(n) => Some(Valor::Real(*n as f64)),
+            _ => None,
+        },
+        _ if tipo_compat_valor(valor, tipo) => Some(valor.clone()),
+        _ => None,
+    }
 }
 
 /// Igualdad con conversiones implícitas ADR-0005 §1.4 (entero↔decimal↔real).

@@ -490,3 +490,55 @@ fn e2e_sin_extension() {
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(stdout.trim(), "42");
 }
+
+// 27. Las funciones de un módulo pueden llamarse entre sí (internas).
+// Regresión: la VM no reescribía las llamadas al prefijar el módulo y caía a
+// Tree-Walk con aviso (salida correcta pero motor equivocado).
+#[test]
+fn e2e_llamadas_internas_del_modulo() {
+    let dir = tmpdir("llamadas_internas");
+    escribir(
+        &dir,
+        "lib.bsk",
+        "publico funcion doble(n) { retornar n * 2 }\npublico funcion triplo(n) { retornar doble(n) * 3 }\n",
+    );
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nmostrar lib.triplo(2)\n",
+    );
+    let (code, stdout, stderr) = run_bsk(&dir, &["run", "main.bsk"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "12");
+    assert!(
+        !stderr.contains("aviso"),
+        "la VM debe ejecutar sin aviso de fallback: {stderr}"
+    );
+}
+
+// 28. Cadena de llamadas internas de tres funciones del mismo módulo.
+#[test]
+fn e2e_llamadas_internas_en_cadena() {
+    let dir = tmpdir("llamadas_internas_cadena");
+    escribir(
+        &dir,
+        "lib.bsk",
+        concat!(
+            "publico funcion uno(x) { retornar x + 1 }\n",
+            "publico funcion dos(x) { retornar uno(x) * 2 }\n",
+            "publico funcion tres(x) { retornar dos(x) + uno(x) }\n",
+        ),
+    );
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nmostrar lib.tres(4)\n",
+    );
+    let (code, stdout, stderr) = run_bsk(&dir, &["run", "main.bsk"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout.trim(), "15");
+    assert!(
+        !stderr.contains("aviso"),
+        "la VM debe ejecutar sin aviso de fallback: {stderr}"
+    );
+}

@@ -1,21 +1,43 @@
-funcion Inventario() {
-  retornar []
-}
+# Inventario de tienda: módulos, colecciones y lógica de negocio.
+# Se ejecuta con: cd ejemplos/inventario && basilisco run main.bsk
 
-funcion agregar_producto(inv, nombre, cantidad) {
-  # agregar producto al inventario
-  retornar inv
-}
+usar "lib.bsk" como inventario
 
-funcion valor_total(inv) {
-  # calcular valor total
-  retornar 0
-}
+# Catálogo base desde JSON.
+sea texto_json = leer_archivo("datos/inventario.json")
+sea inv = json_parsear(texto_json)
 
-sea inv = Inventario()
-agregar_producto(inv, "manzana", 10)
-agregar_producto(inv, "pera", 5)
+mostrar "=== Inventario inicial ==="
+inventario.listar_productos(inv)
 mostrar "Productos: "
 mostrar longitud(inv)
 mostrar "Valor total: "
-mostrar valor_total(inv)
+mostrar inventario.valor_total(inv)
+
+# El producto más caro y los agotados.
+sea caro = inventario.producto_mas_caro(inv)
+mostrar "Más caro: "
+mostrar caro[0]
+mostrar "Agotados: "
+mostrar inventario.contar_agotados(inv)
+
+# Vender 2 cafés (hay stock suficiente).
+inv = inventario.vender(inv, "cafe", 2)
+sea cafe = inventario.buscar_producto(inv, "cafe")
+mostrar "Café restante: "
+mostrar cafe[1]
+
+# Vender más pan del que hay: debe ignorarse.
+inv = inventario.vender(inv, "pan", 100)
+sea pan = inventario.buscar_producto(inv, "pan")
+mostrar "Pan tras venta inválida: "
+mostrar pan[1]
+
+# Reponer pan y retirar la leche agotada.
+inv = inventario.actualizar_cantidad(inv, "pan", 6)
+inv = inventario.eliminar_producto(inv, "leche")
+
+mostrar "=== Inventario final ==="
+inventario.listar_productos(inv)
+mostrar "Valor total final: "
+mostrar inventario.valor_total(inv)

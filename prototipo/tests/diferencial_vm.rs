@@ -513,3 +513,33 @@ fn diff_http_get_local() {
     handle.join().ok();
     assert_eq!(tw, vmr, "\nTREE-WALK: {}\nVM: {}", tw, vmr);
 }
+
+#[test]
+fn diff_inferencia_acepta_arreglo_y_lista() {
+    // El literal `[]` es Lista en Tree-Walk y Arreglo en la VM; json_parsear es
+    // Lista en ambos. La misma función debe aceptar ambas secuencias.
+    assert_parity(
+        "funcion contar(x) { retornar longitud(x) }\nfuncion main() -> entero {\n  sea j = json_parsear(\"[1, 2]\")\n  sea a = []\n  retornar contar(j) + contar(a)\n}",
+    );
+}
+
+#[test]
+fn diff_inferencia_convierte_entero_a_decimal() {
+    // Tree-Walk convierte entero -> decimal cuando la primera llamada usó
+    // decimal; la VM debe convertir igual y no rechazar.
+    assert_parity(
+        "funcion f(x) { retornar x }\nfuncion main() -> decimal {\n  f(1.5)\n  retornar f(2)\n}",
+    );
+}
+
+#[test]
+fn diff_anotado_convierte_entero_a_decimal() {
+    assert_parity(
+        "funcion f(x: decimal) { retornar x }\nfuncion main() -> decimal { retornar f(2) }",
+    );
+}
+
+#[test]
+fn diff_anotado_convierte_entero_a_real() {
+    assert_parity("funcion f(x: real) { retornar x }\nfuncion main() -> real { retornar f(2) }");
+}

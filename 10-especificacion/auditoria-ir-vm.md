@@ -280,3 +280,62 @@ rechaza no-SemVer, publish rechaza clave inválida.
 
 **Estado:** 802 tests pasando, 0 fallos; `cargo fmt --check` y
 `cargo clippy --all-targets --all-features -- -D warnings` limpios.
+
+## DT-26: inventario y punto de venta con modelos reales + dos bugs de motor corregidos (2026-11-07)
+
+Los ejemplos `inventario` y `punto_venta` tenían stubs (`valor_total` devolvía
+`0`, `agregar_producto` devolvía el inventario sin tocarlo) y duplicaban las
+funciones de `lib.bsk` dentro del `main`. Ahora son proyectos reales:
+
+**`inventario/`** — `lib.bsk` con funciones puras sobre el modelo
+`[nombre, cantidad, precio]`: alta validada (sin duplicados ni negativos),
+búsqueda, posición, actualización de cantidad, venta con control de stock
+(rechaza sobregiros), eliminación, valor total, producto más caro, conteo de
+agotados y listado. `main.bsk` carga el catálogo base desde
+`datos/inventario.json` (`leer_archivo` + `json_parsear`) y ejecuta el flujo
+completo (ventas válidas e inválidas, reposición, retirada). Los precios del
+JSON son **céntimos enteros**: los decimales de JSON no se mezclan con enteros
+en la aritmética, así que el valor total (2610.0 → 2270.0 céntimos) se expresa
+en esa unidad.
+
+**`punto_venta/`** — `lib.bsk` con crear/agregar línea (validada)/total/
+descuento por porcentaje/descuento por volumen (10% si total > 100)/ticket;
+`main.bsk` ejecuta una venta de 114.0 → 102.6 con la línea inválida ignorada.
+
+Ambos usan `usar "lib.bsk" como <alias>` (auténtica importación de módulos)
+y sentencias de nivel superior. **Convención de ejemplos fijada:** las
+sentencias de nivel superior corren idénticas en ambos motores (HIR sintetiza
+`main` para la VM); `funcion main()` sin llamada explícita era silencioso en
+Tree-Walk. Por coherencia se desenrolló `main()` en `calculadora` (que además
+tenía el bug E1020: redefinía la nativa `dividir`, renombrada a
+`dividir_num`) y en `gestor_tareas`.
+
+**Bug de motor 1 — HIR/MIR no reescribía llamadas internas de módulos con alias.**
+Al inlinear un módulo con prefijo `alias_`, los cuerpos conservaban los nombres
+sin prefijo (`triplo` llamaba a `doble`), así que la VM fallaba con "función
+no encontrada" y el CLI caía a Tree-Walk con aviso. Los e2e existentes no lo
+detectaban (solo funciones hoja). Corrección en `src/hir.rs`: al prefijar, se
+reescribe recursivamente toda `HirExpresion::Llamada` de los cuerpos y
+declaraciones del módulo con el mapa nombre-original → prefijado
+(`renombrar_llamadas_sentencia` / `renombrar_llamadas_expresion`; las llamadas
+indirectas no se tocan). Ahora la VM ejecuta módulos con llamadas internas sin
+fallback.
+
+**Bug de motor 2 — el guard de inferencia de tipos de la VM rechazaba lo que
+Tree-Walk acepta.** La VM comparaba por discriminante exacto; Tree-Walk
+*convierte* (`convertir_para_tipo` / `convertir_a_tipo_anotado`). Divergencias
+verificadas con sondas mínimas antes de corregir: `[]` (Arreglo en VM,
+Lista en Tree-Walk) frente a `json_parsear` (Lista en ambos) → "se esperaba
+«lista», se encontró «arreglo»"; inferido `f(1.5)` luego `f(2)` → rechazo en
+VM, `2.0` en Tree-Walk; anotado `f(x: decimal); f(2)` → rechazo en VM, `2.0`
+en Tree-Walk. Corrección en `src/vm.rs`: el guard ahora convierte igual que
+Tree-Walk (Entero→Decimal/Real; Arreglo↔Lista compatibles como ya hace
+`tipo_compat_valor` para anotaciones) y reenvía los argumentos convertidos;
+el rechazo entero→texto se mantiene (test `primera_llamada_entero_segunda_texto_falla`).
+Deuda documentada: la conversión elemento a elemento de secuencias *anotadas*
+(TW sí la hace) queda sin replicar; no la usa ningún ejemplo.
+
+**Estado:** los 5 ejemplos (`inventario`, `punto_venta`, `calculadora`,
+`gestor_tareas`, `consola`) ejecutan con salida idéntica y exit 0 en
+`--motor=vm` y `--motor=arbol`, sin avisos. README de los ejemplos corregidos
+(`ejemplos/`, no `examples/`) con instrucciones de ejecución reales.

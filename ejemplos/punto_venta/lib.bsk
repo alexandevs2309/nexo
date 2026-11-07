@@ -1,13 +1,22 @@
+# Biblioteca de punto de venta BASILISCO.
+#
+# Modelo: cada línea de venta es [nombre, cantidad, precio].
+# Todas las funciones son puras: reciben la venta y devuelven una nueva.
+
 publico funcion crear_venta() {
   retornar []
 }
 
+# Agrega una línea a la venta. Si la cantidad es <= 0 o el precio es
+# negativo, devuelve la venta sin cambios.
 publico funcion agregar_item(venta, nombre, cantidad, precio) {
-  # agregar producto al inventario
-  sea item = [nombre, cantidad, precio]
-  retornar agregar(venta, item)
+  si cantidad <= 0 o precio < 0 {
+    retornar venta
+  }
+  retornar agregar(venta, [nombre, cantidad, precio])
 }
 
+# Suma cantidad * precio de todas las líneas.
 publico funcion calcular_total(venta) {
   sea total = 0.0
   para cada item en venta {
@@ -16,12 +25,33 @@ publico funcion calcular_total(venta) {
   retornar total
 }
 
+# Aplica un descuento por porcentaje (0..100). Fuera de rango, devuelve
+# el total sin cambios.
+publico funcion aplicar_descuento(total, porcentaje) {
+  si porcentaje < 0 o porcentaje > 100 {
+    retornar total
+  }
+  retornar total - total * porcentaje / 100.0
+}
+
+# Descuento por volumen: 10% si el total supera 100.
+publico funcion descuento_volumen(total) {
+  si total > 100.0 {
+    retornar aplicar_descuento(total, 10.0)
+  }
+  retornar total
+}
+
+# Imprime el ticket completo, línea por línea.
 publico funcion imprimir_ticket(venta) {
   mostrar "=== TICKET ==="
   para cada item en venta {
     mostrar item[0]
+    mostrar "  cantidad: "
     mostrar item[1]
+    mostrar "  precio: "
     mostrar item[2]
+    mostrar "  subtotal: "
     mostrar item[1] * item[2]
   }
   mostrar "Total: "

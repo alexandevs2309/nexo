@@ -689,6 +689,163 @@ fn verificar_expr(e: &HirExpresion) -> bool {
     }
 }
 
+/// Renombra en sitio las llamadas directas de una sentencia según `mapa`
+/// (nombre original -> nombre prefijado). Se usa al inlinear un módulo con
+/// alias: los cuerpos de las funciones del módulo conservan los nombres sin
+/// prefijo y, sin esta reescritura, la VM no encuentra la función.
+fn renombrar_llamadas_sentencia(
+    ss: &mut HirSentencia,
+    mapa: &std::collections::HashMap<String, String>,
+) {
+    match ss {
+        HirSentencia::Declaracion { valor, .. } => renombrar_llamadas_expresion(valor, mapa),
+        HirSentencia::Asignacion { valor, .. } => renombrar_llamadas_expresion(valor, mapa),
+        HirSentencia::Expresion(e) => renombrar_llamadas_expresion(e, mapa),
+        HirSentencia::Retornar(Some(e)) => renombrar_llamadas_expresion(e, mapa),
+        HirSentencia::Retornar(None) => {}
+        HirSentencia::Bloque(cuerpo) => {
+            for s in cuerpo {
+                renombrar_llamadas_sentencia(s, mapa);
+            }
+        }
+        HirSentencia::Si {
+            condicion,
+            entonces,
+            sino,
+        } => {
+            renombrar_llamadas_expresion(condicion, mapa);
+            for s in entonces {
+                renombrar_llamadas_sentencia(s, mapa);
+            }
+            if let Some(alt) = sino {
+                for s in alt {
+                    renombrar_llamadas_sentencia(s, mapa);
+                }
+            }
+        }
+        HirSentencia::Mientras { condicion, cuerpo } => {
+            renombrar_llamadas_expresion(condicion, mapa);
+            for s in cuerpo {
+                renombrar_llamadas_sentencia(s, mapa);
+            }
+        }
+        HirSentencia::AsignacionIndice {
+            objeto,
+            indice,
+            valor,
+        } => {
+            renombrar_llamadas_expresion(objeto, mapa);
+            renombrar_llamadas_expresion(indice, mapa);
+            renombrar_llamadas_expresion(valor, mapa);
+        }
+        HirSentencia::ParaCada {
+            iterable, cuerpo, ..
+        } => {
+            renombrar_llamadas_expresion(iterable, mapa);
+            for s in cuerpo {
+                renombrar_llamadas_sentencia(s, mapa);
+            }
+        }
+        HirSentencia::IntentarRescatar {
+            cuerpo_intentar,
+            cuerpo_rescatar,
+            ..
+        } => {
+            for s in cuerpo_intentar {
+                renombrar_llamadas_sentencia(s, mapa);
+            }
+            for s in cuerpo_rescatar {
+                renombrar_llamadas_sentencia(s, mapa);
+            }
+        }
+        HirSentencia::Exportar { sentencia } => renombrar_llamadas_sentencia(sentencia, mapa),
+        HirSentencia::Romper
+        | HirSentencia::Continuar
+        | HirSentencia::Importar { .. }
+        | HirSentencia::Usar { .. } => {}
+    }
+}
+
+/// Renombra en sitio las llamadas directas de una expresión según `mapa`.
+/// Las llamadas indirectas (`LlamadaIndirecta`) no se tocan: su objetivo no es
+/// un nombre de función.
+fn renombrar_llamadas_expresion(
+    e: &mut HirExpresion,
+    mapa: &std::collections::HashMap<String, String>,
+) {
+    match e {
+        HirExpresion::Literal(_, _)
+        | HirExpresion::Variable(_, _)
+        | HirExpresion::Lambda { .. }
+        | HirExpresion::Otro(_)
+        | HirExpresion::ModuloObjeto { .. } => {}
+        HirExpresion::Suma(a, b, _)
+        | HirExpresion::Resta(a, b, _)
+        | HirExpresion::Multiplicacion(a, b, _)
+        | HirExpresion::Division(a, b, _)
+        | HirExpresion::Modulo(a, b, _)
+        | HirExpresion::IgualIgual(a, b, _)
+        | HirExpresion::Distinto(a, b, _)
+        | HirExpresion::Menor(a, b, _)
+        | HirExpresion::MenorIgual(a, b, _)
+        | HirExpresion::Mayor(a, b, _)
+        | HirExpresion::MayorIgual(a, b, _)
+        | HirExpresion::Y(a, b, _)
+        | HirExpresion::O(a, b, _) => {
+            renombrar_llamadas_expresion(a, mapa);
+            renombrar_llamadas_expresion(b, mapa);
+        }
+        HirExpresion::No(x, _) => renombrar_llamadas_expresion(x, mapa),
+        HirExpresion::Rango { inicio, fin, .. } => {
+            renombrar_llamadas_expresion(inicio, mapa);
+            renombrar_llamadas_expresion(fin, mapa);
+        }
+        HirExpresion::ArregloLiteral { elementos, .. } => {
+            for el in elementos {
+                renombrar_llamadas_expresion(el, mapa);
+            }
+        }
+        HirExpresion::Indice { objeto, indice, .. } => {
+            renombrar_llamadas_expresion(objeto, mapa);
+            renombrar_llamadas_expresion(indice, mapa);
+        }
+        HirExpresion::Acceso { objeto, .. } => renombrar_llamadas_expresion(objeto, mapa),
+        HirExpresion::Llamada {
+            nombre, argumentos, ..
+        } => {
+            if let Some(prefijado) = mapa.get(nombre) {
+                *nombre = prefijado.clone();
+            }
+            for arg in argumentos {
+                renombrar_llamadas_expresion(arg, mapa);
+            }
+        }
+        HirExpresion::LlamadaIndirecta {
+            callee, argumentos, ..
+        } => {
+            renombrar_llamadas_expresion(callee, mapa);
+            for arg in argumentos {
+                renombrar_llamadas_expresion(arg, mapa);
+            }
+        }
+        HirExpresion::Si {
+            condicion,
+            entonces,
+            sino,
+        } => {
+            renombrar_llamadas_expresion(condicion, mapa);
+            for s in entonces {
+                renombrar_llamadas_sentencia(s, mapa);
+            }
+            if let Some(alt) = sino {
+                for s in alt {
+                    renombrar_llamadas_sentencia(s, mapa);
+                }
+            }
+        }
+    }
+}
+
 /// Resolvedor léxico propio del lowering de HIR.
 ///
 /// Mantiene una pila de ámbitos con nombres y asigna `SimbodoId` frescos y
@@ -1758,10 +1915,34 @@ fn cargar_modulo_items(
                 nombres_exportados.push(nombre.clone());
             }
         }
-        // Prefijar nombres de funciones.
+        // Prefijar nombres de funciones. Se registra el mapa
+        // (nombre original -> nombre prefijado) para reescribir después las
+        // llamadas internas del módulo.
+        let mut prefijos: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for it in &mut items {
             if let HirItem::Funcion { nombre, .. } = it {
-                *nombre = format!("{}_{}", alias, nombre);
+                let prefijado = format!("{}_{}", alias, nombre);
+                prefijos.insert(nombre.clone(), prefijado.clone());
+                *nombre = prefijado;
+            }
+        }
+        // Reescribir las llamadas internas entre funciones del propio módulo:
+        // los cuerpos conservan los nombres sin prefijo y, sin esta
+        // reescritura, la VM no encuentra la función (el Tree-Walk resuelve
+        // en tiempo de ejecución y por eso no lo necesita). También cubre las
+        // declaraciones de nivel superior del módulo que llaman a funciones.
+        for it in &mut items {
+            match it {
+                HirItem::Funcion { cuerpo, .. } => {
+                    for st in cuerpo {
+                        renombrar_llamadas_sentencia(st, &prefijos);
+                    }
+                }
+                HirItem::Declaracion { valor, .. } => {
+                    renombrar_llamadas_expresion(valor, &prefijos);
+                }
+                _ => {}
             }
         }
         // Registrar funciones prefijadas en el resolvedor.
