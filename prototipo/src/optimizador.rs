@@ -247,6 +247,7 @@ fn const_a_valor(c: &MirConst) -> Valor {
         MirConst::Logico(b) => Valor::Logico(*b),
         MirConst::Texto(s) => Valor::Texto(s.clone()),
         MirConst::Nulo => Valor::Nulo,
+        MirConst::Funcion(s) => Valor::Funcion(s.clone()),
     }
 }
 
