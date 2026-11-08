@@ -44,6 +44,7 @@ pub enum MirConst {
     Logico(bool),
     Texto(String),
     Nulo,
+    Funcion(String),
 }
 
 /// Lugar (lvalue) MIR: local + proyecciones.
@@ -320,6 +321,7 @@ fn lower_literal(lit: &HirLiteral) -> MirConst {
 fn lower_expr(ctx: &mut LoweringCtx, e: &HirExpresion) -> MirOperand {
     match e {
         HirExpresion::Literal(lit, _tipo) => MirOperand::Const(lower_literal(lit)),
+        HirExpresion::FuncionRef(nombre) => MirOperand::Const(MirConst::Funcion(nombre.clone())),
         HirExpresion::Variable(id, _tipo) => {
             if let Some(&gid) = ctx.globals.get(id) {
                 return MirOperand::Global(gid);

@@ -1,0 +1,19 @@
+# Concurrencia: productor/consumidor con canal.
+
+funcion productor() {
+  enviar(0, 10)
+  enviar(0, 20)
+  enviar(0, 30)
+  retornar 0
+}
+
+sea c = crear_canal()
+sea t = iniciar_tarea("productor")
+
+mostrar "Recibido:"
+mostrar recibir(0)
+mostrar recibir(0)
+mostrar recibir(0)
+
+sea _r = esperar_tarea(t)
+mostrar "Fin"

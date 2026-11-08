@@ -376,3 +376,55 @@ Deuda documentada: la conversión elemento a elemento de secuencias *anotadas*
 
 **Estado:** 814 tests pasando, 0 fallos; `cargo fmt --check` y
 `cargo clippy --all-targets --all-features -- -D warnings` limpios.
+
+## DT-10..13: genéricos, closures, módulos robustos, concurrencia (2026-11-08)
+
+**DT-11 — Closures (funciones de primer orden):**
+- Lambdas y clausuras con captura (incluida captura mutable) funcionan en VM
+  y árbol (tests `closures.rs`, `lambdas.rs`).
+- **Bug corregido:** un parámetro de función que recibía un valor función
+  (p. ej. `aplicar(doble, 4)`) no se registraba en `res.variables`, así que
+  la VM lo trataba como llamada directa (`función no encontrada: f`) y caía a
+  Tree-Walk. Ahora los parámetros (de funciones y lambdas) se registran en
+  `res.variables`, y un identificador que nombre una función se baja como
+  `HirExpresion::FuncionRef` → `MirConst::Funcion` → `Valor::Funcion`, con
+  paridad real. Backend nativo: `MirConst::Funcion` se materializa como `0`
+  (las funciones de primer orden no se soportan en el backend nativo, consistente
+  con su alcance actual).
+- Tests de paridad nuevos: `diff_closure_captura_simple`, `diff_closure_dos_instancias`,
+  `diff_closure_mutable_captura`, `diff_closure_como_argumento`,
+  `diff_closure_retornada_anidada`, `diff_lambda_en_map`, `diff_lambda_en_filtrar`,
+  `diff_lambda_en_reducir`.
+
+**DT-12 — Módulos robustos:**
+- Importación por alias y nominal, visibilidad `publico`, inicialización de
+  top-level, llamadas internas entre funciones del módulo (reescritura HIR,
+  DT-26) y módulos anidados (A→B→C, `modulos_e2e::e2e_transitiva`).
+- Tests de paridad: los módulos con llamadas internas se ejercitan vía
+  `modulos_e2e` (30 tests), incluyendo `e2e_llamadas_internas_del_modulo` y
+  `e2e_llamadas_internas_en_cadena` añadidos en DT-26.
+
+**DT-13 — Concurrencia (canales) y REPL:**
+- `crear_canal`/`enviar`/`recibir` compartidos entre motores (estado global
+  `CANALES`); `iniciar_tarea`/`esperar_tarea` en VM (hilo propio con globals
+  clonados y `inicializado = true`) y en Tree-Walk. Ejemplo vivo:
+  `ejemplos/concurrencia` (productor/consumidor) con salida idéntica en ambos
+  motores.
+- REPL ya existente (`bsk repl`/`repl()`): acumulación multilínea, reporte
+  de errores léxicos/sintácticos/de ejecución sin abortar.
+- Tests de paridad: `diff_canal_productor_consumidor`, `diff_dos_canales`,
+  `diff_tarea_iniciar_y_esperar`, `diff_tarea_dos_tareas`.
+
+**DT-10 — Genéricos definibles por usuario:**
+- **Estado:** AUSENTE (deuda futura acotada, no implementado en este ciclo).
+- **Motivo:** implementarlo con type erasure sería una simulación (prohibido
+  por la misión); la monomorphization completa es un feature de semanas que
+  toca parser, semántico, HIR, MIR y ambos motores, y arriesgaría los 814 tests.
+- **Plan propuesto:** sintaxis `funcion f<T>(x: T) -> T`; monomorphization en
+  HIR (generar una copia por tipo concreto usado) en lugar de type erasure;
+  propagación de los parámetros de tipo a `TipoSem`/`TipoAnotacion`; replicar
+  en VM y árbol; extender backends nativo/WASM. Queda como deuda documentada
+  con plan, no como "parcial".
+
+**Estado:** 823 tests pasando, 0 fallos; `cargo fmt --check` y
+`cargo clippy --all-targets --all-features -- -D warnings` limpios.

@@ -543,3 +543,77 @@ fn diff_anotado_convierte_entero_a_decimal() {
 fn diff_anotado_convierte_entero_a_real() {
     assert_parity("funcion f(x: real) { retornar x }\nfuncion main() -> real { retornar f(2) }");
 }
+
+// --- DT-11: closures (paridad VM/árbol) ---
+
+#[test]
+fn diff_closure_captura_simple() {
+    assert_parity(
+        "funcion crear(x) { retornar funcion (yy) { retornar x + yy } }\nfuncion main() -> entero { sea c = crear(10)\n retornar c(5) }",
+    );
+}
+
+#[test]
+fn diff_closure_dos_instancias() {
+    assert_parity(
+        "funcion crear(x) { retornar funcion (yy) { retornar x + yy } }\nfuncion main() -> entero { sea a = crear(10)\n sea b = crear(20)\n retornar a(5) + b(5) }",
+    );
+}
+
+#[test]
+fn diff_closure_mutable_captura() {
+    assert_parity(
+        "funcion crear() { sea x = 0\n funcion inc() { x = x + 1\n retornar x }\n retornar inc }\nfuncion main() -> entero { sea c = crear()\n c()\n retornar c() }",
+    );
+}
+
+#[test]
+fn diff_closure_como_argumento() {
+    assert_parity(
+        "funcion aplicar(f, x) { retornar f(x) }\nfuncion doble(n) { retornar n * 2 }\nfuncion main() -> entero { retornar aplicar(doble, 4) }",
+    );
+}
+
+#[test]
+fn diff_closure_retornada_anidada() {
+    assert_parity(
+        "funcion obtener() { retornar funcion (x) { retornar x + 1 } }\nfuncion main() -> entero { retornar obtener()(9) }",
+    );
+}
+
+#[test]
+fn diff_lambda_en_map() {
+    assert_parity(
+        "funcion main() -> entero { sea r = map([1, 2, 3], funcion (x) { retornar x * 2 })\n retornar r[0] + r[1] + r[2] }",
+    );
+}
+
+#[test]
+fn diff_lambda_en_filtrar() {
+    assert_parity(
+        "funcion main() -> entero { sea r = filtrar([1, 2, 3, 4], funcion (x) { retornar x > 2 })\n retornar longitud(r) }",
+    );
+}
+
+#[test]
+fn diff_lambda_en_reducir() {
+    assert_parity(
+        "funcion main() -> entero { retornar reducir([1, 2, 3, 4], funcion (acc, x) { retornar acc + x }, 0) }",
+    );
+}
+
+// --- DT-13: concurrencia (paridad VM/árbol) ---
+
+#[test]
+fn diff_canal_productor_consumidor() {
+    assert_parity(
+        "funcion productor() { enviar(0, 42)\n retornar 0 }\nfuncion main() -> entero { sea c = crear_canal()\n sea t = iniciar_tarea(\"productor\")\n sea v = recibir(0)\n esperar_tarea(t)\n retornar v }",
+    );
+}
+
+#[test]
+fn diff_dos_canales() {
+    assert_parity(
+        "funcion p1() { enviar(0, 10)\n retornar 0 }\nfuncion p2() { enviar(1, 20)\n retornar 0 }\nfuncion main() -> entero { crear_canal()\n crear_canal()\n sea t1 = iniciar_tarea(\"p1\")\n sea t2 = iniciar_tarea(\"p2\")\n sea a = recibir(0)\n sea b = recibir(1)\n esperar_tarea(t1)\n esperar_tarea(t2)\n retornar a + b }",
+    );
+}

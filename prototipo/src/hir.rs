@@ -74,6 +74,7 @@ pub enum HirExpresion {
         argumentos: Vec<HirExpresion>,
         tipo: TipoSem,
     },
+    FuncionRef(String),
     Lambda {
         nombre: String,
         params: Vec<(String, TipoSem)>,
@@ -390,6 +391,7 @@ fn recolectar_ids_expr(e: &HirExpresion, set: &mut std::collections::HashSet<Sim
             }
         }
         HirExpresion::ModuloObjeto { .. } => {}
+        HirExpresion::FuncionRef(_) => {}
     }
 }
 
@@ -684,7 +686,8 @@ fn verificar_expr(e: &HirExpresion) -> bool {
                     .map(|ss| verificar_tipos_invariantes(ss))
                     .unwrap_or(true)
         }
-        HirExpresion::Otro(_tipo) => true,
+        HirExpresion::FuncionRef(_) => true,
+        HirExpresion::Otro(_) => true,
         HirExpresion::ModuloObjeto { .. } => true,
     }
 }
@@ -778,7 +781,8 @@ fn renombrar_llamadas_expresion(
         | HirExpresion::Variable(_, _)
         | HirExpresion::Lambda { .. }
         | HirExpresion::Otro(_)
-        | HirExpresion::ModuloObjeto { .. } => {}
+        | HirExpresion::ModuloObjeto { .. }
+        | HirExpresion::FuncionRef(_) => {}
         HirExpresion::Suma(a, b, _)
         | HirExpresion::Resta(a, b, _)
         | HirExpresion::Multiplicacion(a, b, _)
@@ -968,6 +972,9 @@ fn lower_expresion(
             HirExpresion::Literal(lit, tipo)
         }
         Expresion::Variable { nombre, .. } => {
+            if res.funciones.contains(nombre) {
+                return Ok(HirExpresion::FuncionRef(nombre.clone()));
+            }
             let id = res.resolver_o_registrar(nombre);
             let tipo = ctx
                 .buscar_tipo_variable(nombre)
@@ -1145,6 +1152,7 @@ fn lower_expresion(
             let mut param_ids: Vec<SimbodoId> = Vec::new();
             for (n, _) in &params {
                 param_ids.push(res.insertar(n, None));
+                res.variables.insert(n.clone());
             }
             // Tipos de los parámetros de la clausura (params + capturas).
             let mut clausura_params: Vec<(SimbodoId, TipoSem)> = Vec::new();
@@ -1479,6 +1487,7 @@ fn lower_sentencia(
             let mut param_ids: Vec<SimbodoId> = Vec::new();
             for (n, _) in &params {
                 param_ids.push(res.insertar(n, None));
+                res.variables.insert(n.clone());
             }
             let mut clausura_params: Vec<(SimbodoId, TipoSem)> = Vec::new();
             for (i, (_, ty)) in params.iter().enumerate() {
@@ -2102,6 +2111,7 @@ pub fn lower_programa_con_resolutor(
                 let mut params: Vec<(SimbodoId, TipoSem)> = Vec::new();
                 for (n, t) in parametros {
                     let pid = res.insertar(n, None);
+                    res.variables.insert(n.clone());
                     let ty = t
                         .as_ref()
                         .map(crate::semantico::tipo_anotacion_a_sem)

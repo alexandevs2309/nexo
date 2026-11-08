@@ -593,6 +593,7 @@ fn generar_operando(op: &MirOperand) -> String {
             MirConst::Decimal(n) => format!("{}", *n),
             MirConst::Texto(s) => format!("\"{}\".to_string()", escapar_texto(s)),
             MirConst::Nulo => "0".to_string(),
+            MirConst::Funcion(_) => "0".to_string(), // first-class funcs not supported in native backend
         },
     }
 }
