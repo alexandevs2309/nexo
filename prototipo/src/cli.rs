@@ -505,6 +505,20 @@ pub fn main() -> ExitCode {
             }
             instalar_paquetes(args.get(1).map(PathBuf::from))
         }
+        "depurar" | "debug" => {
+            if args.len() < 2 {
+                eprintln!("uso: {COMANDO} depurar <archivo.bsk> [--punto-funcion=<nombre>]");
+                return ExitCode::from(2);
+            }
+            depurar_archivo(&args[1..])
+        }
+        "lsp" => {
+            if args.len() > 1 {
+                eprintln!("uso: {COMANDO} lsp");
+                return ExitCode::from(2);
+            }
+            ejecutar_lsp()
+        }
         "paquetes" => {
             if args.len() > 2 {
                 eprintln!("uso: {COMANDO} paquetes [ruta-del-proyecto]");
@@ -575,6 +589,111 @@ fn repl() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn ejecutar_lsp() -> ExitCode {
+    let mut servidor = crate::lsp::ServidorLsp::nuevo();
+    servidor.ejecutar();
+    ExitCode::SUCCESS
+}
+
+fn depurar_archivo(args: &[OsString]) -> ExitCode {
+    use crate::ContextoSemantico;
+    use crate::mir;
+    use crate::vm::MaquinaVirtual;
+    let mut archivo = None;
+    let mut filtro: Option<String> = None;
+    for a in args {
+        let s = a.to_string_lossy();
+        if let Some(f) = s.strip_prefix("--punto-funcion=") {
+            filtro = Some(f.to_string());
+        } else if archivo.is_none() {
+            archivo = Some(PathBuf::from(s.to_string()));
+        } else {
+            eprintln!("argumento inesperado: {s}");
+            return ExitCode::from(2);
+        }
+    }
+    let Some(ruta) = archivo else {
+        eprintln!("falta el archivo");
+        return ExitCode::from(2);
+    };
+    let fuente = match fs::read_to_string(&ruta) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("error: no se pudo leer '{}': {e}", ruta.display());
+            return ExitCode::from(1);
+        }
+    };
+    let ruta_str = ruta.display().to_string();
+    let root = ruta
+        .parent()
+        .map(|p| {
+            if p.as_os_str().is_empty() {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            } else {
+                p.to_path_buf()
+            }
+        })
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let cargador = Arc::new(Mutex::new(CargadorModulos::nuevo(root)));
+    let tokens = match Lexer::con_archivo(&fuente, Some(ruta_str.clone())).tokenizar() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(1);
+        }
+    };
+    let sentencias = match Parser::con_archivo(tokens, Some(ruta_str.clone())).parsear_programa() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(1);
+        }
+    };
+    let mut ctx = ContextoSemantico::con_cargador(cargador, Some(ruta_str.clone()));
+    ctx.set_archivo_actual(Some(PathBuf::from(&ruta_str)));
+    let _ = ctx.analizar_programa(&sentencias);
+    *crate::hir::MODULO_ERROR.lock().unwrap() = None;
+    let hir = match crate::hir::lower_programa(&sentencias, &ctx) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("{:?}", e);
+            return ExitCode::from(1);
+        }
+    };
+    if let Some(e) = crate::hir::MODULO_ERROR.lock().unwrap().take() {
+        eprintln!("{}", e);
+        return ExitCode::from(1);
+    }
+    let programa = mir::lower_programa(&hir);
+    let mut vm = MaquinaVirtual::nuevo(programa);
+    vm.registrar_stdlib();
+    vm.activar_traza();
+    let Some(idx) = vm.indice_de("main") else {
+        eprintln!("el programa no define `funcion main()`");
+        return ExitCode::from(1);
+    };
+    match vm.ejecutar_indice(idx, &[]) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("error: {}", e);
+            for t in vm.traza() {
+                eprintln!("{}", t);
+            }
+            return ExitCode::from(1);
+        }
+    }
+    for t in vm.traza() {
+        if let Some(f) = &filtro {
+            if t.contains(f) {
+                println!("{}", t);
+            }
+        } else {
+            println!("{}", t);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn ayuda() {
     println!("{NOMBRE} — intérprete del lenguaje (prototipo)");
     println!();
@@ -595,7 +714,8 @@ fn ayuda() {
     println!("  {COMANDO} add <paquete> [ver]    agrega una dependencia y la instala");
     println!("  {COMANDO} update [ruta]          re-resuelve dependencias y reescribe {BLOQUEO}");
     println!("  {COMANDO} publish [ruta]         empaqueta el proyecto en un artefacto .bpk");
-    println!("  {COMANDO} paquetes [ruta]        lista las dependencias del bloqueo");
+    println!("  {COMANDO} lsp                 servidor de idioma (LSP) sobre stdio");
+    println!("  {COMANDO} depurar <archivo>    ejecuta con traza de funciones (depurador)");
     println!("  {COMANDO} demo                   ejecuta una demostración");
     println!("  {COMANDO} --version              muestra la versión");
     println!("  {COMANDO} --help                 muestra esta ayuda");

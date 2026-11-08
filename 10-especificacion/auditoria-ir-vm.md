@@ -339,3 +339,40 @@ Deuda documentada: la conversión elemento a elemento de secuencias *anotadas*
 `gestor_tareas`, `consola`) ejecutan con salida idéntica y exit 0 en
 `--motor=vm` y `--motor=arbol`, sin avisos. README de los ejemplos corregidos
 (`ejemplos/`, no `examples/`) con instrucciones de ejecución reales.
+
+## G6: LSP y depurador (DT-27..29, 2026-11-08)
+
+**DT-27 — Servidor de idioma (`src/lsp.rs`, comando `bsk lsp`):**
+- JSON-RPC 2.0 sobre stdio con encuadre `Content-Length` (lectura/escritura
+  en `leer_mensaje`/`escribir_mensaje`, testables por separado).
+- `initialize` anuncia `textDocumentSync` (full), `hoverProvider` y
+  `completionProvider`; `initialized`, `shutdown`, `exit` (el servidor
+  permanece vivo hasta `exit`, como exige el protocolo).
+- `textDocument/didOpen`/`didChange`: almacena el documento y publica
+  diagnósticos (`textDocument/publishDiagnostics`) calculados con el mismo
+  pipeline que `bsk analizar` (lexer → parser → semántico → HIR; los errores
+  de módulos se recogen de `MODULO_ERROR`).
+- `textDocument/hover`: devuelve la línea actual como bloque de código
+  (best effort, sin inferencia de tipos por posición).
+- `textDocument/completion`: lista de palabras clave y nativas del lenguaje.
+
+**DT-28 — Depurador (`src/vm.rs` + comando `bsk depurar`):**
+- La VM gana `traza: bool` + `traza_salida` (buffer capturable) y los
+  métodos `activar_traza()`/`traza()`; `ejecutar_indice` registra entrada
+  (`→ nombre(args)`) y salida (`← nombre = valor` o `! error`) de cada
+  función, saltando `__init` para no ensuciar la traza. La traza es
+  capturable, no solo stderr, lo que la hace testeable.
+- `depurar <archivo> [--punto-funcion=<nombre>]` compila con el pipeline
+  completo (AST → HIR → MIR → VM), activa la traza y ejecuta `main`;
+  `--punto-funcion` filtra la salida a una función concreta. Los errores de
+  ejecución imprimen la traza parcial antes del mensaje de error.
+
+**DT-29 — Integración y pruebas:**
+- Comandos `lsp` y `depurar`/`debug` en el despacho y en `ayuda()`.
+- `tests/lsp.rs` (3 tests): round-trip initialize→shutdown→exit, publicación
+  de diagnósticos con código inválido, completion con `mostrar`.
+- `tests/depurador.rs` (3 tests): traza completa, filtro por función, reporte
+  de error con traza parcial.
+
+**Estado:** 814 tests pasando, 0 fallos; `cargo fmt --check` y
+`cargo clippy --all-targets --all-features -- -D warnings` limpios.

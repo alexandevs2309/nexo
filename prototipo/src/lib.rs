@@ -16,6 +16,7 @@ pub mod formateador;
 pub mod hir;
 pub mod http;
 pub mod lexer;
+pub mod lsp;
 pub mod mir;
 pub mod optimizador;
 pub mod paquetes;

@@ -140,6 +140,10 @@ pub struct MaquinaVirtual {
     limite_pasos: usize,
     profundidad: usize,
     limite_profundidad: usize,
+    /// Si la traza del depurador está activa.
+    traza: bool,
+    /// Salida de la traza del depurador.
+    traza_salida: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl MaquinaVirtual {
@@ -184,6 +188,8 @@ impl MaquinaVirtual {
             limite_pasos,
             profundidad: 0,
             limite_profundidad,
+            traza: false,
+            traza_salida: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -195,6 +201,16 @@ impl MaquinaVirtual {
     /// Índice de la función por nombre (`f_{simbodo}` según el lowering).
     pub fn indice_de(&self, nombre: &str) -> Option<usize> {
         self.indice.get(nombre).copied()
+    }
+
+    /// Activa la traza del depurador.
+    pub fn activar_traza(&mut self) {
+        self.traza = true;
+    }
+
+    /// Devuelve la traza capturada hasta ahora.
+    pub fn traza(&self) -> Vec<String> {
+        self.traza_salida.lock().unwrap().clone()
     }
 
     /// Registra una función nativa (FFI / integrada) bajo `nombre`.
@@ -1374,8 +1390,38 @@ impl MaquinaVirtual {
         let Some(funcion) = self.programa.funciones.get(idx).cloned() else {
             return Err(ErrorVm::BloqueInalcanzable);
         };
+        let es_init = funcion.nombre == "__init";
+        if self.traza && !es_init {
+            self.traza_salida.lock().unwrap().push(format!(
+                "→ {}({})",
+                funcion.nombre,
+                args.iter()
+                    .map(|v| format!("{}", v))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         let r = self.correr_funcion(&funcion, args);
         self.profundidad -= 1;
+        if self.traza && !es_init {
+            match &r {
+                Ok(Some(v)) => self
+                    .traza_salida
+                    .lock()
+                    .unwrap()
+                    .push(format!("← {} = {}", funcion.nombre, v)),
+                Ok(None) => self
+                    .traza_salida
+                    .lock()
+                    .unwrap()
+                    .push(format!("← {} = (sin retorno)", funcion.nombre)),
+                Err(e) => self
+                    .traza_salida
+                    .lock()
+                    .unwrap()
+                    .push(format!("← {} ! {}", funcion.nombre, e)),
+            }
+        }
         r
     }
 
