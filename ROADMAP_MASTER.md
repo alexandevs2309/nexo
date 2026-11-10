@@ -27,30 +27,30 @@
 - **Archivos afectados previstos:** `backend_wasm.rs`, `backend_entero.rs`, `tests/backend_wasm.rs`, posiblemente `cli/build` docs.
 - **Pruebas requeridas:** `cargo test --test backend_wasm` con ejecución real (no skip silencioso); prueba e2e programa real rustc→`.wasm`→Node con resultado correcto; `fmt`/`clippy`/`workspace` verdes.
 - **Criterios de aceptación:** 0 falsos verdes WASM; e2e reproducible evidenciado; subset/paridad documentados con evidencia.
-- **Evidencias:** comandos, salidas, archivos `.wasm` generados en contexto de prueba, conteos.
-- **Estado:** `PENDIENTE`.
+- **Evidencias:** `backend_wasm.rs`/`tests/backend_wasm.rs`; `cargo test --test backend_wasm` 11/0/0; fmt/clippy OK; workspace 880/0/2 (ver `DEVELOPMENT_STATE.md`).
+- **Estado:** `APROBADA` (autorización humana explícita).
 
 ## Fase 02 — Corrección de concurrencia y canales
 - **Objetivo:** Eliminar no determinismo/races en canales/tareas (VM y donde aplique) y obtener pruebas deterministas y fiables.
 - **Alcance permitido:** `prototipo/src/vm.rs`, `prototipo/src/evaluador.rs` (canales/TW), `prototipo/src/mir.rs/hir.rs` solo si necesario al fix, `tests/diferencial_vm.rs` u tests de concurrencia; sin nuevas features de concurrencia.
-- **Dependencias:** Fase 00 `APROBADA`; idealmente tras Fase 01 solo por orden, pero dependencia técnica directa: baseline.
+- **Dependencias:** Fase 00–01 `APROBADAS`.
 - **Tareas:** Reproducir flakiness (evidencia previa: divergencias TW/VM canal 42/62 vs 10/30); aislar estado global/IDs/colas por contexto de ejecución o prueba; corregir causa raíz; hacer diferenciales canal/tarea deterministas; re-ejecutar repetidamente para evidencia de estabilidad.
 - **Archivos afectados previstos:** `vm.rs`, `evaluador.rs`, tests diferenciales/concurrencia.
 - **Pruebas requeridas:** `cargo test --test diferencial_vm canal tarea` (y repeticiones); `workspace` completo; sin regresión de paridad.
 - **Criterios de aceptación:** pruebas de canal/tarea deterministas (N repeticiones documentadas, 0 fallos); causa raíz explicada con evidencia.
-- **Evidencias:** logs de repeticiones, diff antes/después, archivos/funciones.
-- **Estado:** `PENDIENTE`.
+- **Evidencias:** aislamiento por contexto en `evaluador.rs`/`vm.rs`; diferencial canal repetido (12×2/0 + 8×2/0), `diferencial_vm` 81/0; fmt/clippy OK; workspace 887/0/2 (B-REG-001 externo). GAP-051 preexistente preservado/no atribuido. Ver `DEVELOPMENT_STATE.md`.
+- **Estado:** `APROBADA` (autorización humana explícita).
 
 ## Fase 03 — Validadores semánticos HIR/MIR
 - **Objetivo:** Verificadores HIR/MIR con contrato comprobable, integrados como gate donde corresponda, sin falsos negativos/positivos ocultos.
-- **Alcance permitido:** `hir.rs` (`VerificadorHir`), `mir.rs` (`VerificadorMir`), pipeline de invocación, tests unitarios/integración de verificadores.
-- **Dependencias:** Fase 00 `APROBADA` (recomendado tras 01-02 para baseline estable).
-- **Tareas:** Definir invariantes reales (tipos de retorno, `LocalId`, coherencia de IDs/bloques/terminadores, etc.); implementar comprobaciones efectivas; añadir tests positivos/negativos; decidir y evidenciar integración en pipeline.
-- **Archivos afectados previstos:** `hir.rs`, `mir.rs`, `cli.rs`/pipeline, `tests/`.
-- **Pruebas requeridas:** tests nuevos/existentes de verificadores; `workspace` verde.
-- **Criterios de aceptación:** verificadores detectan casos inválidos diseñados y aceptan válidos; comportamiento de gate documentado y probado.
-- **Evidencias:** tests, comandos, ejemplos de rechazo.
-- **Estado:** `PENDIENTE`.
+- **Alcance permitido:** `hir.rs` (`VerificadorHir`), `mir.rs` (`VerificadorMir`), pipeline de invocación, LSP/CLI según arquitectura, tests unitarios/integración.
+- **Dependencias:** Fase 00–02 `APROBADAS`.
+- **Tareas:** Definir/reforzar invariantes reales (tipado, IDs/bloques/terminadores, CFG/alcanzabilidad, retornos, try/invoke, coherencia), implementar comprobaciones efectivas, integrar gates en pipeline, añadir tests positivos/negativos e integración.
+- **Archivos afectados (ejecutado 3A–3D.6):** `prototipo/src/{hir.rs,mir.rs,cli.rs,lsp.rs}`, `prototipo/tests/{gate_3c_integration.rs,pipeline_3d5_integration.rs}` (+ pruebas existentes asociadas), `DEVELOPMENT_STATE.md`, `ROADMAP_MASTER.md`.
+- **Pruebas requeridas:** tests de verificadores/gates/pipeline; `fmt --check`; `clippy -D warnings`; `cargo test --workspace --no-fail-fast`.
+- **Criterios de aceptación:** verificadores detectan inválidos diseñados y aceptan válidos; gates integrados y sin bypass/fallback silencioso de verificación; comportamiento documentado y probado; sin regresiones en workspace.
+- **Evidencias:** ver `DEVELOPMENT_STATE.md` (3A–3D.6), logs `/tmp/opencode/{fmt,clippy,ws_fase03_cierre}.txt`, reporte integral de cierre. Validación final: fmt/clippy OK, workspace **965 passed, 0 failed, 2 ignored** (55 suites, exit 0); ignorados B-REG-001 externos/no aprobados. Limitaciones/deudas técnicas documentadas y mantenidas.
+- **Estado:** `APROBADA` (autorización humana explícita, 2026-11-10, incl. 3D.4–3D.6). **Fase 04 NO iniciada** (pendiente auditoría/planificación y autorización).
 
 ## Fase 04 — Unificación semántica de motores
 - **Objetivo:** Reducir divergencias de semántica entre TW, VM y nativo en las capacidades declaradas soportadas.

@@ -1532,6 +1532,69 @@ impl VerificadorMir {
     }
 }
 
+/// Sucesores normales de un terminador (transiciones explícitas del CFG).
+fn sucesores_terminador(t: &MirTerminator) -> Vec<BlockId> {
+    match t {
+        MirTerminator::Goto(d) => vec![*d],
+        MirTerminator::SwitchInt {
+            casos, por_defecto, ..
+        } => {
+            let mut v: Vec<BlockId> = casos.iter().map(|(_, b)| *b).collect();
+            v.push(*por_defecto);
+            v
+        }
+        MirTerminator::Return(_) | MirTerminator::Unreachable => vec![],
+        MirTerminator::Invoke {
+            bloque_ok,
+            bloque_error,
+            ..
+        } => vec![*bloque_ok, *bloque_error],
+    }
+}
+
+/// Bloques alcanzables desde la entrada respetando transiciones reales.
+/// Conservador con `EntrarTry`: si un bloque alcanzable contiene `EntrarTry`,
+/// su `rescue` se considera alcanzable por la arista excepcional (la VM puede
+/// transferir control a `rescue` ante error dentro de la región protegida).
+fn bloques_alcanzables(
+    f: &MirFunction,
+    ids: &std::collections::HashSet<BlockId>,
+) -> std::collections::HashSet<BlockId> {
+    let mut alcanzables: std::collections::HashSet<BlockId> = std::collections::HashSet::new();
+    let mut cola: std::collections::VecDeque<BlockId> = std::collections::VecDeque::new();
+    if ids.contains(&f.bloque_entrada) {
+        alcanzables.insert(f.bloque_entrada);
+        cola.push_back(f.bloque_entrada);
+    }
+    while let Some(bid) = cola.pop_front() {
+        let Some(b) = f.bloques.iter().find(|x| x.id == bid) else {
+            continue;
+        };
+        // Arista excepcional conservadora: try activo en bloque alcanzable.
+        for stmt in &b.stmts {
+            if let MirStmt::EntrarTry { rescue, .. } = stmt
+                && ids.contains(rescue)
+                && alcanzables.insert(*rescue)
+            {
+                cola.push_back(*rescue);
+            }
+        }
+        for s in sucesores_terminador(&b.terminator) {
+            if ids.contains(&s) && alcanzables.insert(s) {
+                cola.push_back(s);
+            }
+        }
+    }
+    alcanzables
+}
+
+/// Indica si el tipo de retorno declarado exige un valor en caminos alcanzables.
+/// Conservador: `Desconocido` y `Nulo` no exigen valor (evita falsos positivos
+/// en funciones void/sintéticas y casos no tipados).
+fn retorno_requiere_valor(t: &TipoSem) -> bool {
+    !matches!(t, TipoSem::Desconocido | TipoSem::Nulo)
+}
+
 fn verificar_funcion_mir(f: &MirFunction, prog: &MirPrograma) -> Result<(), ErrorVerificacionMir> {
     let ctx_f = format!("funcion '{}'", f.nombre);
     if f.bloques.is_empty() {
@@ -1584,6 +1647,8 @@ fn verificar_funcion_mir(f: &MirFunction, prog: &MirPrograma) -> Result<(), Erro
             ));
         }
     }
+
+    // Validación estructural, de tipos y de referencias por bloque/stmt/terminador.
     for b in &f.bloques {
         let ctx_b = format!("funcion '{}', bloque {}", f.nombre, b.id.0);
         match &b.terminator {
@@ -1641,11 +1706,10 @@ fn verificar_funcion_mir(f: &MirFunction, prog: &MirPrograma) -> Result<(), Erro
                             ),
                         ));
                     }
-                } else {
-                    // Los retornos vacíos sintéticos (bloques inalcanzables/merge)
-                    // no se rechazan aquí para evitar falsos positivos; la
-                    // semántica ya valida retornos a nivel HIR.
                 }
+                // `Return(None)` en caminos alcanzables se valida tras el análisis
+                // de alcanzabilidad (CFG) para evitar falsos positivos en bloques
+                // sintéticos/inalcanzables.
             }
             MirTerminator::Invoke {
                 callee,
@@ -1743,6 +1807,27 @@ fn verificar_funcion_mir(f: &MirFunction, prog: &MirPrograma) -> Result<(), Erro
             stmt_valido(stmt, f, prog, &ids, &ctx_s)?;
         }
     }
+
+    // CFG/alcanzabilidad (3D.4): rechaza Return(None) solo en bloques alcanzables
+    // cuando el tipo declarado exige valor; bloques inalcanzables se ignoran.
+    let alcanzables = bloques_alcanzables(f, &ids);
+    if retorno_requiere_valor(&f.retorno) {
+        for b in &f.bloques {
+            if alcanzables.contains(&b.id) && matches!(b.terminator, MirTerminator::Return(None)) {
+                let ctx_b = format!("funcion '{}', bloque {}", f.nombre, b.id.0);
+                return Err(err_mir(
+                    "MIR045",
+                    "retorno-requerido",
+                    &ctx_b,
+                    format!(
+                        "retorno vacío en camino alcanzable pero la función declara retorno '{}'",
+                        f.retorno.nombre()
+                    ),
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -3056,5 +3141,308 @@ mod verificacion_3d3_tests {
         let r = VerificadorMir::verificar_detallado(&programa(vec![main], vec![]));
         assert!(!r.es_ok());
         assert_eq!(r.errores[0].codigo, "MIR043");
+    }
+}
+
+#[cfg(test)]
+mod verificacion_3d4_tests {
+    use super::*;
+
+    fn bb(id: usize, stmts: Vec<MirStmt>, terminator: MirTerminator) -> MirBasicBlock {
+        MirBasicBlock {
+            id: BlockId(id),
+            stmts,
+            terminator,
+        }
+    }
+    fn func(
+        nombre: &str,
+        retorno: TipoSem,
+        locals: Vec<TipoSem>,
+        bloques: Vec<MirBasicBlock>,
+    ) -> MirFunction {
+        MirFunction {
+            nombre: nombre.into(),
+            params: vec![],
+            retorno,
+            locals,
+            bloque_entrada: BlockId(0),
+            bloques,
+        }
+    }
+    fn prog(f: MirFunction) -> MirPrograma {
+        MirPrograma {
+            funciones: vec![f],
+            globals: vec![],
+        }
+    }
+
+    #[test]
+    fn cfg_bloque_entrada_inexistente_rechaza() {
+        let f = MirFunction {
+            nombre: "f".into(),
+            params: vec![],
+            retorno: TipoSem::Nulo,
+            locals: vec![],
+            bloque_entrada: BlockId(5),
+            bloques: vec![bb(0, vec![], MirTerminator::Return(None))],
+        };
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR013");
+    }
+
+    #[test]
+    fn cfg_goto_destino_inexistente_rechaza() {
+        let f = func(
+            "f",
+            TipoSem::Nulo,
+            vec![],
+            vec![bb(0, vec![], MirTerminator::Goto(BlockId(9)))],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR030");
+    }
+
+    #[test]
+    fn cfg_switch_destinos_invalidos_rechaza() {
+        let f = func(
+            "f",
+            TipoSem::Nulo,
+            vec![TipoSem::Entero],
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::SwitchInt {
+                        discriminante: MirOperand::Copy(LocalId(0)),
+                        casos: vec![(1, BlockId(2))],
+                        por_defecto: BlockId(1),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR031");
+    }
+
+    #[test]
+    fn cfg_invoke_destinos_invalidos_rechaza() {
+        let f = func(
+            "f",
+            TipoSem::Nulo,
+            vec![],
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::Invoke {
+                        callee: "g".into(),
+                        argumentos: vec![],
+                        destino: None,
+                        bloque_ok: BlockId(1),
+                        bloque_error: BlockId(9),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR032");
+    }
+
+    #[test]
+    fn cfg_unreachable_valido_en_bloque_alcanzable_estructura_ok() {
+        // Unreachable es terminador válido estructuralmente.
+        let f = func(
+            "f",
+            TipoSem::Nulo,
+            vec![],
+            vec![bb(0, vec![], MirTerminator::Unreachable)],
+        );
+        assert!(VerificadorMir::verificar_detallado(&prog(f)).es_ok());
+    }
+
+    #[test]
+    fn cfg_return_none_alcanzable_rechaza_si_retorno_tipado() {
+        let f = func(
+            "f",
+            TipoSem::Entero,
+            vec![],
+            vec![bb(0, vec![], MirTerminator::Return(None))],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR045");
+    }
+
+    #[test]
+    fn cfg_return_none_alcanzable_permitido_si_retorno_nulo() {
+        let f = func(
+            "f",
+            TipoSem::Nulo,
+            vec![],
+            vec![bb(0, vec![], MirTerminator::Return(None))],
+        );
+        assert!(VerificadorMir::verificar_detallado(&prog(f)).es_ok());
+    }
+
+    #[test]
+    fn cfg_return_none_alcanzable_permitido_si_retorno_desconocido() {
+        let f = func(
+            "f",
+            TipoSem::Desconocido,
+            vec![],
+            vec![bb(0, vec![], MirTerminator::Return(None))],
+        );
+        assert!(VerificadorMir::verificar_detallado(&prog(f)).es_ok());
+    }
+
+    #[test]
+    fn cfg_return_none_inalcanzable_permitido_aun_con_retorno_tipado() {
+        // bb1 es inalcanzable (sintético); no debe provocar falso positivo.
+        let f = func(
+            "f",
+            TipoSem::Entero,
+            vec![],
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::Return(Some(MirOperand::Const(MirConst::Entero(1)))),
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+        );
+        assert!(VerificadorMir::verificar_detallado(&prog(f)).es_ok());
+    }
+
+    #[test]
+    fn cfg_try_rescue_alcanzable_por_excepcion() {
+        // El rescue se considera alcanzable desde un EntrarTry en bloque alcanzable;
+        // si el rescue termina con Return(None) y el retorno es tipado, debe rechazarse.
+        let f = func(
+            "f",
+            TipoSem::Entero,
+            vec![],
+            vec![
+                bb(
+                    0,
+                    vec![MirStmt::EntrarTry {
+                        rescue: BlockId(1),
+                        merge: BlockId(2),
+                        var_local: None,
+                    }],
+                    MirTerminator::Goto(BlockId(2)),
+                ),
+                bb(1, vec![], MirTerminator::Return(None)), // rescue alcanzable por arista excepcional
+                bb(
+                    2,
+                    vec![],
+                    MirTerminator::Return(Some(MirOperand::Const(MirConst::Entero(0)))),
+                ),
+            ],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR045");
+    }
+
+    #[test]
+    fn cfg_try_merge_y_rescue_validos_acepta() {
+        let f = func(
+            "f",
+            TipoSem::Entero,
+            vec![],
+            vec![
+                bb(
+                    0,
+                    vec![MirStmt::EntrarTry {
+                        rescue: BlockId(1),
+                        merge: BlockId(2),
+                        var_local: None,
+                    }],
+                    MirTerminator::Goto(BlockId(2)),
+                ),
+                bb(1, vec![], MirTerminator::Goto(BlockId(2))), // rescue -> merge
+                bb(
+                    2,
+                    vec![],
+                    MirTerminator::Return(Some(MirOperand::Const(MirConst::Entero(1)))),
+                ),
+            ],
+        );
+        assert!(VerificadorMir::verificar_detallado(&prog(f)).es_ok());
+    }
+
+    #[test]
+    fn cfg_switch_transiciones_reales_alcanzan_ramas() {
+        // Ambas ramas alcanzables retornan valor correcto.
+        let f = func(
+            "f",
+            TipoSem::Entero,
+            vec![TipoSem::Logico],
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::SwitchInt {
+                        discriminante: MirOperand::Copy(LocalId(0)),
+                        casos: vec![(1, BlockId(1))],
+                        por_defecto: BlockId(2),
+                    },
+                ),
+                bb(
+                    1,
+                    vec![],
+                    MirTerminator::Return(Some(MirOperand::Const(MirConst::Entero(1)))),
+                ),
+                bb(
+                    2,
+                    vec![],
+                    MirTerminator::Return(Some(MirOperand::Const(MirConst::Entero(2)))),
+                ),
+            ],
+        );
+        assert!(VerificadorMir::verificar_detallado(&prog(f)).es_ok());
+    }
+
+    #[test]
+    fn cfg_referencia_funcion_callee_resuelta_coherente() {
+        let callee = func(
+            "g",
+            TipoSem::Entero,
+            vec![],
+            vec![bb(
+                0,
+                vec![],
+                MirTerminator::Return(Some(MirOperand::Const(MirConst::Entero(1)))),
+            )],
+        );
+        let mut caller = func(
+            "f",
+            TipoSem::Entero,
+            vec![],
+            vec![bb(
+                0,
+                vec![MirStmt::Llamada {
+                    destino: None,
+                    callee: "g".into(),
+                    argumentos: vec![],
+                }],
+                MirTerminator::Return(Some(MirOperand::Const(MirConst::Entero(2)))),
+            )],
+        );
+        let _ = &mut caller;
+        let p = MirPrograma {
+            funciones: vec![caller, callee],
+            globals: vec![],
+        };
+        // destino None compatible; aridad 0 ok
+        assert!(VerificadorMir::verificar_detallado(&p).es_ok());
     }
 }

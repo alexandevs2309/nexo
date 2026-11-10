@@ -2,8 +2,9 @@
 //!
 //! Habla JSON-RPC 2.0 sobre stdio con encuadre `Content-Length` (igual que
 //! cualquier cliente LSP). Ofrece:
-//!   - `textDocument/publishDiagnostics`: diagnósticos del lexer/parser/
-//!     analizador semántico (y, si aplica, del pipeline MIR/VM).
+//!   - `textDocument/publishDiagnostics`: diagnósticos de lexer/parser/
+//!     semántico y, cuando no hay errores previos, de verificación HIR/MIR
+//!     (códigos/mensajes; ubicación 0,0 si el IR no conserva spans).
 //!   - `textDocument/hover`: tipo del símbodo bajo el cursor (best effort).
 //!   - `textDocument/completion`: candidatos del ámbito global.
 //!
@@ -210,6 +211,11 @@ impl ServidorLsp {
     }
 
     /// Calcula los diagnósticos (errores) de un documento.
+    ///
+    /// Orden: lexer -> parser -> semántico. Si no hay errores previos, intenta
+    /// lowering HIR/MIR y ejecuta los gates de verificación para exponer
+    /// diagnósticos estructurales (códigos HIR0xx/MIR0xx) sin duplicar los
+    /// errores ya reportados por etapas anteriores.
     pub fn calcular_diagnosticos(&self, _uri: &str, texto: &str) -> Vec<serde_json::Value> {
         let mut diags = Vec::new();
         // Lexer
@@ -244,13 +250,39 @@ impl ServidorLsp {
                 1,
             ));
         }
-        // HIR lowering (errores de módulos, etc.)
+        // HIR/MIR: solo si no hubo diagnósticos previos (evita duplicación).
         if diags.is_empty() {
-            let _ = hir::lower_programa(&sentencias, &ctx);
-            if let Some(e) = hir::MODULO_ERROR.lock().unwrap().take() {
-                diags.push(diagnostico(0, 0, &e, 1));
+            *hir::MODULO_ERROR.lock().unwrap() = None;
+            match hir::lower_programa(&sentencias, &ctx) {
+                Ok(hir_prog) => {
+                    if let Some(e) = hir::MODULO_ERROR.lock().unwrap().take() {
+                        diags.push(diagnostico(0, 0, &e, 1));
+                    } else {
+                        let rh = hir::VerificadorHir::verificar_detallado(&hir_prog);
+                        if rh.es_ok() {
+                            let mir_prog = crate::mir::lower_programa(&hir_prog);
+                            let rm = crate::mir::VerificadorMir::verificar_detallado(&mir_prog);
+                            for e in rm.errores {
+                                diags.push(diagnostico(0, 0, &e.to_string(), 1));
+                            }
+                        } else {
+                            for e in rh.errores {
+                                diags.push(diagnostico(0, 0, &e.to_string(), 1));
+                            }
+                        }
+                    }
+                }
+                Err(errs_lower) => {
+                    // Errores de lowering HIR: reportar sin duplicar semánticos.
+                    if let Some(e) = hir::MODULO_ERROR.lock().unwrap().take() {
+                        diags.push(diagnostico(0, 0, &e, 1));
+                    } else {
+                        for e in errs_lower {
+                            diags.push(diagnostico(0, 0, &e, 1));
+                        }
+                    }
+                }
             }
-            // MIR lowering no emite errores.
         }
         diags
     }
