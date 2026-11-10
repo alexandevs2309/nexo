@@ -1135,8 +1135,8 @@ fn lower_item(
             nombre,
             simbodo: _,
             params,
-            capturadas: _capturadas,
-            celdas,
+            capturadas,
+            celdas: _,
             capturas_externas,
             retorno,
             cuerpo,
@@ -1146,7 +1146,16 @@ fn lower_item(
             } else {
                 globals.clone()
             });
-            ctx.capturadas = celdas.iter().cloned().collect();
+            // Celdas = capturas externas + capturas anidadas (dedup). Se usa
+            // `capturadas`/`capturas_externas` en lugar del campo `celdas` para
+            // evitar duplicados que rechaza el verificador HIR (HIR011), sin
+            // cambiar el comportamiento de lowering.
+            let mut caps: std::collections::HashSet<SimbodoId> =
+                capturas_externas.iter().cloned().collect();
+            for c in capturadas {
+                caps.insert(*c);
+            }
+            ctx.capturadas = caps;
             let externas: std::collections::HashSet<SimbodoId> =
                 capturas_externas.iter().cloned().collect();
             // Params como locals.
@@ -1274,204 +1283,1778 @@ pub fn lower_programa(hir: &HirPrograma) -> MirPrograma {
     prog
 }
 
-/// Verificador MIR: valida invariantes estructurales.
-pub struct VerificadorMir;
+/// Error de verificación de una invariante MIR (contrato comprobable, Fase 03).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorVerificacionMir {
+    pub codigo: &'static str,
+    pub invariante: &'static str,
+    pub contexto: String,
+    pub mensaje: String,
+}
 
-impl VerificadorMir {
-    #[allow(clippy::collapsible_if, clippy::collapsible_match)]
-    pub fn verificar(prog: &MirPrograma) -> bool {
-        // Nombres de funciones únicos.
-        let mut nombres_func: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for f in &prog.funciones {
-            if !nombres_func.insert(f.nombre.as_str()) {
-                return false;
-            }
-        }
-        for f in &prog.funciones {
-            if f.bloques.is_empty() {
-                return false;
-            }
-            // Ids de bloque únicos y contiguos desde 0.
-            let mut ids: std::collections::HashSet<BlockId> = std::collections::HashSet::new();
-            for (i, b) in f.bloques.iter().enumerate() {
-                if b.id.0 != i {
-                    return false;
-                }
-                if !ids.insert(b.id) {
-                    return false;
-                }
-            }
-            if !ids.contains(&f.bloque_entrada) {
-                return false;
-            }
-            // Parámetros referencian locals válidos.
-            for (local, _) in &f.params {
-                if local.0 >= f.locals.len() {
-                    return false;
-                }
-            }
-            // Validar cada bloque.
-            for b in &f.bloques {
-                // Terminadores apuntan a bloques existentes.
-                match &b.terminator {
-                    MirTerminator::Goto(t) => {
-                        if !ids.contains(t) {
-                            return false;
-                        }
-                    }
-                    MirTerminator::SwitchInt {
-                        casos, por_defecto, ..
-                    } => {
-                        for (_, blk) in casos {
-                            if !ids.contains(blk) {
-                                return false;
-                            }
-                        }
-                        if !ids.contains(por_defecto) {
-                            return false;
-                        }
-                    }
-                    MirTerminator::Return(op) => {
-                        if let Some(o) = op {
-                            if !operando_valido(o, f, prog) {
-                                return false;
-                            }
-                        }
-                    }
-                    MirTerminator::Invoke {
-                        bloque_ok,
-                        bloque_error,
-                        destino,
-                        argumentos,
-                        ..
-                    } => {
-                        if !ids.contains(bloque_ok) || !ids.contains(bloque_error) {
-                            return false;
-                        }
-                        for a in argumentos {
-                            if !operando_valido(a, f, prog) {
-                                return false;
-                            }
-                        }
-                        if let Some(d) = destino {
-                            if !lugar_valido(d, f, prog) {
-                                return false;
-                            }
-                        }
-                    }
-                    MirTerminator::Unreachable => {}
-                }
-                // Validar sentencias.
-                for stmt in &b.stmts {
-                    if !stmt_valido(stmt, f, prog) {
-                        return false;
-                    }
-                }
-            }
-        }
-        true
+impl std::fmt::Display for ErrorVerificacionMir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{}] {} ({}): {}",
+            self.codigo, self.invariante, self.contexto, self.mensaje
+        )
     }
 }
 
-#[allow(clippy::collapsible_if)]
-fn lugar_valido(p: &MirPlace, f: &MirFunction, prog: &MirPrograma) -> bool {
-    if p.local.0 >= f.locals.len() {
-        return false;
+/// Resultado detallado de la verificación MIR.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ResultadoVerificacionMir {
+    pub errores: Vec<ErrorVerificacionMir>,
+}
+
+impl ResultadoVerificacionMir {
+    pub fn es_ok(&self) -> bool {
+        self.errores.is_empty()
     }
-    // Proyecciones de un solo nivel soportadas.
+}
+
+/// Verificador MIR: valida invariantes estructurales.
+pub struct VerificadorMir;
+
+fn err_mir(
+    codigo: &'static str,
+    invariante: &'static str,
+    contexto: impl Into<String>,
+    mensaje: impl Into<String>,
+) -> ErrorVerificacionMir {
+    ErrorVerificacionMir {
+        codigo,
+        invariante,
+        contexto: contexto.into(),
+        mensaje: mensaje.into(),
+    }
+}
+
+/// Tipo de un operando MIR (si puede inferirse de locales/globals/constantes).
+fn tipo_operando(op: &MirOperand, f: &MirFunction, prog: &MirPrograma) -> Option<TipoSem> {
+    match op {
+        MirOperand::Copy(l) | MirOperand::Move(l) => f.locals.get(l.0).cloned(),
+        MirOperand::Global(g) => prog.globals.get(g.0).cloned(),
+        MirOperand::Const(c) => Some(match c {
+            MirConst::Entero(_) => TipoSem::Entero,
+            MirConst::Decimal(_) => TipoSem::Decimal,
+            MirConst::Real(_) => TipoSem::Real,
+            MirConst::Logico(_) => TipoSem::Logico,
+            MirConst::Texto(_) => TipoSem::Texto,
+            MirConst::Nulo => TipoSem::Nulo,
+            MirConst::Funcion(_) => TipoSem::Desconocido,
+        }),
+    }
+}
+
+/// Compatibilidad conservadora entre tipos MIR (espejo de `semantico::compatible`).
+fn tipos_compatibles_mir(esperado: &TipoSem, obtenido: &TipoSem) -> bool {
+    if matches!(esperado, TipoSem::Desconocido) || matches!(obtenido, TipoSem::Desconocido) {
+        return true;
+    }
+    match (esperado, obtenido) {
+        (TipoSem::Entero, TipoSem::Entero) => true,
+        (TipoSem::Decimal, TipoSem::Decimal) | (TipoSem::Decimal, TipoSem::Entero) => true,
+        (TipoSem::Real, TipoSem::Real) | (TipoSem::Real, TipoSem::Entero) => true,
+        (TipoSem::Logico, TipoSem::Logico) => true,
+        (TipoSem::Texto, TipoSem::Texto) => true,
+        (TipoSem::Nulo, TipoSem::Nulo) => true,
+        (TipoSem::Arreglo(te, ne), TipoSem::Arreglo(to, no)) => {
+            ne == no && tipos_compatibles_mir(te, to)
+        }
+        (TipoSem::Lista(te), TipoSem::Lista(to)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Arreglo(te, _), TipoSem::Lista(to)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Lista(te), TipoSem::Arreglo(to, _)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Coleccion(te), TipoSem::Arreglo(to, _)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Coleccion(te), TipoSem::Lista(to)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Arreglo(te, _), TipoSem::Coleccion(to)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Lista(te), TipoSem::Coleccion(to)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Coleccion(te), TipoSem::Coleccion(to)) => tipos_compatibles_mir(te, to),
+        (
+            TipoSem::Funcion {
+                params: p1,
+                retorno: r1,
+            },
+            TipoSem::Funcion {
+                params: p2,
+                retorno: r2,
+            },
+        ) => {
+            p1.len() == p2.len()
+                && p1.iter().zip(p2).all(|(a, b)| tipos_compatibles_mir(a, b))
+                && tipos_compatibles_mir(r1, r2)
+        }
+        _ => false,
+    }
+}
+
+/// Promoción numérica MIR (espejo de `tipo_numerico_resultado`).
+fn tipos_numericos_compatibles_mir(a: &TipoSem, b: &TipoSem) -> bool {
+    matches!(a, TipoSem::Entero | TipoSem::Decimal | TipoSem::Real)
+        && matches!(b, TipoSem::Entero | TipoSem::Decimal | TipoSem::Real)
+}
+
+fn tipo_lugar(p: &MirPlace, f: &MirFunction) -> Option<TipoSem> {
+    // Conservador: solo lugares sin proyecciones tienen tipo conocido.
+    if p.projection.is_empty() {
+        f.locals.get(p.local.0).cloned()
+    } else {
+        None
+    }
+}
+
+fn tipo_rvalue(rv: &MirRvalue, f: &MirFunction, prog: &MirPrograma) -> Option<TipoSem> {
+    match rv {
+        MirRvalue::Use(op) => tipo_operando(op, f, prog),
+        MirRvalue::BinOp { op, lhs, rhs } => {
+            let tl = tipo_operando(lhs, f, prog)?;
+            let tr = tipo_operando(rhs, f, prog)?;
+            match op {
+                MirBinOp::Suma => {
+                    if (matches!(tl, TipoSem::Entero | TipoSem::Decimal | TipoSem::Real)
+                        && matches!(tr, TipoSem::Entero | TipoSem::Decimal | TipoSem::Real))
+                    {
+                        if matches!(tl, TipoSem::Real) || matches!(tr, TipoSem::Real) {
+                            Some(TipoSem::Real)
+                        } else if matches!(tl, TipoSem::Decimal) || matches!(tr, TipoSem::Decimal) {
+                            Some(TipoSem::Decimal)
+                        } else {
+                            Some(TipoSem::Entero)
+                        }
+                    } else if tl == TipoSem::Texto && tr == TipoSem::Texto {
+                        Some(TipoSem::Texto)
+                    } else {
+                        None
+                    }
+                }
+                MirBinOp::Resta
+                | MirBinOp::Multiplicacion
+                | MirBinOp::Division
+                | MirBinOp::Modulo => {
+                    if matches!(tl, TipoSem::Entero | TipoSem::Decimal | TipoSem::Real)
+                        && matches!(tr, TipoSem::Entero | TipoSem::Decimal | TipoSem::Real)
+                    {
+                        if matches!(tl, TipoSem::Real) || matches!(tr, TipoSem::Real) {
+                            Some(TipoSem::Real)
+                        } else if matches!(tl, TipoSem::Decimal) || matches!(tr, TipoSem::Decimal) {
+                            Some(TipoSem::Decimal)
+                        } else {
+                            Some(TipoSem::Entero)
+                        }
+                    } else {
+                        None
+                    }
+                }
+                MirBinOp::Igual
+                | MirBinOp::Distinto
+                | MirBinOp::Menor
+                | MirBinOp::MenorIgual
+                | MirBinOp::Mayor
+                | MirBinOp::MayorIgual => Some(TipoSem::Logico),
+                MirBinOp::Y | MirBinOp::O => Some(TipoSem::Logico),
+            }
+        }
+        MirRvalue::UnOp { op, operand } => {
+            let t = tipo_operando(operand, f, prog)?;
+            match op {
+                MirUnOp::Negacion => {
+                    if matches!(t, TipoSem::Entero | TipoSem::Decimal | TipoSem::Real) {
+                        Some(t)
+                    } else {
+                        None
+                    }
+                }
+                MirUnOp::No => Some(TipoSem::Logico),
+            }
+        }
+        MirRvalue::Agregado { elementos } => {
+            let mut ts: Vec<TipoSem> = elementos
+                .iter()
+                .filter_map(|e| tipo_operando(e, f, prog))
+                .collect();
+            if ts.is_empty() {
+                return None;
+            }
+            let first = ts.remove(0);
+            if ts.iter().all(|t| tipos_compatibles_mir(&first, t)) {
+                Some(first)
+            } else {
+                None
+            }
+        }
+        MirRvalue::Indice { base, indice: _ } => {
+            let tb = tipo_operando(base, f, prog)?;
+            match tb {
+                TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te) => Some(*te),
+                _ => None,
+            }
+        }
+        MirRvalue::Campo { .. } => None,
+        MirRvalue::CrearCelda { valor } => tipo_operando(valor, f, prog),
+        MirRvalue::LeerCelda { base } => tipo_operando(base, f, prog),
+        MirRvalue::Clausura { .. } => None,
+        MirRvalue::Rango { .. } => Some(TipoSem::Lista(Box::new(TipoSem::Entero))),
+        MirRvalue::Longitud { .. } => Some(TipoSem::Entero),
+        MirRvalue::ObjetoModulo { .. } => None,
+    }
+}
+
+impl VerificadorMir {
+    /// Verificación booleana (compatibilidad). Equivale a `verificar_detallado().es_ok()`.
+    pub fn verificar(prog: &MirPrograma) -> bool {
+        Self::verificar_detallado(prog).es_ok()
+    }
+
+    /// Verificación con contrato detallado (Fase 03): reporta la primera
+    /// invariante violada encontrada, con código, contexto y mensaje.
+    #[allow(clippy::collapsible_if, clippy::collapsible_match)]
+    pub fn verificar_detallado(prog: &MirPrograma) -> ResultadoVerificacionMir {
+        let mut nombres_func: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for f in &prog.funciones {
+            if !nombres_func.insert(f.nombre.as_str()) {
+                return ResultadoVerificacionMir {
+                    errores: vec![err_mir(
+                        "MIR001",
+                        "nombre-funcion-unico",
+                        &f.nombre,
+                        "nombre de función duplicado",
+                    )],
+                };
+            }
+        }
+        for f in &prog.funciones {
+            if let Err(e) = verificar_funcion_mir(f, prog) {
+                return ResultadoVerificacionMir { errores: vec![e] };
+            }
+        }
+        ResultadoVerificacionMir::default()
+    }
+}
+
+fn verificar_funcion_mir(f: &MirFunction, prog: &MirPrograma) -> Result<(), ErrorVerificacionMir> {
+    let ctx_f = format!("funcion '{}'", f.nombre);
+    if f.bloques.is_empty() {
+        return Err(err_mir(
+            "MIR010",
+            "bloques-no-vacios",
+            &ctx_f,
+            "la función no tiene bloques",
+        ));
+    }
+    // Ids de bloque únicos y contiguos desde 0.
+    let mut ids: std::collections::HashSet<BlockId> = std::collections::HashSet::new();
+    for (i, b) in f.bloques.iter().enumerate() {
+        if b.id.0 != i {
+            return Err(err_mir(
+                "MIR011",
+                "bloques-contiguos",
+                &ctx_f,
+                format!("bloque en índice {i} tiene id {}", b.id.0),
+            ));
+        }
+        if !ids.insert(b.id) {
+            return Err(err_mir(
+                "MIR012",
+                "bloque-id-unico",
+                &ctx_f,
+                format!("id de bloque duplicado {}", b.id.0),
+            ));
+        }
+    }
+    if !ids.contains(&f.bloque_entrada) {
+        return Err(err_mir(
+            "MIR013",
+            "bloque-entrada-existe",
+            &ctx_f,
+            format!("bloque de entrada {} inexistente", f.bloque_entrada.0),
+        ));
+    }
+    for (local, _) in &f.params {
+        if local.0 >= f.locals.len() {
+            return Err(err_mir(
+                "MIR020",
+                "param-local-valido",
+                &ctx_f,
+                format!(
+                    "parámetro referencia local {} fuera de rango (locals={})",
+                    local.0,
+                    f.locals.len()
+                ),
+            ));
+        }
+    }
+    for b in &f.bloques {
+        let ctx_b = format!("funcion '{}', bloque {}", f.nombre, b.id.0);
+        match &b.terminator {
+            MirTerminator::Goto(t) => {
+                if !ids.contains(t) {
+                    return Err(err_mir(
+                        "MIR030",
+                        "terminador-destino-valido",
+                        &ctx_b,
+                        format!("goto a bloque inexistente {}", t.0),
+                    ));
+                }
+            }
+            MirTerminator::SwitchInt {
+                discriminante,
+                casos,
+                por_defecto,
+            } => {
+                operando_valido(discriminante, f, prog, &ctx_b, "switch.discriminante")?;
+                for (valor, blk) in casos {
+                    let _ = valor; // valor i64: sin restricción estructural
+                    if !ids.contains(blk) {
+                        return Err(err_mir(
+                            "MIR031",
+                            "terminador-destino-valido",
+                            &ctx_b,
+                            format!("switch a bloque inexistente {}", blk.0),
+                        ));
+                    }
+                }
+                if !ids.contains(por_defecto) {
+                    return Err(err_mir(
+                        "MIR031",
+                        "terminador-destino-valido",
+                        &ctx_b,
+                        format!("switch default a bloque inexistente {}", por_defecto.0),
+                    ));
+                }
+            }
+            MirTerminator::Return(op) => {
+                if let Some(o) = op {
+                    operando_valido(o, f, prog, &ctx_b, "return")?;
+                    if let Some(to) = tipo_operando(o, f, prog)
+                        && !matches!(f.retorno, TipoSem::Desconocido)
+                        && !tipos_compatibles_mir(&f.retorno, &to)
+                    {
+                        return Err(err_mir(
+                            "MIR042",
+                            "retorno-tipo",
+                            &ctx_b,
+                            format!(
+                                "return de tipo '{}' incompatible con retorno declarado '{}'",
+                                to.nombre(),
+                                f.retorno.nombre()
+                            ),
+                        ));
+                    }
+                } else {
+                    // Los retornos vacíos sintéticos (bloques inalcanzables/merge)
+                    // no se rechazan aquí para evitar falsos positivos; la
+                    // semántica ya valida retornos a nivel HIR.
+                }
+            }
+            MirTerminator::Invoke {
+                callee,
+                bloque_ok,
+                bloque_error,
+                destino,
+                argumentos,
+                ..
+            } => {
+                if callee.is_empty() {
+                    return Err(err_mir(
+                        "MIR043",
+                        "callee-valido",
+                        &ctx_b,
+                        "invoke con callee vacio".to_string(),
+                    ));
+                }
+                if !ids.contains(bloque_ok) || !ids.contains(bloque_error) {
+                    return Err(err_mir(
+                        "MIR032",
+                        "terminador-destino-valido",
+                        &ctx_b,
+                        format!(
+                            "invoke a bloque inexistente (ok={}, err={})",
+                            bloque_ok.0, bloque_error.0
+                        ),
+                    ));
+                }
+                for (i, a) in argumentos.iter().enumerate() {
+                    operando_valido(a, f, prog, &ctx_b, &format!("invoke arg {i}"))?;
+                }
+                if let Some(callee_fn) = prog.funciones.iter().find(|g| g.nombre == *callee) {
+                    if callee_fn.params.len() != argumentos.len() {
+                        return Err(err_mir(
+                            "MIR044",
+                            "invoke-arity",
+                            &ctx_b,
+                            format!(
+                                "invoke '{}': se esperaban {} argumentos, se obtuvieron {}",
+                                callee,
+                                callee_fn.params.len(),
+                                argumentos.len()
+                            ),
+                        ));
+                    }
+                    for (i, (arg, (_, pt))) in argumentos.iter().zip(&callee_fn.params).enumerate()
+                    {
+                        if let Some(at) = tipo_operando(arg, f, prog)
+                            && !tipos_compatibles_mir(pt, &at)
+                        {
+                            return Err(err_mir(
+                                "MIR042",
+                                "invoke-tipos",
+                                &ctx_b,
+                                format!(
+                                    "invoke '{}': argumento {} de tipo '{}' incompatible con parametro '{}'",
+                                    callee,
+                                    i,
+                                    at.nombre(),
+                                    pt.nombre()
+                                ),
+                            ));
+                        }
+                    }
+                }
+                if let Some(d) = destino {
+                    lugar_valido(d, f, prog, &ctx_b, "invoke destino")?;
+                    if let Some(dt) = tipo_lugar(d, f) {
+                        let rt = prog
+                            .funciones
+                            .iter()
+                            .find(|g| g.nombre == *callee)
+                            .map(|g| g.retorno.clone())
+                            .unwrap_or(TipoSem::Desconocido);
+                        if !matches!(rt, TipoSem::Desconocido) && !tipos_compatibles_mir(&dt, &rt) {
+                            return Err(err_mir(
+                                "MIR042",
+                                "invoke-tipos",
+                                &ctx_b,
+                                format!(
+                                    "invoke '{}': destino de tipo '{}' incompatible con retorno '{}'",
+                                    callee,
+                                    dt.nombre(),
+                                    rt.nombre()
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+            MirTerminator::Unreachable => {}
+        }
+        for (i, stmt) in b.stmts.iter().enumerate() {
+            let ctx_s = format!("{ctx_b}, stmt {i}");
+            stmt_valido(stmt, f, prog, &ids, &ctx_s)?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::collapsible_if)]
+fn lugar_valido(
+    p: &MirPlace,
+    f: &MirFunction,
+    prog: &MirPrograma,
+    ctx: &str,
+    sitio: &str,
+) -> Result<(), ErrorVerificacionMir> {
+    if p.local.0 >= f.locals.len() {
+        return Err(err_mir(
+            "MIR040",
+            "local-valido",
+            ctx,
+            format!(
+                "{sitio}: local {} fuera de rango (locals={})",
+                p.local.0,
+                f.locals.len()
+            ),
+        ));
+    }
     for proj in &p.projection {
         match proj {
             MirProjection::Campo(_) => {}
             MirProjection::Indice(op) => {
-                if !operando_valido(op, f, prog) {
-                    return false;
+                operando_valido(op, f, prog, ctx, &format!("{sitio}/indice"))?;
+                if let Some(ti) = tipo_operando(op, f, prog)
+                    && !matches!(ti, TipoSem::Entero | TipoSem::Desconocido)
+                {
+                    return Err(err_mir(
+                        "MIR042",
+                        "proyeccion-indice-tipo",
+                        ctx,
+                        format!(
+                            "{sitio}/indice: se esperaba entero, se obtuvo '{}'",
+                            ti.nombre()
+                        ),
+                    ));
                 }
             }
             MirProjection::Celda => {}
         }
     }
-    true
+    Ok(())
 }
 
-fn operando_valido(op: &MirOperand, f: &MirFunction, prog: &MirPrograma) -> bool {
+fn operando_valido(
+    op: &MirOperand,
+    f: &MirFunction,
+    prog: &MirPrograma,
+    ctx: &str,
+    sitio: &str,
+) -> Result<(), ErrorVerificacionMir> {
     match op {
-        MirOperand::Copy(l) | MirOperand::Move(l) => l.0 < f.locals.len(),
-        MirOperand::Const(_) => true,
-        MirOperand::Global(g) => g.0 < prog.globals.len(),
+        MirOperand::Copy(l) | MirOperand::Move(l) => {
+            if l.0 >= f.locals.len() {
+                Err(err_mir(
+                    "MIR040",
+                    "local-valido",
+                    ctx,
+                    format!(
+                        "{sitio}: local {} fuera de rango (locals={})",
+                        l.0,
+                        f.locals.len()
+                    ),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        MirOperand::Const(_) => Ok(()),
+        MirOperand::Global(g) => {
+            if g.0 >= prog.globals.len() {
+                Err(err_mir(
+                    "MIR041",
+                    "global-valido",
+                    ctx,
+                    format!(
+                        "{sitio}: global {} fuera de rango (globals={})",
+                        g.0,
+                        prog.globals.len()
+                    ),
+                ))
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
-fn stmt_valido(stmt: &MirStmt, f: &MirFunction, prog: &MirPrograma) -> bool {
+fn stmt_valido(
+    stmt: &MirStmt,
+    f: &MirFunction,
+    prog: &MirPrograma,
+    ids: &std::collections::HashSet<BlockId>,
+    ctx: &str,
+) -> Result<(), ErrorVerificacionMir> {
     match stmt {
         MirStmt::Asignacion { destino, valor } => {
-            lugar_valido(destino, f, prog) && rvalue_valido(valor, f, prog)
+            lugar_valido(destino, f, prog, ctx, "asignacion.destino")?;
+            rvalue_valido(valor, f, prog, ctx, "asignacion.valor")?;
+            // Compatibilidad de tipos cuando ambos son conocidos.
+            if let (Some(td), Some(tr)) = (tipo_lugar(destino, f), tipo_rvalue(valor, f, prog))
+                && !tipos_compatibles_mir(&td, &tr)
+            {
+                return Err(err_mir(
+                    "MIR042",
+                    "asignacion-tipos",
+                    ctx,
+                    format!(
+                        "asignacion: destino de tipo '{}' incompatible con valor '{}'",
+                        td.nombre(),
+                        tr.nombre()
+                    ),
+                ));
+            }
+            Ok(())
         }
         MirStmt::AsignacionGlobal { global, valor } => {
-            global.0 < prog.globals.len() && rvalue_valido(valor, f, prog)
+            if global.0 >= prog.globals.len() {
+                return Err(err_mir(
+                    "MIR041",
+                    "global-valido",
+                    ctx,
+                    format!(
+                        "asignacion global {} fuera de rango (globals={})",
+                        global.0,
+                        prog.globals.len()
+                    ),
+                ));
+            }
+            rvalue_valido(valor, f, prog, ctx, "asignacion_global.valor")?;
+            if let (Some(tg), Some(tr)) = (
+                prog.globals.get(global.0).cloned(),
+                tipo_rvalue(valor, f, prog),
+            ) {
+                // Los tipos sintéticos (Funcion) de módulos no se validan aquí.
+                if !matches!(tg, TipoSem::Funcion { .. } | TipoSem::Desconocido)
+                    && !tipos_compatibles_mir(&tg, &tr)
+                {
+                    return Err(err_mir(
+                        "MIR042",
+                        "asignacion-tipos",
+                        ctx,
+                        format!(
+                            "asignacion global: tipo '{}' incompatible con valor '{}'",
+                            tg.nombre(),
+                            tr.nombre()
+                        ),
+                    ));
+                }
+            }
+            Ok(())
         }
         MirStmt::Llamada {
             destino,
+            callee,
             argumentos,
-            ..
         } => {
-            if let Some(d) = destino
-                && !lugar_valido(d, f, prog)
-            {
-                return false;
+            if callee.is_empty() {
+                return Err(err_mir(
+                    "MIR043",
+                    "callee-valido",
+                    ctx,
+                    "llamada con callee vacio".to_string(),
+                ));
             }
-            argumentos.iter().all(|a| operando_valido(a, f, prog))
+            if let Some(d) = destino {
+                lugar_valido(d, f, prog, ctx, "llamada.destino")?;
+            }
+            for (i, a) in argumentos.iter().enumerate() {
+                operando_valido(a, f, prog, ctx, &format!("llamada.arg[{i}]"))?;
+            }
+            // Validar argumentos/parametros cuando la funcion existe en el programa.
+            if let Some(callee_fn) = prog.funciones.iter().find(|g| g.nombre == *callee) {
+                if callee_fn.params.len() != argumentos.len() {
+                    return Err(err_mir(
+                        "MIR044",
+                        "llamada-arity",
+                        ctx,
+                        format!(
+                            "llamada '{}': se esperaban {} argumentos, se obtuvieron {}",
+                            callee,
+                            callee_fn.params.len(),
+                            argumentos.len()
+                        ),
+                    ));
+                }
+                for (i, (arg, (_, pt))) in argumentos.iter().zip(&callee_fn.params).enumerate() {
+                    if let Some(at) = tipo_operando(arg, f, prog)
+                        && !tipos_compatibles_mir(pt, &at)
+                    {
+                        return Err(err_mir(
+                            "MIR042",
+                            "llamada-tipos",
+                            ctx,
+                            format!(
+                                "llamada '{}': argumento {} de tipo '{}' incompatible con parametro '{}'",
+                                callee,
+                                i,
+                                at.nombre(),
+                                pt.nombre()
+                            ),
+                        ));
+                    }
+                }
+            }
+            // Validar tipo de destino si es posible.
+            if let Some(d) = destino
+                && let Some(dt) = tipo_lugar(d, f)
+            {
+                // El tipo de retorno de la funcion, si existe.
+                let rt = prog
+                    .funciones
+                    .iter()
+                    .find(|g| g.nombre == *callee)
+                    .map(|g| g.retorno.clone())
+                    .unwrap_or(TipoSem::Desconocido);
+                if !matches!(rt, TipoSem::Desconocido) && !tipos_compatibles_mir(&dt, &rt) {
+                    return Err(err_mir(
+                        "MIR042",
+                        "llamada-tipos",
+                        ctx,
+                        format!(
+                            "llamada '{}': destino de tipo '{}' incompatible con retorno '{}'",
+                            callee,
+                            dt.nombre(),
+                            rt.nombre()
+                        ),
+                    ));
+                }
+            }
+            Ok(())
         }
         MirStmt::LlamadaIndirecta {
             destino,
             callee,
             argumentos,
         } => {
-            if let Some(d) = destino
-                && !lugar_valido(d, f, prog)
-            {
-                return false;
+            if let Some(d) = destino {
+                lugar_valido(d, f, prog, ctx, "llamada_indirecta.destino")?;
             }
-            operando_valido(callee, f, prog)
-                && argumentos.iter().all(|a| operando_valido(a, f, prog))
+            operando_valido(callee, f, prog, ctx, "llamada_indirecta.callee")?;
+            for (i, a) in argumentos.iter().enumerate() {
+                operando_valido(a, f, prog, ctx, &format!("llamada_indirecta.arg[{i}]"))?;
+            }
+            Ok(())
         }
         MirStmt::EntrarTry {
-            rescue: _,
-            merge: _,
+            rescue,
+            merge,
             var_local,
         } => {
-            // los bloques se validan fuera; rescue/merge deben ser bloques existentes
-            // (verificado por el caller que tiene ids). Aquí solo var_local.
-            if let Some(vl) = var_local {
-                *vl < f.locals.len()
-            } else {
-                true
+            // D3 (Fase 3B): rescue/merge deben existir en la función.
+            if !ids.contains(rescue) {
+                return Err(err_mir(
+                    "MIR033",
+                    "try-destino-valido",
+                    ctx,
+                    format!("entrar_try.rescue a bloque inexistente {}", rescue.0),
+                ));
             }
+            if !ids.contains(merge) {
+                return Err(err_mir(
+                    "MIR033",
+                    "try-destino-valido",
+                    ctx,
+                    format!("entrar_try.merge a bloque inexistente {}", merge.0),
+                ));
+            }
+            if let Some(vl) = var_local
+                && *vl >= f.locals.len()
+            {
+                return Err(err_mir(
+                    "MIR040",
+                    "local-valido",
+                    ctx,
+                    format!(
+                        "entrar_try.var_local {} fuera de rango (locals={})",
+                        vl,
+                        f.locals.len()
+                    ),
+                ));
+            }
+            Ok(())
         }
-        MirStmt::SalirTry | MirStmt::Nop => true,
+        MirStmt::SalirTry | MirStmt::Nop => Ok(()),
     }
 }
 
-fn rvalue_valido(r: &MirRvalue, f: &MirFunction, prog: &MirPrograma) -> bool {
+fn rvalue_valido(
+    r: &MirRvalue,
+    f: &MirFunction,
+    prog: &MirPrograma,
+    ctx: &str,
+    sitio: &str,
+) -> Result<(), ErrorVerificacionMir> {
     match r {
-        MirRvalue::Use(op) => operando_valido(op, f, prog),
-        MirRvalue::BinOp { lhs, rhs, .. } => {
-            operando_valido(lhs, f, prog) && operando_valido(rhs, f, prog)
+        MirRvalue::Use(op) => operando_valido(op, f, prog, ctx, sitio),
+        MirRvalue::BinOp { op, lhs, rhs } => {
+            operando_valido(lhs, f, prog, ctx, &format!("{sitio}.lhs"))?;
+            operando_valido(rhs, f, prog, ctx, &format!("{sitio}.rhs"))?;
+            // Validación de tipos (conservadora, espejo de semántica).
+            if let (Some(tl), Some(tr)) = (tipo_operando(lhs, f, prog), tipo_operando(rhs, f, prog))
+            {
+                // Si algún tipo es Desconocido, no rechazar (conservador).
+                if matches!(tl, TipoSem::Desconocido) || matches!(tr, TipoSem::Desconocido) {
+                    return Ok(());
+                }
+                let ok = match op {
+                    MirBinOp::Suma => {
+                        tipos_numericos_compatibles_mir(&tl, &tr)
+                            || (tl == TipoSem::Texto && tr == TipoSem::Texto)
+                    }
+                    MirBinOp::Resta
+                    | MirBinOp::Multiplicacion
+                    | MirBinOp::Division
+                    | MirBinOp::Modulo => tipos_numericos_compatibles_mir(&tl, &tr),
+                    MirBinOp::Igual
+                    | MirBinOp::Distinto
+                    | MirBinOp::Menor
+                    | MirBinOp::MenorIgual
+                    | MirBinOp::Mayor
+                    | MirBinOp::MayorIgual => tipos_numericos_compatibles_mir(&tl, &tr) || tl == tr,
+                    MirBinOp::Y | MirBinOp::O => tl == TipoSem::Logico && tr == TipoSem::Logico,
+                };
+                if !ok {
+                    return Err(err_mir(
+                        "MIR042",
+                        "rvalue-tipos-compatibles",
+                        ctx,
+                        format!(
+                            "{sitio}: tipos incompatibles '{}' vs '{}'",
+                            tl.nombre(),
+                            tr.nombre()
+                        ),
+                    ));
+                }
+            }
+            Ok(())
         }
-        MirRvalue::UnOp { operand, .. } => operando_valido(operand, f, prog),
-        MirRvalue::Agregado { elementos } => elementos.iter().all(|e| operando_valido(e, f, prog)),
+        MirRvalue::UnOp { op, operand } => {
+            operando_valido(operand, f, prog, ctx, &format!("{sitio}.operand"))?;
+            if let Some(t) = tipo_operando(operand, f, prog) {
+                let ok = match op {
+                    MirUnOp::Negacion => {
+                        matches!(t, TipoSem::Entero | TipoSem::Decimal | TipoSem::Real)
+                    }
+                    MirUnOp::No => t == TipoSem::Logico,
+                };
+                if !ok {
+                    return Err(err_mir(
+                        "MIR042",
+                        "rvalue-tipos-compatibles",
+                        ctx,
+                        format!("{sitio}: tipo incompatible para operador unario"),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        MirRvalue::Agregado { elementos } => {
+            for (i, e) in elementos.iter().enumerate() {
+                operando_valido(e, f, prog, ctx, &format!("{sitio}[{i}]"))?;
+            }
+            Ok(())
+        }
         MirRvalue::Indice { base, indice } => {
-            operando_valido(base, f, prog) && operando_valido(indice, f, prog)
+            operando_valido(base, f, prog, ctx, &format!("{sitio}.base"))?;
+            operando_valido(indice, f, prog, ctx, &format!("{sitio}.indice"))?;
+            if let Some(ti) = tipo_operando(indice, f, prog)
+                && !matches!(ti, TipoSem::Entero | TipoSem::Desconocido)
+            {
+                return Err(err_mir(
+                    "MIR042",
+                    "rvalue-tipos-compatibles",
+                    ctx,
+                    format!(
+                        "{sitio}: indice debe ser entero, se obtuvo '{}'",
+                        ti.nombre()
+                    ),
+                ));
+            }
+            Ok(())
         }
-        MirRvalue::Campo { base, .. } => operando_valido(base, f, prog),
-        MirRvalue::CrearCelda { valor } => operando_valido(valor, f, prog),
-        MirRvalue::LeerCelda { base } => operando_valido(base, f, prog),
+        MirRvalue::Campo { base, .. } => {
+            operando_valido(base, f, prog, ctx, &format!("{sitio}.base"))
+        }
+        MirRvalue::CrearCelda { valor } => {
+            operando_valido(valor, f, prog, ctx, &format!("{sitio}.valor"))
+        }
+        MirRvalue::LeerCelda { base } => {
+            operando_valido(base, f, prog, ctx, &format!("{sitio}.base"))
+        }
         MirRvalue::Clausura { capturas, .. } => {
-            capturas.iter().all(|c| operando_valido(c, f, prog))
+            for (i, c) in capturas.iter().enumerate() {
+                operando_valido(c, f, prog, ctx, &format!("{sitio}.captura[{i}]"))?;
+            }
+            Ok(())
         }
         MirRvalue::Rango { inicio, fin, .. } => {
-            operando_valido(inicio, f, prog) && operando_valido(fin, f, prog)
+            operando_valido(inicio, f, prog, ctx, &format!("{sitio}.inicio"))?;
+            operando_valido(fin, f, prog, ctx, &format!("{sitio}.fin"))
         }
-        MirRvalue::Longitud { base } => operando_valido(base, f, prog),
-        MirRvalue::ObjetoModulo { .. } => true,
+        MirRvalue::Longitud { base } => {
+            operando_valido(base, f, prog, ctx, &format!("{sitio}.base"))
+        }
+        MirRvalue::ObjetoModulo { .. } => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod verificacion_3b_tests {
+    use super::*;
+    use crate::semantico::TipoSem;
+
+    fn func_basica(bloques: Vec<MirBasicBlock>, locals: Vec<TipoSem>) -> MirFunction {
+        MirFunction {
+            nombre: "f".to_string(),
+            params: vec![],
+            retorno: TipoSem::Nulo,
+            locals,
+            bloque_entrada: BlockId(0),
+            bloques,
+        }
+    }
+
+    fn prog(f: MirFunction) -> MirPrograma {
+        MirPrograma {
+            funciones: vec![f],
+            globals: vec![],
+        }
+    }
+
+    fn bb(id: usize, stmts: Vec<MirStmt>, terminator: MirTerminator) -> MirBasicBlock {
+        MirBasicBlock {
+            id: BlockId(id),
+            stmts,
+            terminator,
+        }
+    }
+
+    // D2 positivo
+    #[test]
+    fn d2_switchint_discriminante_y_destinos_validos() {
+        let f = func_basica(
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::SwitchInt {
+                        discriminante: MirOperand::Copy(LocalId(0)),
+                        casos: vec![(1, BlockId(1))],
+                        por_defecto: BlockId(2),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+                bb(2, vec![], MirTerminator::Return(None)),
+            ],
+            vec![TipoSem::Entero],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(r.es_ok(), "{r:?}");
+    }
+
+    // D2 negativo: discriminante invalido
+    #[test]
+    fn d2_switchint_discriminante_local_invalido_rechaza_mir040() {
+        let f = func_basica(
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::SwitchInt {
+                        discriminante: MirOperand::Copy(LocalId(99)),
+                        casos: vec![(1, BlockId(1))],
+                        por_defecto: BlockId(1),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+            vec![TipoSem::Entero],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR040");
+        assert!(r.errores[0].mensaje.contains("switch.discriminante"));
+    }
+
+    // D2 negativo: destino invalido (existente, sigue MIR031)
+    #[test]
+    fn d2_switchint_destino_invalido_rechaza_mir031() {
+        let f = func_basica(
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::SwitchInt {
+                        discriminante: MirOperand::Copy(LocalId(0)),
+                        casos: vec![(1, BlockId(9))],
+                        por_defecto: BlockId(1),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+            vec![TipoSem::Entero],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR031");
+    }
+
+    // D3 positivo
+    #[test]
+    fn d3_entrar_try_rescue_merge_validos() {
+        let f = func_basica(
+            vec![
+                bb(
+                    0,
+                    vec![MirStmt::EntrarTry {
+                        rescue: BlockId(1),
+                        merge: BlockId(2),
+                        var_local: Some(0),
+                    }],
+                    MirTerminator::Goto(BlockId(2)),
+                ),
+                bb(1, vec![MirStmt::SalirTry], MirTerminator::Goto(BlockId(2))),
+                bb(2, vec![], MirTerminator::Return(None)),
+            ],
+            vec![TipoSem::Texto],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(r.es_ok(), "{r:?}");
+    }
+
+    // D3 negativos
+    #[test]
+    fn d3_entrar_try_rescue_invalido_rechaza_mir033() {
+        let f = func_basica(
+            vec![
+                bb(
+                    0,
+                    vec![MirStmt::EntrarTry {
+                        rescue: BlockId(99),
+                        merge: BlockId(1),
+                        var_local: None,
+                    }],
+                    MirTerminator::Goto(BlockId(1)),
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+            vec![],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR033");
+        assert!(r.errores[0].mensaje.contains("rescue"));
+    }
+
+    #[test]
+    fn d3_entrar_try_merge_invalido_rechaza_mir033() {
+        let f = func_basica(
+            vec![
+                bb(
+                    0,
+                    vec![MirStmt::EntrarTry {
+                        rescue: BlockId(1),
+                        merge: BlockId(99),
+                        var_local: None,
+                    }],
+                    MirTerminator::Goto(BlockId(1)),
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+            vec![],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR033");
+        assert!(r.errores[0].mensaje.contains("merge"));
+    }
+
+    #[test]
+    fn d3_entrar_try_var_local_invalido_rechaza_mir040() {
+        let f = func_basica(
+            vec![
+                bb(
+                    0,
+                    vec![MirStmt::EntrarTry {
+                        rescue: BlockId(1),
+                        merge: BlockId(1),
+                        var_local: Some(5),
+                    }],
+                    MirTerminator::Goto(BlockId(1)),
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+            vec![],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR040");
+    }
+
+    // Compat bool preservada
+    #[test]
+    fn compat_bool_mir_preservada() {
+        let f = func_basica(vec![bb(0, vec![], MirTerminator::Return(None))], vec![]);
+        assert!(VerificadorMir::verificar(&prog(f)));
+    }
+
+    // Auditoría D2/D3 complementaria
+    #[test]
+    fn d2_switchint_discriminante_global_valido() {
+        let mut f = func_basica(
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::SwitchInt {
+                        discriminante: MirOperand::Global(GlobalId(0)),
+                        casos: vec![(1, BlockId(1))],
+                        por_defecto: BlockId(1),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+            vec![],
+        );
+        let _ = &mut f;
+        let mut p = prog(f);
+        p.globals = vec![TipoSem::Entero];
+        assert!(VerificadorMir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d2_switchint_discriminante_global_invalido_rechaza_mir041() {
+        let f = func_basica(
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::SwitchInt {
+                        discriminante: MirOperand::Global(GlobalId(9)),
+                        casos: vec![(1, BlockId(1))],
+                        por_defecto: BlockId(1),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+            vec![],
+        );
+        let mut p = prog(f);
+        p.globals = vec![TipoSem::Entero];
+        let r = VerificadorMir::verificar_detallado(&p);
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR041");
+    }
+
+    #[test]
+    fn d2_proyeccion_indice_valida_en_asignacion() {
+        let f = func_basica(
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(0),
+                        projection: vec![MirProjection::Indice(MirOperand::Copy(LocalId(1)))],
+                    },
+                    valor: MirRvalue::Use(MirOperand::Const(MirConst::Entero(1))),
+                }],
+                MirTerminator::Return(None),
+            )],
+            vec![TipoSem::Desconocido, TipoSem::Entero],
+        );
+        assert!(VerificadorMir::verificar_detallado(&prog(f)).es_ok());
+    }
+
+    #[test]
+    fn d2_proyeccion_indice_invalido_rechaza_mir040() {
+        let f = func_basica(
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(0),
+                        projection: vec![MirProjection::Indice(MirOperand::Copy(LocalId(99)))],
+                    },
+                    valor: MirRvalue::Use(MirOperand::Const(MirConst::Entero(1))),
+                }],
+                MirTerminator::Return(None),
+            )],
+            vec![TipoSem::Desconocido],
+        );
+        let r = VerificadorMir::verificar_detallado(&prog(f));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR040");
+    }
+
+    #[test]
+    fn d3_entrar_try_var_local_en_rango_acepta() {
+        let f = func_basica(
+            vec![
+                bb(
+                    0,
+                    vec![MirStmt::EntrarTry {
+                        rescue: BlockId(1),
+                        merge: BlockId(1),
+                        var_local: Some(1),
+                    }],
+                    MirTerminator::Goto(BlockId(1)),
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+            ],
+            vec![TipoSem::Texto, TipoSem::Texto],
+        );
+        assert!(VerificadorMir::verificar_detallado(&prog(f)).es_ok());
+    }
+}
+
+#[cfg(test)]
+mod verificacion_3d3_tests {
+    use super::*;
+
+    fn bb(id: usize, stmts: Vec<MirStmt>, terminator: MirTerminator) -> MirBasicBlock {
+        MirBasicBlock {
+            id: BlockId(id),
+            stmts,
+            terminator,
+        }
+    }
+
+    fn func(
+        nombre: &str,
+        params: Vec<(LocalId, TipoSem)>,
+        retorno: TipoSem,
+        locals: Vec<TipoSem>,
+        bloques: Vec<MirBasicBlock>,
+    ) -> MirFunction {
+        MirFunction {
+            nombre: nombre.to_string(),
+            params,
+            retorno,
+            locals,
+            bloque_entrada: BlockId(0),
+            bloques,
+        }
+    }
+
+    fn programa(funciones: Vec<MirFunction>, globals: Vec<TipoSem>) -> MirPrograma {
+        MirPrograma { funciones, globals }
+    }
+
+    fn main_func(
+        retorno: TipoSem,
+        locals: Vec<TipoSem>,
+        bloques: Vec<MirBasicBlock>,
+    ) -> MirFunction {
+        func("main", vec![], retorno, locals, bloques)
+    }
+
+    // --- RValues y operandos: compatibles / incompatibles ---
+
+    #[test]
+    fn d3_3_binop_suma_enteros_acepta() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Entero, TipoSem::Entero, TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(2),
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::BinOp {
+                        op: MirBinOp::Suma,
+                        lhs: MirOperand::Copy(LocalId(0)),
+                        rhs: MirOperand::Copy(LocalId(1)),
+                    },
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        assert!(VerificadorMir::verificar_detallado(&programa(vec![f], vec![])).es_ok());
+    }
+
+    #[test]
+    fn d3_3_binop_suma_entero_texto_rechaza() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Entero, TipoSem::Texto, TipoSem::Desconocido],
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(2),
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::BinOp {
+                        op: MirBinOp::Suma,
+                        lhs: MirOperand::Copy(LocalId(0)),
+                        rhs: MirOperand::Copy(LocalId(1)),
+                    },
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![f], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR042");
+    }
+
+    #[test]
+    fn d3_3_binop_logico_y_enteros_rechaza() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Entero, TipoSem::Entero, TipoSem::Desconocido],
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(2),
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::BinOp {
+                        op: MirBinOp::Y,
+                        lhs: MirOperand::Copy(LocalId(0)),
+                        rhs: MirOperand::Copy(LocalId(1)),
+                    },
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![f], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR042");
+    }
+
+    #[test]
+    fn d3_3_unop_negacion_texto_rechaza() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Texto, TipoSem::Desconocido],
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(1),
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::UnOp {
+                        op: MirUnOp::Negacion,
+                        operand: MirOperand::Copy(LocalId(0)),
+                    },
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![f], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR042");
+    }
+
+    #[test]
+    fn d3_3_unop_no_logico_acepta() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Logico, TipoSem::Logico],
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(1),
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::UnOp {
+                        op: MirUnOp::No,
+                        operand: MirOperand::Copy(LocalId(0)),
+                    },
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        assert!(VerificadorMir::verificar_detallado(&programa(vec![f], vec![])).es_ok());
+    }
+
+    // --- Locales y globales ---
+
+    #[test]
+    fn d3_3_asignacion_local_tipo_incompatible_rechaza() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(0),
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::Use(MirOperand::Const(MirConst::Texto("x".into()))),
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![f], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR042");
+    }
+
+    #[test]
+    fn d3_3_asignacion_local_tipo_compatible_acepta() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(0),
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::Use(MirOperand::Const(MirConst::Entero(1))),
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        assert!(VerificadorMir::verificar_detallado(&programa(vec![f], vec![])).es_ok());
+    }
+
+    #[test]
+    fn d3_3_asignacion_global_tipo_incompatible_rechaza() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![],
+            vec![bb(
+                0,
+                vec![MirStmt::AsignacionGlobal {
+                    global: GlobalId(0),
+                    valor: MirRvalue::Use(MirOperand::Const(MirConst::Texto("x".into()))),
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![f], vec![TipoSem::Entero]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR042");
+    }
+
+    #[test]
+    fn d3_3_asignacion_global_tipo_compatible_acepta() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![],
+            vec![bb(
+                0,
+                vec![MirStmt::AsignacionGlobal {
+                    global: GlobalId(0),
+                    valor: MirRvalue::Use(MirOperand::Const(MirConst::Entero(1))),
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        assert!(
+            VerificadorMir::verificar_detallado(&programa(vec![f], vec![TipoSem::Entero])).es_ok()
+        );
+    }
+
+    // --- Proyecciones ---
+
+    #[test]
+    fn d3_3_proyeccion_indice_no_entero_rechaza() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Desconocido, TipoSem::Texto],
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(0),
+                        projection: vec![MirProjection::Indice(MirOperand::Copy(LocalId(1)))],
+                    },
+                    valor: MirRvalue::Use(MirOperand::Const(MirConst::Entero(1))),
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![f], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR042");
+    }
+
+    // --- Retornos ---
+
+    #[test]
+    fn d3_3_retorno_tipo_compatible_acepta() {
+        let f = main_func(
+            TipoSem::Entero,
+            vec![TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![],
+                MirTerminator::Return(Some(MirOperand::Copy(LocalId(0)))),
+            )],
+        );
+        assert!(VerificadorMir::verificar_detallado(&programa(vec![f], vec![])).es_ok());
+    }
+
+    #[test]
+    fn d3_3_retorno_tipo_incompatible_rechaza() {
+        let f = main_func(
+            TipoSem::Entero,
+            vec![TipoSem::Texto],
+            vec![bb(
+                0,
+                vec![],
+                MirTerminator::Return(Some(MirOperand::Copy(LocalId(0)))),
+            )],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![f], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR042");
+    }
+
+    #[test]
+    fn d3_3_retorno_vacio_funcion_nulo_acepta() {
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![],
+            vec![bb(0, vec![], MirTerminator::Return(None))],
+        );
+        assert!(VerificadorMir::verificar_detallado(&programa(vec![f], vec![])).es_ok());
+    }
+
+    // --- Llamadas directas: existentes/inexistentes, aridad/tipos ---
+
+    #[test]
+    fn d3_3_llamada_directa_funcion_existente_ok() {
+        let callee = func(
+            "sumar",
+            vec![(LocalId(0), TipoSem::Entero), (LocalId(1), TipoSem::Entero)],
+            TipoSem::Entero,
+            vec![TipoSem::Entero, TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![],
+                MirTerminator::Return(Some(MirOperand::Copy(LocalId(0)))),
+            )],
+        );
+        let main = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Entero, TipoSem::Entero, TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![MirStmt::Llamada {
+                    destino: Some(MirPlace {
+                        local: LocalId(2),
+                        projection: vec![],
+                    }),
+                    callee: "sumar".into(),
+                    argumentos: vec![MirOperand::Copy(LocalId(0)), MirOperand::Copy(LocalId(1))],
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        assert!(VerificadorMir::verificar_detallado(&programa(vec![main, callee], vec![])).es_ok());
+    }
+
+    #[test]
+    fn d3_3_llamada_directa_arity_incorrecta_rechaza() {
+        let callee = func(
+            "sumar",
+            vec![(LocalId(0), TipoSem::Entero)],
+            TipoSem::Entero,
+            vec![TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![],
+                MirTerminator::Return(Some(MirOperand::Copy(LocalId(0)))),
+            )],
+        );
+        let main = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Entero, TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![MirStmt::Llamada {
+                    destino: None,
+                    callee: "sumar".into(),
+                    argumentos: vec![MirOperand::Copy(LocalId(0)), MirOperand::Copy(LocalId(0))],
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![main, callee], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR044");
+    }
+
+    #[test]
+    fn d3_3_llamada_directa_arg_tipo_incompatible_rechaza() {
+        let callee = func(
+            "sumar",
+            vec![(LocalId(0), TipoSem::Entero)],
+            TipoSem::Entero,
+            vec![TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![],
+                MirTerminator::Return(Some(MirOperand::Copy(LocalId(0)))),
+            )],
+        );
+        let main = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Texto],
+            vec![bb(
+                0,
+                vec![MirStmt::Llamada {
+                    destino: None,
+                    callee: "sumar".into(),
+                    argumentos: vec![MirOperand::Copy(LocalId(0))],
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![main, callee], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR042");
+    }
+
+    #[test]
+    fn d3_3_llamada_directa_funcion_inexistente_en_programa_acepta_conservador() {
+        // Callee no resuelto en el programa MIR (p.ej. nativo/externo): conservador, no se rechaza.
+        let main = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![MirStmt::Llamada {
+                    destino: None,
+                    callee: "nativo_externo".into(),
+                    argumentos: vec![MirOperand::Copy(LocalId(0))],
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        assert!(VerificadorMir::verificar_detallado(&programa(vec![main], vec![])).es_ok());
+    }
+
+    // --- Llamadas indirectas ---
+
+    #[test]
+    fn d3_3_llamada_indirecta_operandos_validos_acepta() {
+        let main = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Desconocido, TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![MirStmt::LlamadaIndirecta {
+                    destino: None,
+                    callee: MirOperand::Copy(LocalId(0)),
+                    argumentos: vec![MirOperand::Copy(LocalId(1))],
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        assert!(VerificadorMir::verificar_detallado(&programa(vec![main], vec![])).es_ok());
+    }
+
+    // --- Invoke y argumentos ---
+
+    #[test]
+    fn d3_3_invoke_funcion_existente_args_ok() {
+        let callee = func(
+            "puede_fallar",
+            vec![(LocalId(0), TipoSem::Entero)],
+            TipoSem::Entero,
+            vec![TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![],
+                MirTerminator::Return(Some(MirOperand::Copy(LocalId(0)))),
+            )],
+        );
+        let main = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Entero, TipoSem::Entero],
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::Invoke {
+                        callee: "puede_fallar".into(),
+                        argumentos: vec![MirOperand::Copy(LocalId(0))],
+                        destino: Some(MirPlace {
+                            local: LocalId(1),
+                            projection: vec![],
+                        }),
+                        bloque_ok: BlockId(1),
+                        bloque_error: BlockId(2),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+                bb(2, vec![], MirTerminator::Return(None)),
+            ],
+        );
+        assert!(VerificadorMir::verificar_detallado(&programa(vec![main, callee], vec![])).es_ok());
+    }
+
+    #[test]
+    fn d3_3_invoke_arg_tipo_incompatible_rechaza() {
+        let callee = func(
+            "puede_fallar",
+            vec![(LocalId(0), TipoSem::Entero)],
+            TipoSem::Entero,
+            vec![TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![],
+                MirTerminator::Return(Some(MirOperand::Copy(LocalId(0)))),
+            )],
+        );
+        let main = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Texto, TipoSem::Entero],
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::Invoke {
+                        callee: "puede_fallar".into(),
+                        argumentos: vec![MirOperand::Copy(LocalId(0))],
+                        destino: Some(MirPlace {
+                            local: LocalId(1),
+                            projection: vec![],
+                        }),
+                        bloque_ok: BlockId(1),
+                        bloque_error: BlockId(2),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+                bb(2, vec![], MirTerminator::Return(None)),
+            ],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![main, callee], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR042");
+    }
+
+    #[test]
+    fn d3_3_invoke_arity_incorrecta_rechaza() {
+        let callee = func(
+            "puede_fallar",
+            vec![(LocalId(0), TipoSem::Entero)],
+            TipoSem::Entero,
+            vec![TipoSem::Entero],
+            vec![bb(
+                0,
+                vec![],
+                MirTerminator::Return(Some(MirOperand::Copy(LocalId(0)))),
+            )],
+        );
+        let main = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Entero],
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::Invoke {
+                        callee: "puede_fallar".into(),
+                        argumentos: vec![],
+                        destino: None,
+                        bloque_ok: BlockId(1),
+                        bloque_error: BlockId(2),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+                bb(2, vec![], MirTerminator::Return(None)),
+            ],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![main, callee], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR044");
+    }
+
+    #[test]
+    fn d3_3_invoke_callee_vacio_rechaza() {
+        let main = main_func(
+            TipoSem::Nulo,
+            vec![],
+            vec![
+                bb(
+                    0,
+                    vec![],
+                    MirTerminator::Invoke {
+                        callee: "".into(),
+                        argumentos: vec![],
+                        destino: None,
+                        bloque_ok: BlockId(1),
+                        bloque_error: BlockId(2),
+                    },
+                ),
+                bb(1, vec![], MirTerminator::Return(None)),
+                bb(2, vec![], MirTerminator::Return(None)),
+            ],
+        );
+        let r = VerificadorMir::verificar_detallado(&programa(vec![main], vec![]));
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "MIR043");
     }
 }

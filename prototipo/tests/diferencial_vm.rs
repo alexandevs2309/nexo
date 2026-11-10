@@ -617,3 +617,83 @@ fn diff_dos_canales() {
         "funcion p1() { enviar(0, 10)\n retornar 0 }\nfuncion p2() { enviar(1, 20)\n retornar 0 }\nfuncion main() -> entero { crear_canal()\n crear_canal()\n sea t1 = iniciar_tarea(\"p1\")\n sea t2 = iniciar_tarea(\"p2\")\n sea a = recibir(0)\n sea b = recibir(1)\n esperar_tarea(t1)\n esperar_tarea(t2)\n retornar a + b }",
     );
 }
+
+// --- GAP-051: conversiones de asignación estrictas (ADR-0005 §1.4 / spec §3.1) ---
+
+#[test]
+fn diff_gap051_real_rechaza_decimal() {
+    // `1.5` es literal decimal; asignarlo a `real` anotado está prohibido.
+    assert_parity("funcion main() -> entero { var r: real = 1.5\n retornar 0 }");
+}
+
+#[test]
+fn diff_gap051_decimal_acepta_decimal() {
+    assert_parity("funcion main() -> decimal { var d: decimal = 2.5\n retornar d }");
+}
+
+#[test]
+fn diff_gap051_entero_rechaza_decimal() {
+    assert_parity("funcion main() -> entero { var x: entero = 2.5\n retornar 0 }");
+}
+
+#[test]
+fn diff_gap051_real_acepta_entero() {
+    assert_parity("funcion main() -> real { var r: real = 2\n retornar r }");
+}
+
+#[test]
+fn diff_gap051_decimal_acepta_entero() {
+    assert_parity("funcion main() -> decimal { var d: decimal = 2\n retornar d }");
+}
+
+#[test]
+fn diff_gap051_texto_rechaza_entero() {
+    assert_parity("funcion main() -> entero { var t: texto = 5\n retornar 0 }");
+}
+
+#[test]
+fn diff_gap051_logico_rechaza_entero() {
+    assert_parity("funcion main() -> entero { var l: logico = 1\n retornar 0 }");
+}
+
+#[test]
+fn diff_gap051_entero_rechaza_texto() {
+    assert_parity("funcion main() -> entero { var x: entero = \"hola\"\n retornar 0 }");
+}
+
+#[test]
+fn diff_gap051_retorno_real_rechaza_decimal() {
+    // Retorno anotado -> real no admite decimal (misma regla de conversión).
+    assert_parity("funcion f() -> real { retornar 1.5 }\nfuncion main() -> real { retornar f() }");
+}
+
+#[test]
+fn diff_gap051_retorno_entero_rechaza_decimal() {
+    assert_parity(
+        "funcion f() -> entero { retornar 2.5 }\nfuncion main() -> entero { retornar f() }",
+    );
+}
+
+#[test]
+fn diff_gap051_lista_entero_rechaza_elemento_decimal() {
+    // Ambos deben rechazar; el texto exacto difiere por una divergencia
+    // preexistente de representación de literales `[...]` (TW: Lista, VM:
+    // Arreglo) en el campo `obtenido` del diagnóstico. La regla de conversión
+    // estricta (GAP-051) se aplica en ambos motores.
+    let src = "funcion main() -> entero { var xs: lista<entero> = [1, 2.5]\n retornar 0 }";
+    let tw = tree_walk(src);
+    let vmr = vm_run(src);
+    assert!(
+        tw.contains("asignación incompatible") && tw.contains("lista<entero>"),
+        "TW debe rechazar: {tw}"
+    );
+    assert!(
+        vmr.contains("asignación incompatible") && vmr.contains("lista<entero>"),
+        "VM debe rechazar: {vmr}"
+    );
+}
+
+#[test]
+fn diff_gap051_reasignacion_entero_rechaza_decimal() {
+    assert_parity("funcion main() -> entero { var x: entero = 1\n x = 2.5\n retornar x }");
+}

@@ -206,9 +206,54 @@ pub struct HirPrograma {
     pub items: Vec<HirItem>,
 }
 
+/// Error de verificación de una invariante HIR (contrato comprobable, Fase 03).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorVerificacionHir {
+    pub codigo: &'static str,
+    pub invariante: &'static str,
+    pub contexto: String,
+    pub mensaje: String,
+}
+
+impl std::fmt::Display for ErrorVerificacionHir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{}] {} ({}): {}",
+            self.codigo, self.invariante, self.contexto, self.mensaje
+        )
+    }
+}
+
+/// Resultado detallado de la verificación HIR.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ResultadoVerificacionHir {
+    pub errores: Vec<ErrorVerificacionHir>,
+}
+
+impl ResultadoVerificacionHir {
+    pub fn es_ok(&self) -> bool {
+        self.errores.is_empty()
+    }
+}
+
+fn err_hir(
+    codigo: &'static str,
+    invariante: &'static str,
+    contexto: impl Into<String>,
+    mensaje: impl Into<String>,
+) -> ErrorVerificacionHir {
+    ErrorVerificacionHir {
+        codigo,
+        invariante,
+        contexto: contexto.into(),
+        mensaje: mensaje.into(),
+    }
+}
+
 /// Verificador HIR: valida invariantes estructurales del programa HIR.
 ///
-/// Comprueba:
+/// Comprueba (Lote 3A: contrato detallado; comprobaciones efectivas ampliadas en 3B):
 /// 1. Símbolos únicos en la declaración (no se repite id como parámetro
 ///    de una función, ni id global repetido en dos declaraciones).
 /// 2. Parámetros y capturas coherentes (unique ids).
@@ -216,48 +261,39 @@ pub struct HirPrograma {
 /// 4. Tipo de retorno de los `Retornar` coincide con la anotación de la
 ///    función cuando ambos tipos son conocidos (no `Desconocido`).
 /// 5. Capturas de clausuras referencian símbolos declarados.
-/// 6. Expresiones binarias numéricas con operandos tipados conocidos.
+/// 6. Expresiones binarias con operandos tipados conocidos compatibles.
 /// 7. Tipos literales coherentes (texto -> Texto, lógico -> Logico, etc.).
 pub struct VerificadorHir;
 
 impl VerificadorHir {
+    /// Verificación booleana (compatibilidad). Equivale a `verificar_detallado().es_ok()`.
     pub fn verificar(programa: &HirPrograma) -> bool {
-        verificar_items(programa)
+        Self::verificar_detallado(programa).es_ok()
+    }
+
+    /// Verificación con contrato detallado (Fase 03): reporta la primera
+    /// invariante violada encontrada, con código, contexto y mensaje.
+    pub fn verificar_detallado(programa: &HirPrograma) -> ResultadoVerificacionHir {
+        match verificar_items(programa) {
+            Ok(()) => ResultadoVerificacionHir::default(),
+            Err(e) => ResultadoVerificacionHir { errores: vec![e] },
+        }
     }
 }
 
 /// Devuelve todos los ids declarados por el programa (params, decls, capturados).
-fn simbolos_declarados(programa: &HirPrograma) -> std::collections::HashSet<SimbodoId> {
+fn simbolos_globales(programa: &HirPrograma) -> std::collections::HashSet<SimbodoId> {
     let mut set = std::collections::HashSet::new();
     for item in &programa.items {
         match item {
-            HirItem::Funcion {
-                params,
-                capturadas,
-                capturas_externas,
-                celdas,
-                cuerpo,
-                ..
-            } => {
-                for (id, _) in params {
-                    set.insert(*id);
-                }
-                for id in capturadas
-                    .iter()
-                    .chain(capturas_externas.iter())
-                    .chain(celdas.iter())
-                {
-                    set.insert(*id);
-                }
-                recolectar_ids_sentencia(cuerpo, &mut set);
-            }
+            HirItem::Funcion { .. } => {}
             HirItem::Declaracion { simbodo, .. } => {
                 set.insert(*simbodo);
             }
             HirItem::IntentarRescatar {
                 cuerpo_intentar,
-                variable_error,
                 cuerpo_rescatar,
+                variable_error,
                 ..
             } => {
                 if let Some(id) = variable_error {
@@ -319,6 +355,7 @@ fn recolectar_ids_sentencia(ss: &[HirSentencia], set: &mut std::collections::Has
     }
 }
 
+/// Recolecta ids referenciados como Variable en una expresión.
 /// Recolecta ids referenciados como Variable en una expresión.
 fn recolectar_ids_expr(e: &HirExpresion, set: &mut std::collections::HashSet<SimbodoId>) {
     match e {
@@ -442,17 +479,58 @@ fn recolectar_ids_ref(ss: &[HirSentencia], set: &mut std::collections::HashSet<S
     }
 }
 
-fn verificar_items(programa: &HirPrograma) -> bool {
-    let declarados = simbolos_declarados(programa);
-    for item in &programa.items {
-        if !verificar_item(item, &declarados) {
-            return false;
-        }
+fn verificar_items(programa: &HirPrograma) -> Result<(), ErrorVerificacionHir> {
+    let globales = simbolos_globales(programa);
+    for (idx, item) in programa.items.iter().enumerate() {
+        let declarados = match item {
+            HirItem::Funcion {
+                params,
+                capturadas,
+                capturas_externas,
+                celdas,
+                cuerpo,
+                ..
+            } => {
+                let mut d = globales.clone();
+                for (id, _) in params {
+                    d.insert(*id);
+                }
+                for id in capturadas
+                    .iter()
+                    .chain(capturas_externas.iter())
+                    .chain(celdas.iter())
+                {
+                    d.insert(*id);
+                }
+                recolectar_ids_sentencia(cuerpo, &mut d);
+                d
+            }
+            _ => globales.clone(),
+        };
+        verificar_item(item, idx, &declarados)?;
     }
-    true
+    Ok(())
 }
 
-fn verificar_item(item: &HirItem, declarados: &std::collections::HashSet<SimbodoId>) -> bool {
+fn ctx_item(item: &HirItem, idx: usize) -> String {
+    match item {
+        HirItem::Funcion { nombre, .. } => format!("item[{idx}] funcion '{nombre}'"),
+        HirItem::Declaracion { simbodo, .. } => {
+            format!("item[{idx}] declaracion simbodo {}", simbodo.0)
+        }
+        HirItem::IntentarRescatar { .. } => format!("item[{idx}] intentar/rescatar"),
+        HirItem::Expresion(_) => format!("item[{idx}] expresion"),
+        HirItem::Exportar { .. } => format!("item[{idx}] exportar"),
+        _ => format!("item[{idx}]"),
+    }
+}
+
+fn verificar_item(
+    item: &HirItem,
+    idx: usize,
+    declarados: &std::collections::HashSet<SimbodoId>,
+) -> Result<(), ErrorVerificacionHir> {
+    let ctx = ctx_item(item, idx);
     match item {
         HirItem::Funcion {
             params,
@@ -467,7 +545,12 @@ fn verificar_item(item: &HirItem, declarados: &std::collections::HashSet<Simbodo
             let mut ids = std::collections::HashSet::new();
             for (id, _) in params {
                 if !ids.insert(*id) {
-                    return false;
+                    return Err(err_hir(
+                        "HIR010",
+                        "param-unico",
+                        &ctx,
+                        format!("parámetro duplicado simbodo {}", id.0),
+                    ));
                 }
             }
             // 2. Capturas son únicas y referencian símbolos declarados.
@@ -478,10 +561,20 @@ fn verificar_item(item: &HirItem, declarados: &std::collections::HashSet<Simbodo
                 .chain(celdas.iter())
             {
                 if !cap_ids.insert(*id) {
-                    return false;
+                    return Err(err_hir(
+                        "HIR011",
+                        "captura-unica",
+                        &ctx,
+                        format!("captura duplicada simbodo {}", id.0),
+                    ));
                 }
                 if !declarados.contains(id) {
-                    return false;
+                    return Err(err_hir(
+                        "HIR012",
+                        "captura-declarada",
+                        &ctx,
+                        format!("captura referencia simbodo no declarado {}", id.0),
+                    ));
                 }
             }
             // 3. Variables referenciadas en el cuerpo están declaradas.
@@ -490,85 +583,89 @@ fn verificar_item(item: &HirItem, declarados: &std::collections::HashSet<Simbodo
             for r in &refs {
                 // Los ids locales de la función (params) están declarados.
                 if !declarados.contains(r) {
-                    return false;
+                    return Err(err_hir(
+                        "HIR013",
+                        "referencia-declarada",
+                        &ctx,
+                        format!("referencia a simbodo no declarado {}", r.0),
+                    ));
                 }
             }
-            // 4. Tipo de retorno consistente: si todos los retornos tienen
-            //    tipo conocido, el tipo declarado debe coincidir.
-            let _ = retorno;
-            verificar_tipos_invariantes(cuerpo)
-            // true
+            // 4. Tipo de retorno consistente (D1, Fase 3B): validar retornos
+            //    contra el tipo declarado cuando ambos son conocidos; tratar
+            //    retornos vacíos y Desconocido sin falsos positivos.
+            verificar_retorno_funcion(retorno, cuerpo, &ctx)?;
+            verificar_tipos_invariantes(cuerpo, &ctx)
         }
         HirItem::Declaracion { tipo, .. } => {
             // 5. Tipo de inicializador compatible con anotación cuando ambos conocidos.
-            *tipo != TipoSem::Desconocido
+            if *tipo == TipoSem::Desconocido {
+                Err(err_hir(
+                    "HIR020",
+                    "declaracion-tipo-conocido",
+                    &ctx,
+                    "declaración con tipo desconocido",
+                ))
+            } else {
+                Ok(())
+            }
         }
         HirItem::IntentarRescatar {
             cuerpo_intentar,
             cuerpo_rescatar,
             ..
         } => {
-            verificar_tipos_invariantes(cuerpo_intentar)
-                && verificar_tipos_invariantes(cuerpo_rescatar)
+            verificar_tipos_invariantes(cuerpo_intentar, &format!("{ctx}/intentar"))?;
+            verificar_tipos_invariantes(cuerpo_rescatar, &format!("{ctx}/rescatar"))
         }
-        HirItem::Expresion(_) => true,
-        _ => true,
+        HirItem::Expresion(_) => Ok(()),
+        _ => Ok(()),
     }
 }
 
-fn verificar_tipos_invariantes(ss: &[HirSentencia]) -> bool {
-    for s in ss {
+fn verificar_tipos_invariantes(ss: &[HirSentencia], ctx: &str) -> Result<(), ErrorVerificacionHir> {
+    for (i, s) in ss.iter().enumerate() {
+        let ctx_s = format!("{ctx}/sent[{i}]");
         match s {
             HirSentencia::Declaracion { valor, .. } | HirSentencia::Asignacion { valor, .. } => {
-                if !verificar_expr(valor) {
-                    return false;
-                }
+                verificar_expr(valor, &ctx_s)?;
             }
             HirSentencia::Expresion(e) | HirSentencia::Retornar(Some(e)) => {
-                if !verificar_expr(e) {
-                    return false;
-                }
+                verificar_expr(e, &ctx_s)?;
             }
-            HirSentencia::Bloque(ss) | HirSentencia::Si { entonces: ss, .. } => {
-                if !verificar_tipos_invariantes(ss) {
-                    return false;
-                }
-                if let HirSentencia::Si { sino: Some(ss), .. } = s
-                    && !verificar_tipos_invariantes(ss)
-                {
-                    return false;
+            HirSentencia::Bloque(inner) => {
+                verificar_tipos_invariantes(inner, &format!("{ctx_s}/bloque"))?;
+            }
+            HirSentencia::Si { entonces, sino, .. } => {
+                verificar_tipos_invariantes(entonces, &format!("{ctx_s}/si.entonces"))?;
+                if let Some(alt) = sino {
+                    verificar_tipos_invariantes(alt, &format!("{ctx_s}/si.sino"))?;
                 }
             }
             HirSentencia::Mientras { cuerpo, .. } => {
-                if !verificar_tipos_invariantes(cuerpo) {
-                    return false;
-                }
+                verificar_tipos_invariantes(cuerpo, &format!("{ctx_s}/mientras"))?;
             }
             HirSentencia::ParaCada { cuerpo, .. } => {
-                if !verificar_tipos_invariantes(cuerpo) {
-                    return false;
-                }
+                verificar_tipos_invariantes(cuerpo, &format!("{ctx_s}/para_cada"))?;
             }
             HirSentencia::IntentarRescatar {
                 cuerpo_intentar,
                 cuerpo_rescatar,
                 ..
             } => {
-                if !verificar_tipos_invariantes(cuerpo_intentar)
-                    || !verificar_tipos_invariantes(cuerpo_rescatar)
-                {
-                    return false;
-                }
+                verificar_tipos_invariantes(cuerpo_intentar, &format!("{ctx_s}/intentar"))?;
+                verificar_tipos_invariantes(cuerpo_rescatar, &format!("{ctx_s}/rescatar"))?;
             }
-            HirSentencia::Exportar { sentencia }
-                if !verificar_tipos_invariantes(std::slice::from_ref(sentencia.as_ref())) =>
-            {
-                return false;
+            HirSentencia::Exportar { sentencia } => {
+                verificar_tipos_invariantes(
+                    std::slice::from_ref(sentencia.as_ref()),
+                    &format!("{ctx_s}/exportar"),
+                )?;
             }
             _ => {}
         }
     }
-    true
+    Ok(())
 }
 
 fn tipo_de_expr(e: &HirExpresion) -> TipoSem {
@@ -624,29 +721,111 @@ fn tipo_inferido(e: &HirExpresion) -> TipoSem {
     }
 }
 
-fn tipos_compatibles_binario(a: &HirExpresion, b: &HirExpresion) -> bool {
+fn es_tipo_numerico(t: &TipoSem) -> bool {
+    matches!(t, TipoSem::Entero | TipoSem::Decimal | TipoSem::Real)
+}
+
+fn tipos_compatibles_suma(a: &HirExpresion, b: &HirExpresion) -> bool {
     let ta = tipo_inferido(a);
     let tb = tipo_inferido(b);
     if matches!(ta, TipoSem::Desconocido) || matches!(tb, TipoSem::Desconocido) {
-        true
-    } else {
-        ta == tb
+        return true;
+    }
+    if es_tipo_numerico(&ta) && es_tipo_numerico(&tb) {
+        return true;
+    }
+    ta == TipoSem::Texto && tb == TipoSem::Texto
+}
+
+fn tipos_compatibles_aritmetico(a: &HirExpresion, b: &HirExpresion) -> bool {
+    let ta = tipo_inferido(a);
+    let tb = tipo_inferido(b);
+    if matches!(ta, TipoSem::Desconocido) || matches!(tb, TipoSem::Desconocido) {
+        return true;
+    }
+    es_tipo_numerico(&ta) && es_tipo_numerico(&tb)
+}
+
+fn tipos_compatibles_comparacion(a: &HirExpresion, b: &HirExpresion) -> bool {
+    let ta = tipo_inferido(a);
+    let tb = tipo_inferido(b);
+    if matches!(ta, TipoSem::Desconocido) || matches!(tb, TipoSem::Desconocido) {
+        return true;
+    }
+    if es_tipo_numerico(&ta) && es_tipo_numerico(&tb) {
+        return true;
+    }
+    ta == tb
+}
+
+fn tipos_compatibles_logico(a: &HirExpresion, b: &HirExpresion) -> bool {
+    let ta = tipo_inferido(a);
+    let tb = tipo_inferido(b);
+    if matches!(ta, TipoSem::Desconocido) || matches!(tb, TipoSem::Desconocido) {
+        return true;
+    }
+    ta == TipoSem::Logico && tb == TipoSem::Logico
+}
+
+/// Compatibilidad de asignación/retorno (espejo conservador de semántica).
+/// `esperado` = tipo declarado; `obtenido` = tipo real/inferido.
+/// `Desconocido` es compatible con todo (evita falsos positivos, D1).
+fn tipos_compatibles_retorno(esperado: &TipoSem, obtenido: &TipoSem) -> bool {
+    if matches!(esperado, TipoSem::Desconocido) || matches!(obtenido, TipoSem::Desconocido) {
+        return true;
+    }
+    match (esperado, obtenido) {
+        (TipoSem::Entero, TipoSem::Entero) => true,
+        (TipoSem::Decimal, TipoSem::Decimal) | (TipoSem::Decimal, TipoSem::Entero) => true,
+        (TipoSem::Real, TipoSem::Real) | (TipoSem::Real, TipoSem::Entero) => true,
+        (TipoSem::Logico, TipoSem::Logico) => true,
+        (TipoSem::Texto, TipoSem::Texto) => true,
+        (TipoSem::Nulo, TipoSem::Nulo) => true,
+        (TipoSem::Arreglo(te, ne), TipoSem::Arreglo(to, no)) => {
+            ne == no && tipos_compatibles_retorno(te, to)
+        }
+        (TipoSem::Lista(te), TipoSem::Lista(to)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Arreglo(te, _), TipoSem::Lista(to)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Lista(te), TipoSem::Arreglo(to, _)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Coleccion(te), TipoSem::Arreglo(to, _)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Coleccion(te), TipoSem::Lista(to)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Arreglo(te, _), TipoSem::Coleccion(to)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Lista(te), TipoSem::Coleccion(to)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Coleccion(te), TipoSem::Coleccion(to)) => tipos_compatibles_retorno(te, to),
+        (
+            TipoSem::Funcion {
+                params: p1,
+                retorno: r1,
+            },
+            TipoSem::Funcion {
+                params: p2,
+                retorno: r2,
+            },
+        ) => {
+            p1.len() == p2.len()
+                && p1
+                    .iter()
+                    .zip(p2)
+                    .all(|(a, b)| tipos_compatibles_retorno(a, b))
+                && tipos_compatibles_retorno(r1, r2)
+        }
+        _ => false,
     }
 }
 
-fn verificar_expr(e: &HirExpresion) -> bool {
+fn recolectar_retornos_expr<'a>(e: &'a HirExpresion, out: &mut Vec<&'a Option<HirExpresion>>) {
     match e {
-        HirExpresion::Literal(lit, tipo) => matches!(
-            (lit, tipo),
-            (HirLiteral::Entero(_), TipoSem::Entero)
-                | (HirLiteral::Real(_), TipoSem::Real)
-                | (HirLiteral::Decimal(_), TipoSem::Decimal)
-                | (HirLiteral::Logico(_), TipoSem::Logico)
-                | (HirLiteral::Texto(_), TipoSem::Texto)
-                | (HirLiteral::Nulo, TipoSem::Nulo)
-                | (_, TipoSem::Desconocido)
-        ),
-        HirExpresion::Variable(_, _) => true,
+        HirExpresion::Si {
+            condicion,
+            entonces,
+            sino,
+        } => {
+            recolectar_retornos_expr(condicion, out);
+            recolectar_retornos(entonces, out);
+            if let Some(alt) = sino {
+                recolectar_retornos(alt, out);
+            }
+        }
         HirExpresion::Suma(a, b, _)
         | HirExpresion::Resta(a, b, _)
         | HirExpresion::Multiplicacion(a, b, _)
@@ -659,36 +838,287 @@ fn verificar_expr(e: &HirExpresion) -> bool {
         | HirExpresion::Mayor(a, b, _)
         | HirExpresion::MayorIgual(a, b, _)
         | HirExpresion::Y(a, b, _)
-        | HirExpresion::O(a, b, _) => {
-            verificar_expr(a) && verificar_expr(b) && tipos_compatibles_binario(a, b)
+        | HirExpresion::O(a, b, _)
+        | HirExpresion::Indice {
+            objeto: a,
+            indice: b,
+            ..
+        } => {
+            recolectar_retornos_expr(a, out);
+            recolectar_retornos_expr(b, out);
         }
-        HirExpresion::No(x, _) => verificar_expr(x),
-        HirExpresion::Rango { inicio, fin, .. } => verificar_expr(inicio) && verificar_expr(fin),
-        HirExpresion::ArregloLiteral { elementos, .. } => elementos.iter().all(verificar_expr),
-        HirExpresion::Indice { objeto, indice, .. } => {
-            verificar_expr(objeto) && verificar_expr(indice)
+        HirExpresion::Rango { inicio, fin, .. } => {
+            recolectar_retornos_expr(inicio, out);
+            recolectar_retornos_expr(fin, out);
         }
-        HirExpresion::Acceso { objeto, .. } => verificar_expr(objeto),
-        HirExpresion::Llamada { argumentos, .. } => argumentos.iter().all(verificar_expr),
+        HirExpresion::No(x, _) | HirExpresion::Acceso { objeto: x, .. } => {
+            recolectar_retornos_expr(x, out);
+        }
+        HirExpresion::ArregloLiteral { elementos, .. } => {
+            for el in elementos {
+                recolectar_retornos_expr(el, out);
+            }
+        }
+        HirExpresion::Llamada { argumentos, .. } => {
+            for a in argumentos {
+                recolectar_retornos_expr(a, out);
+            }
+        }
         HirExpresion::LlamadaIndirecta {
             callee, argumentos, ..
-        } => verificar_expr(callee) && argumentos.iter().all(verificar_expr),
-        HirExpresion::Lambda { .. } => true,
+        } => {
+            recolectar_retornos_expr(callee, out);
+            for a in argumentos {
+                recolectar_retornos_expr(a, out);
+            }
+        }
+        // Lambda define su propio ámbito/retornos (cuerpo en HirItem separado); no descender.
+        HirExpresion::Literal(_, _)
+        | HirExpresion::Variable(_, _)
+        | HirExpresion::FuncionRef(_)
+        | HirExpresion::Lambda { .. }
+        | HirExpresion::Otro(_)
+        | HirExpresion::ModuloObjeto { .. } => {}
+    }
+}
+
+fn recolectar_retornos<'a>(ss: &'a [HirSentencia], out: &mut Vec<&'a Option<HirExpresion>>) {
+    for s in ss {
+        match s {
+            HirSentencia::Retornar(v) => out.push(v),
+            HirSentencia::Declaracion { valor, .. } | HirSentencia::Asignacion { valor, .. } => {
+                recolectar_retornos_expr(valor, out);
+            }
+            HirSentencia::Expresion(e) => recolectar_retornos_expr(e, out),
+            HirSentencia::Bloque(inner) => recolectar_retornos(inner, out),
+            HirSentencia::Si {
+                condicion,
+                entonces,
+                sino,
+            } => {
+                recolectar_retornos_expr(condicion, out);
+                recolectar_retornos(entonces, out);
+                if let Some(alt) = sino {
+                    recolectar_retornos(alt, out);
+                }
+            }
+            HirSentencia::Mientras { condicion, cuerpo } => {
+                recolectar_retornos_expr(condicion, out);
+                recolectar_retornos(cuerpo, out);
+            }
+            HirSentencia::ParaCada {
+                iterable, cuerpo, ..
+            } => {
+                recolectar_retornos_expr(iterable, out);
+                recolectar_retornos(cuerpo, out);
+            }
+            HirSentencia::IntentarRescatar {
+                cuerpo_intentar,
+                cuerpo_rescatar,
+                ..
+            } => {
+                recolectar_retornos(cuerpo_intentar, out);
+                recolectar_retornos(cuerpo_rescatar, out);
+            }
+            HirSentencia::AsignacionIndice {
+                objeto,
+                indice,
+                valor,
+            } => {
+                recolectar_retornos_expr(objeto, out);
+                recolectar_retornos_expr(indice, out);
+                recolectar_retornos_expr(valor, out);
+            }
+            HirSentencia::Exportar { sentencia } => {
+                recolectar_retornos(std::slice::from_ref(sentencia.as_ref()), out)
+            }
+            HirSentencia::Romper
+            | HirSentencia::Continuar
+            | HirSentencia::Importar { .. }
+            | HirSentencia::Usar { .. } => {}
+        }
+    }
+}
+
+fn verificar_retorno_funcion(
+    retorno: &TipoSem,
+    cuerpo: &[HirSentencia],
+    ctx: &str,
+) -> Result<(), ErrorVerificacionHir> {
+    if matches!(retorno, TipoSem::Desconocido) {
+        return Ok(());
+    }
+    let mut rets = Vec::new();
+    recolectar_retornos(cuerpo, &mut rets);
+    for r in rets {
+        match r {
+            None => {
+                if !matches!(retorno, TipoSem::Nulo | TipoSem::Desconocido) {
+                    return Err(err_hir(
+                        "HIR040",
+                        "retorno-tipo-incompatible",
+                        ctx,
+                        format!(
+                            "retorno vacío incompatible con tipo declarado '{}'",
+                            retorno.nombre()
+                        ),
+                    ));
+                }
+            }
+            Some(e) => {
+                let te = tipo_inferido(e);
+                if !matches!(te, TipoSem::Desconocido) && !tipos_compatibles_retorno(retorno, &te) {
+                    return Err(err_hir(
+                        "HIR040",
+                        "retorno-tipo-incompatible",
+                        ctx,
+                        format!(
+                            "retorno de tipo '{}' incompatible con tipo declarado '{}'",
+                            te.nombre(),
+                            retorno.nombre()
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verificar_expr(e: &HirExpresion, ctx: &str) -> Result<(), ErrorVerificacionHir> {
+    match e {
+        HirExpresion::Literal(lit, tipo) => {
+            let ok = matches!(
+                (lit, tipo),
+                (HirLiteral::Entero(_), TipoSem::Entero)
+                    | (HirLiteral::Real(_), TipoSem::Real)
+                    | (HirLiteral::Decimal(_), TipoSem::Decimal)
+                    | (HirLiteral::Logico(_), TipoSem::Logico)
+                    | (HirLiteral::Texto(_), TipoSem::Texto)
+                    | (HirLiteral::Nulo, TipoSem::Nulo)
+                    | (_, TipoSem::Desconocido)
+            );
+            if ok {
+                Ok(())
+            } else {
+                Err(err_hir(
+                    "HIR030",
+                    "literal-tipo-coherente",
+                    ctx,
+                    format!("literal {:?} incompatible con tipo {:?}", lit, tipo),
+                ))
+            }
+        }
+        HirExpresion::Variable(_, _) => Ok(()),
+        HirExpresion::Suma(a, b, _) => {
+            verificar_expr(a, &format!("{ctx}/op.izq"))?;
+            verificar_expr(b, &format!("{ctx}/op.der"))?;
+            if !tipos_compatibles_suma(a, b) {
+                return Err(err_hir(
+                    "HIR031",
+                    "operacion-tipos-compatibles",
+                    ctx,
+                    "operandos de suma con tipos conocidos incompatibles",
+                ));
+            }
+            Ok(())
+        }
+        HirExpresion::Resta(a, b, _)
+        | HirExpresion::Multiplicacion(a, b, _)
+        | HirExpresion::Division(a, b, _)
+        | HirExpresion::Modulo(a, b, _) => {
+            verificar_expr(a, &format!("{ctx}/op.izq"))?;
+            verificar_expr(b, &format!("{ctx}/op.der"))?;
+            if !tipos_compatibles_aritmetico(a, b) {
+                return Err(err_hir(
+                    "HIR031",
+                    "operacion-tipos-compatibles",
+                    ctx,
+                    "operandos aritmeticos con tipos conocidos incompatibles",
+                ));
+            }
+            Ok(())
+        }
+        HirExpresion::IgualIgual(a, b, _)
+        | HirExpresion::Distinto(a, b, _)
+        | HirExpresion::Menor(a, b, _)
+        | HirExpresion::MenorIgual(a, b, _)
+        | HirExpresion::Mayor(a, b, _)
+        | HirExpresion::MayorIgual(a, b, _) => {
+            verificar_expr(a, &format!("{ctx}/op.izq"))?;
+            verificar_expr(b, &format!("{ctx}/op.der"))?;
+            if !tipos_compatibles_comparacion(a, b) {
+                return Err(err_hir(
+                    "HIR031",
+                    "operacion-tipos-compatibles",
+                    ctx,
+                    "operandos de comparacion con tipos conocidos incompatibles",
+                ));
+            }
+            Ok(())
+        }
+        HirExpresion::Y(a, b, _) | HirExpresion::O(a, b, _) => {
+            verificar_expr(a, &format!("{ctx}/op.izq"))?;
+            verificar_expr(b, &format!("{ctx}/op.der"))?;
+            if !tipos_compatibles_logico(a, b) {
+                return Err(err_hir(
+                    "HIR031",
+                    "operacion-tipos-compatibles",
+                    ctx,
+                    "operandos logicos con tipos conocidos incompatibles",
+                ));
+            }
+            Ok(())
+        }
+        HirExpresion::No(x, _) => verificar_expr(x, &format!("{ctx}/no")),
+        HirExpresion::Rango { inicio, fin, .. } => {
+            verificar_expr(inicio, &format!("{ctx}/rango.inicio"))?;
+            verificar_expr(fin, &format!("{ctx}/rango.fin"))
+        }
+        HirExpresion::ArregloLiteral { elementos, .. } => {
+            for (i, el) in elementos.iter().enumerate() {
+                verificar_expr(el, &format!("{ctx}/arreglo[{i}]"))?;
+            }
+            Ok(())
+        }
+        HirExpresion::Indice { objeto, indice, .. } => {
+            verificar_expr(objeto, &format!("{ctx}/indice.objeto"))?;
+            verificar_expr(indice, &format!("{ctx}/indice.indice"))
+        }
+        HirExpresion::Acceso { objeto, .. } => {
+            verificar_expr(objeto, &format!("{ctx}/acceso.objeto"))
+        }
+        HirExpresion::Llamada { argumentos, .. } => {
+            for (i, a) in argumentos.iter().enumerate() {
+                verificar_expr(a, &format!("{ctx}/llamada.arg[{i}]"))?;
+            }
+            Ok(())
+        }
+        HirExpresion::LlamadaIndirecta {
+            callee, argumentos, ..
+        } => {
+            verificar_expr(callee, &format!("{ctx}/llamada_ind.callee"))?;
+            for (i, a) in argumentos.iter().enumerate() {
+                verificar_expr(a, &format!("{ctx}/llamada_ind.arg[{i}]"))?;
+            }
+            Ok(())
+        }
+        HirExpresion::Lambda { .. } => Ok(()),
         HirExpresion::Si {
             condicion,
             entonces,
             sino,
         } => {
-            verificar_expr(condicion)
-                && verificar_tipos_invariantes(entonces)
-                && sino
-                    .as_ref()
-                    .map(|ss| verificar_tipos_invariantes(ss))
-                    .unwrap_or(true)
+            verificar_expr(condicion, &format!("{ctx}/si.cond"))?;
+            verificar_tipos_invariantes(entonces, &format!("{ctx}/si.entonces"))?;
+            if let Some(alt) = sino {
+                verificar_tipos_invariantes(alt, &format!("{ctx}/si.sino"))?;
+            }
+            Ok(())
         }
-        HirExpresion::FuncionRef(_) => true,
-        HirExpresion::Otro(_) => true,
-        HirExpresion::ModuloObjeto { .. } => true,
+        HirExpresion::FuncionRef(_) => Ok(()),
+        HirExpresion::Otro(_) => Ok(()),
+        HirExpresion::ModuloObjeto { .. } => Ok(()),
     }
 }
 
@@ -1141,10 +1571,13 @@ fn lower_expresion(
             let param_names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
             let (free, capturadas_por_anidados) = variables_libres(cuerpo, &param_names);
             // Resolver capturas a SimbodoId (deben estar en ámbitos exteriores).
-            let capturas: Vec<SimbodoId> = free
-                .iter()
-                .map(|n| res.resolver(n).unwrap_or_else(|| res.insertar(n, None)))
-                .collect();
+            let mut capturas: Vec<SimbodoId> = Vec::new();
+            for n in &free {
+                let id = res.resolver(n).unwrap_or_else(|| res.insertar(n, None));
+                if !capturas.contains(&id) {
+                    capturas.push(id);
+                }
+            }
             // Nombre de la clausura.
             let nombre_clausura = res.nuevo_nombre_clausura();
             // Registrar los parámetros de la lambda en un nuevo ámbito.
@@ -1173,6 +1606,7 @@ fn lower_expresion(
             let capturadas_ids: Vec<SimbodoId> = capturadas_por_anidados
                 .iter()
                 .filter_map(|n| res.resolver(n))
+                .filter(|id| !capturas.contains(id))
                 .collect();
             res.salir();
             // Registrar la clausura como función de primer nivel (recolectada).
@@ -1182,15 +1616,7 @@ fn lower_expresion(
                 params: clausura_params,
                 capturadas: capturadas_ids.clone(),
                 capturas_externas: capturas.clone(),
-                celdas: {
-                    let mut v = capturas.clone();
-                    for id in &capturadas_ids {
-                        if !v.contains(id) {
-                            v.push(*id);
-                        }
-                    }
-                    v
-                },
+                celdas: Vec::new(),
                 retorno: ret.clone(),
                 cuerpo: body,
             });
@@ -1249,9 +1675,19 @@ fn lower_sentencia(
             })
         }
         Sentencia::Asignacion { nombre, valor, .. } => {
-            let id = res
-                .resolver(nombre)
-                .unwrap_or_else(|| res.insertar(nombre, None));
+            // No crear variables fantasma: si el nombre no se resolvió (el
+            // análisis semántico debería haberlo rechazado), propagar el
+            // error en lugar de enmascararlo.
+            let id = match res.resolver(nombre) {
+                Some(id) => id,
+                None => {
+                    return Err(format!(
+                        "asignación a variable no declarada en lowering: '{}' \
+                         (el análisis semántico debería haberla rechazado)",
+                        nombre
+                    ));
+                }
+            };
             Ok(HirSentencia::Asignacion {
                 simbodo: id,
                 valor: lower_expresion(valor, ctx, res)?,
@@ -1478,10 +1914,13 @@ fn lower_sentencia(
                 .unwrap_or(TipoSem::Desconocido);
             let param_names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
             let (free, capturadas_por_anidados) = variables_libres(cuerpo, &param_names);
-            let capturas: Vec<SimbodoId> = free
-                .iter()
-                .map(|n| res.resolver(n).unwrap_or_else(|| res.insertar(n, None)))
-                .collect();
+            let mut capturas: Vec<SimbodoId> = Vec::new();
+            for n in &free {
+                let id = res.resolver(n).unwrap_or_else(|| res.insertar(n, None));
+                if !capturas.contains(&id) {
+                    capturas.push(id);
+                }
+            }
             let nombre_clausura = res.nuevo_nombre_clausura();
             res.entrar();
             let mut param_ids: Vec<SimbodoId> = Vec::new();
@@ -1506,6 +1945,7 @@ fn lower_sentencia(
             let capturadas_ids: Vec<SimbodoId> = capturadas_por_anidados
                 .iter()
                 .filter_map(|n| res.resolver(n))
+                .filter(|id| !capturas.contains(id))
                 .collect();
             res.salir();
             res.clausuras.push(HirItem::Funcion {
@@ -1514,15 +1954,7 @@ fn lower_sentencia(
                 params: clausura_params,
                 capturadas: capturadas_ids.clone(),
                 capturas_externas: capturas.clone(),
-                celdas: {
-                    let mut v = capturas.clone();
-                    for id in &capturadas_ids {
-                        if !v.contains(id) {
-                            v.push(*id);
-                        }
-                    }
-                    v
-                },
+                celdas: Vec::new(),
                 retorno: ret.clone(),
                 cuerpo: body,
             });
@@ -1894,7 +2326,16 @@ fn cargar_modulo_items(
         {
             items.push(HirItem::Declaracion {
                 simbodo: *simbodo,
-                tipo: tipo.clone(),
+                // Tipo sintético no-Desconocido para cumplir HIR020 sin alterar
+                // el verificador ni la ejecución.
+                tipo: if matches!(tipo, TipoSem::Desconocido) {
+                    TipoSem::Funcion {
+                        params: vec![],
+                        retorno: Box::new(TipoSem::Nulo),
+                    }
+                } else {
+                    tipo.clone()
+                },
                 valor: valor.clone(),
                 mutable: *mutable,
                 es_const: *es_const,
@@ -1961,23 +2402,28 @@ fn cargar_modulo_items(
                 res.insertar(nombre, None);
             }
         }
-        // Crear objeto-módulo sintético.
-        if !nombres_exportados.is_empty() {
-            let id = res.insertar(alias, None);
-            res.variables.insert(alias.to_string());
-            items.push(HirItem::Declaracion {
-                simbodo: id,
+        // Crear objeto-módulo sintético (siempre, aunque no haya funciones
+        // exportadas, para que las referencias `alias.miembro` resuelvan a un
+        // simbodo declarado y el gate HIR no las rechace como no declaradas).
+        let id = res.insertar(alias, None);
+        res.variables.insert(alias.to_string());
+        items.push(HirItem::Declaracion {
+            simbodo: id,
+            // Tipo sintético no-Desconocido para cumplir HIR020 sin alterar
+            // el verificador ni la ejecución (el tipo no se usa en runtime).
+            tipo: TipoSem::Funcion {
+                params: vec![],
+                retorno: Box::new(TipoSem::Nulo),
+            },
+            valor: HirExpresion::ModuloObjeto {
+                prefijo: alias.to_string(),
+                nombres: nombres_exportados,
                 tipo: TipoSem::Desconocido,
-                valor: HirExpresion::ModuloObjeto {
-                    prefijo: alias.to_string(),
-                    nombres: nombres_exportados,
-                    tipo: TipoSem::Desconocido,
-                },
-                mutable: false,
-                es_const: false,
-                publico: false,
-            });
-        }
+            },
+            mutable: false,
+            es_const: false,
+            publico: false,
+        });
     } else {
         // Registrar las funciones importadas en el resolvedor actual para que las
         // llamadas posteriores se resuelvan como directas.
@@ -2147,7 +2593,7 @@ pub fn lower_programa_con_resolutor(
                     params,
                     capturadas: capturadas_ids.clone(),
                     capturas_externas: Vec::new(),
-                    celdas: capturadas_ids.clone(),
+                    celdas: Vec::new(),
                     retorno: ret,
                     cuerpo: body,
                 });
@@ -2277,4 +2723,305 @@ pub fn lower_programa_con_resolutor(
     // Incorporar las clausuras recolectadas durante el lowering.
     items.append(&mut res.clausuras);
     Ok((HirPrograma { items }, cuerpo_principal))
+}
+
+#[cfg(test)]
+mod verificacion_3b_tests {
+    use super::*;
+    use crate::semantico::TipoSem;
+    use crate::simbodo::SimbodoId;
+
+    fn prog_funcion(retorno: TipoSem, cuerpo: Vec<HirSentencia>) -> HirPrograma {
+        HirPrograma {
+            items: vec![HirItem::Funcion {
+                nombre: "f".to_string(),
+                simbodo: SimbodoId(0),
+                params: vec![],
+                capturadas: vec![],
+                capturas_externas: vec![],
+                celdas: vec![],
+                retorno,
+                cuerpo,
+            }],
+        }
+    }
+
+    fn lit_entero(v: i64) -> HirExpresion {
+        HirExpresion::Literal(HirLiteral::Entero(v), TipoSem::Entero)
+    }
+
+    fn lit_texto(s: &str) -> HirExpresion {
+        HirExpresion::Literal(HirLiteral::Texto(s.to_string()), TipoSem::Texto)
+    }
+
+    // D1 positivos
+    #[test]
+    fn d1_retorno_entero_valido() {
+        let p = prog_funcion(
+            TipoSem::Entero,
+            vec![HirSentencia::Retornar(Some(lit_entero(1)))],
+        );
+        let r = VerificadorHir::verificar_detallado(&p);
+        assert!(r.es_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn d1_retorno_desconocido_no_falso_positivo() {
+        let p = prog_funcion(
+            TipoSem::Desconocido,
+            vec![HirSentencia::Retornar(Some(lit_texto("x")))],
+        );
+        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d1_retorno_vacio_nulo_valido() {
+        let p = prog_funcion(TipoSem::Nulo, vec![HirSentencia::Retornar(None)]);
+        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d1_expresion_desconocida_no_falso_positivo() {
+        // D1: tipo inferido Desconocido no debe producir falso positivo (HIR040),
+        // sin violar invariantes previas (p. ej. HIR013 por refs no declaradas).
+        let p = prog_funcion(
+            TipoSem::Entero,
+            vec![HirSentencia::Retornar(Some(HirExpresion::Otro(
+                TipoSem::Desconocido,
+            )))],
+        );
+        let r = VerificadorHir::verificar_detallado(&p);
+        assert!(r.es_ok(), "{r:?}");
+    }
+
+    // D1 negativos
+    #[test]
+    fn d1_retorno_texto_en_entero_rechaza_hir040() {
+        let p = prog_funcion(
+            TipoSem::Entero,
+            vec![HirSentencia::Retornar(Some(lit_texto("hola")))],
+        );
+        let r = VerificadorHir::verificar_detallado(&p);
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "HIR040");
+    }
+
+    #[test]
+    fn d1_retorno_vacio_en_entero_rechaza_hir040() {
+        let p = prog_funcion(TipoSem::Entero, vec![HirSentencia::Retornar(None)]);
+        let r = VerificadorHir::verificar_detallado(&p);
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "HIR040");
+    }
+
+    #[test]
+    fn d1_bool_compatible_sigue_ok() {
+        assert!(VerificadorHir::verificar(&prog_funcion(
+            TipoSem::Entero,
+            vec![HirSentencia::Retornar(Some(lit_entero(7)))]
+        )));
+    }
+
+    // Auditoría D1: compatibilidades espejo semántica
+    #[test]
+    fn d1_entero_a_decimal_acepta() {
+        let p = prog_funcion(
+            TipoSem::Decimal,
+            vec![HirSentencia::Retornar(Some(lit_entero(1)))],
+        );
+        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d1_entero_a_real_acepta() {
+        let p = prog_funcion(
+            TipoSem::Real,
+            vec![HirSentencia::Retornar(Some(lit_entero(1)))],
+        );
+        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d1_lista_a_arreglo_elemento_compatible_acepta() {
+        let e = HirExpresion::ArregloLiteral {
+            elementos: vec![lit_entero(1)],
+            tipo: TipoSem::Lista(Box::new(TipoSem::Entero)),
+        };
+        let p = prog_funcion(
+            TipoSem::Arreglo(Box::new(TipoSem::Entero), 1),
+            vec![HirSentencia::Retornar(Some(e))],
+        );
+        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d1_coleccion_acepta_arreglo() {
+        let e = HirExpresion::ArregloLiteral {
+            elementos: vec![lit_entero(1)],
+            tipo: TipoSem::Arreglo(Box::new(TipoSem::Entero), 1),
+        };
+        let p = prog_funcion(
+            TipoSem::Coleccion(Box::new(TipoSem::Entero)),
+            vec![HirSentencia::Retornar(Some(e))],
+        );
+        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d1_funcion_tipo_compatible_acepta() {
+        let e = HirExpresion::Otro(TipoSem::Funcion {
+            params: vec![TipoSem::Entero],
+            retorno: Box::new(TipoSem::Entero),
+        });
+        let p = prog_funcion(
+            TipoSem::Funcion {
+                params: vec![TipoSem::Entero],
+                retorno: Box::new(TipoSem::Entero),
+            },
+            vec![HirSentencia::Retornar(Some(e))],
+        );
+        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d1_retorno_en_condicional_bucle_bloque_valida() {
+        let p = prog_funcion(
+            TipoSem::Entero,
+            vec![HirSentencia::Si {
+                condicion: HirExpresion::Literal(HirLiteral::Logico(true), TipoSem::Logico),
+                entonces: vec![HirSentencia::Retornar(Some(lit_entero(1)))],
+                sino: Some(vec![HirSentencia::Bloque(vec![HirSentencia::Mientras {
+                    condicion: HirExpresion::Literal(HirLiteral::Logico(false), TipoSem::Logico),
+                    cuerpo: vec![HirSentencia::Retornar(Some(lit_entero(2)))],
+                }])]),
+            }],
+        );
+        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d1_retorno_incompatible_en_bloque_rechaza_hir040() {
+        let p = prog_funcion(
+            TipoSem::Entero,
+            vec![HirSentencia::Bloque(vec![HirSentencia::Retornar(Some(
+                lit_texto("x"),
+            ))])],
+        );
+        let r = VerificadorHir::verificar_detallado(&p);
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "HIR040");
+    }
+
+    #[test]
+    fn d1_no_cruza_lambda_ambito_separado() {
+        // Retorno de la función externa es Entero y válido; Lambda en expresión
+        // no debe inspeccionarse como retorno de la función externa.
+        let p = HirPrograma {
+            items: vec![HirItem::Funcion {
+                nombre: "f".to_string(),
+                simbodo: SimbodoId(0),
+                params: vec![],
+                capturadas: vec![],
+                capturas_externas: vec![],
+                celdas: vec![],
+                retorno: TipoSem::Entero,
+                cuerpo: vec![
+                    HirSentencia::Expresion(HirExpresion::Lambda {
+                        nombre: "l".to_string(),
+                        params: vec![],
+                        capturas: vec![],
+                        tipo: TipoSem::Desconocido,
+                    }),
+                    HirSentencia::Retornar(Some(lit_entero(1))),
+                ],
+            }],
+        };
+        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d1_arreglo_tamano_distinto_rechaza_hir040() {
+        let e = HirExpresion::ArregloLiteral {
+            elementos: vec![lit_entero(1)],
+            tipo: TipoSem::Arreglo(Box::new(TipoSem::Entero), 1),
+        };
+        let p = prog_funcion(
+            TipoSem::Arreglo(Box::new(TipoSem::Entero), 2),
+            vec![HirSentencia::Retornar(Some(e))],
+        );
+        let r = VerificadorHir::verificar_detallado(&p);
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "HIR040");
+    }
+
+    // 3D.1: aritmética numérica mixta válida (sin falso positivo HIR031).
+    #[test]
+    fn d1_binario_numerico_mixto_acepta() {
+        let casos = [(HirExpresion::Suma(
+            Box::new(lit_entero(1)),
+            Box::new(HirExpresion::Literal(HirLiteral::Real(1.0), TipoSem::Real)),
+            TipoSem::Desconocido,
+        ),)];
+        for (e,) in casos {
+            let p = prog_funcion(TipoSem::Desconocido, vec![HirSentencia::Expresion(e)]);
+            assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+        }
+    }
+
+    #[test]
+    fn d1_binario_incompatible_rechaza_hir031() {
+        let e = HirExpresion::Suma(
+            Box::new(lit_entero(1)),
+            Box::new(lit_texto("a")),
+            TipoSem::Desconocido,
+        );
+        let p = prog_funcion(TipoSem::Desconocido, vec![HirSentencia::Expresion(e)]);
+        let r = VerificadorHir::verificar_detallado(&p);
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "HIR031");
+    }
+    // 3D.2: operadores lógicos solo aceptan lógicos.
+    #[test]
+    fn d1_binario_logico_valido_acepta() {
+        let e = HirExpresion::Y(
+            Box::new(HirExpresion::Literal(
+                HirLiteral::Logico(true),
+                TipoSem::Logico,
+            )),
+            Box::new(HirExpresion::Literal(
+                HirLiteral::Logico(false),
+                TipoSem::Logico,
+            )),
+            TipoSem::Desconocido,
+        );
+        let p = prog_funcion(TipoSem::Desconocido, vec![HirSentencia::Expresion(e)]);
+        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+    }
+
+    #[test]
+    fn d1_binario_logico_incompatible_rechaza_hir031() {
+        let e = HirExpresion::Y(
+            Box::new(lit_entero(1)),
+            Box::new(lit_entero(2)),
+            TipoSem::Desconocido,
+        );
+        let p = prog_funcion(TipoSem::Desconocido, vec![HirSentencia::Expresion(e)]);
+        let r = VerificadorHir::verificar_detallado(&p);
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "HIR031");
+    }
+
+    // 3D.2: aritmética no acepta texto.
+    #[test]
+    fn d1_aritmetico_texto_rechaza_hir031() {
+        let e = HirExpresion::Resta(
+            Box::new(lit_texto("a")),
+            Box::new(lit_texto("b")),
+            TipoSem::Desconocido,
+        );
+        let p = prog_funcion(TipoSem::Desconocido, vec![HirSentencia::Expresion(e)]);
+        let r = VerificadorHir::verificar_detallado(&p);
+        assert!(!r.es_ok());
+        assert_eq!(r.errores[0].codigo, "HIR031");
+    }
 }

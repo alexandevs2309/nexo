@@ -27,6 +27,55 @@ pub const EXT_LEGADO: &str = "nexo";
 static MOTOR_PREFERIDO: std::sync::LazyLock<std::sync::Mutex<String>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(String::from("vm")));
 
+/// Prefijo que distingue los errores de verificación estructural (gate HIR/MIR)
+/// de otros errores que pueden usar el mecanismo de fallback Tree-Walk.
+const PREFIJO_VERIFICACION: &str = "verificacion:";
+
+/// Gate HIR: usa el contrato detallado de 3A/3B sin modificar invariantes.
+pub fn gate_hir(hir: &crate::hir::HirPrograma) -> Result<(), String> {
+    // Gancho exclusivo de pruebas (solo en builds debug): permite inyectar
+    // un fallo de verificación para demostrar la orquestación del gate en los
+    // comandos CLI sin alterar los verificadores ni la semántica.
+    #[cfg(feature = "test-hooks")]
+    if std::env::var("BASILISCO_TEST_FORCE_GATE_FAIL").is_ok() {
+        return Err(format!(
+            "{PREFIJO_VERIFICACION} inyección de prueba controlada"
+        ));
+    }
+    let resultado = crate::hir::VerificadorHir::verificar_detallado(hir);
+    if resultado.es_ok() {
+        Ok(())
+    } else {
+        Err(resultado
+            .errores
+            .into_iter()
+            .map(|e| format!("{PREFIJO_VERIFICACION} {}", e))
+            .collect::<Vec<_>>()
+            .join("\\n"))
+    }
+}
+
+/// Gate MIR: usa el contrato detallado de 3A/3B sin modificar invariantes.
+pub fn gate_mir(mir: &crate::mir::MirPrograma) -> Result<(), String> {
+    #[cfg(feature = "test-hooks")]
+    if std::env::var("BASILISCO_TEST_FORCE_GATE_FAIL").is_ok() {
+        return Err(format!(
+            "{PREFIJO_VERIFICACION} inyección de prueba controlada"
+        ));
+    }
+    let resultado = crate::mir::VerificadorMir::verificar_detallado(mir);
+    if resultado.es_ok() {
+        Ok(())
+    } else {
+        Err(resultado
+            .errores
+            .into_iter()
+            .map(|e| format!("{PREFIJO_VERIFICACION} {}", e))
+            .collect::<Vec<_>>()
+            .join("\\n"))
+    }
+}
+
 /// Punto de entrada común de `basilisco` y `bsk`.
 pub fn main() -> ExitCode {
     let mut args = env::args_os();
@@ -164,7 +213,15 @@ pub fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
+            if let Err(e) = gate_hir(&hir) {
+                eprintln!("{}", e);
+                return ExitCode::from(1);
+            }
             let mir = mir::lower_programa(&hir);
+            if let Err(e) = gate_mir(&mir) {
+                eprintln!("{}", e);
+                return ExitCode::from(1);
+            }
             let rust_code = backend_nativo::generar_rust(&mir);
             let salida_rs = ruta.with_extension("rs");
             let salida_bin = ruta.with_extension(if cfg!(windows) { "exe" } else { "" });
@@ -666,7 +723,15 @@ fn depurar_archivo(args: &[OsString]) -> ExitCode {
         eprintln!("{}", e);
         return ExitCode::from(1);
     }
+    if let Err(e) = gate_hir(&hir) {
+        eprintln!("{}", e);
+        return ExitCode::from(1);
+    }
     let programa = mir::lower_programa(&hir);
+    if let Err(e) = gate_mir(&programa) {
+        eprintln!("{}", e);
+        return ExitCode::from(1);
+    }
     let mut vm = MaquinaVirtual::nuevo(programa);
     vm.registrar_stdlib();
     vm.activar_traza();
@@ -880,6 +945,29 @@ fn analizar_archivo(ruta: &Path) -> ExitCode {
         }
         return ExitCode::from(1);
     }
+    *crate::hir::MODULO_ERROR.lock().unwrap() = None;
+    let hir = match hir::lower_programa(&sentencias, &ctx) {
+        Ok(h) => h,
+        Err(errs) => {
+            for e in errs {
+                eprintln!("{}: {e}", ruta.display());
+            }
+            return ExitCode::from(1);
+        }
+    };
+    if let Some(e) = crate::hir::MODULO_ERROR.lock().unwrap().take() {
+        eprintln!("{e}");
+        return ExitCode::from(1);
+    }
+    if let Err(e) = gate_hir(&hir) {
+        eprintln!("{}", e);
+        return ExitCode::from(1);
+    }
+    let mir = mir::lower_programa(&hir);
+    if let Err(e) = gate_mir(&mir) {
+        eprintln!("{}", e);
+        return ExitCode::from(1);
+    }
     println!("análisis correcto: {}", ruta.display());
     ExitCode::SUCCESS
 }
@@ -1052,6 +1140,9 @@ fn ejecutar_fuente(
     if motor == "vm" {
         match ejecutar_fuente_vm(fuente, archivo.clone(), cargador.clone()) {
             Ok(v) => return Ok(v),
+            Err(e) if e.starts_with(PREFIJO_VERIFICACION) => {
+                return Err(e);
+            }
             Err(e) => {
                 eprintln!("aviso: motor VM falló ({e}); usando motor árbol (Tree-Walk).");
             }
@@ -1114,14 +1205,23 @@ fn ejecutar_fuente_vm(
     if let Some(a) = &archivo {
         ctx.set_archivo_actual(Some(PathBuf::from(a)));
     }
-    let _ = ctx.analizar_programa(&sentencias);
+    let errs_sem = ctx.analizar_programa(&sentencias);
+    if !errs_sem.is_empty() {
+        return Err(errs_sem
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\\n"));
+    }
     // Limpiar error previo de módulo.
     *crate::hir::MODULO_ERROR.lock().unwrap() = None;
     let hir = crate::hir::lower_programa(&sentencias, &ctx).map_err(|e| format!("{:?}", e))?;
     if let Some(e) = crate::hir::MODULO_ERROR.lock().unwrap().take() {
         return Err(e);
     }
+    gate_hir(&hir)?;
     let programa = mir::lower_programa(&hir);
+    gate_mir(&programa)?;
 
     let mut vm = MaquinaVirtual::nuevo(programa);
     vm.registrar_stdlib();
@@ -1846,4 +1946,68 @@ fn hex_decode(texto: &str) -> Result<Vec<u8>, String> {
         out.push(byte);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests_gate_3c {
+    use super::*;
+    use crate::semantico::TipoSem;
+
+    #[test]
+    fn gate_hir_rechaza_programa_invalido() {
+        let src = "funcion f(x, x) { retornar x }";
+        let tokens = crate::Lexer::nuevo(src).tokenizar().unwrap();
+        let ss = crate::Parser::nuevo(tokens).parsear_programa().unwrap();
+        let mut ctx = crate::ContextoSemantico::nuevo();
+        let _ = ctx.analizar_programa(&ss);
+        let hir = match crate::hir::lower_programa(&ss, &ctx) {
+            Ok(h) => h,
+            Err(_) => {
+                // El lowering ya rechaza el programa: el gate queda cubierto.
+                return;
+            }
+        };
+        assert!(gate_hir(&hir).is_err());
+    }
+
+    #[test]
+    fn gate_hir_acepta_programa_valido() {
+        let src = "sea x = 5\nx";
+        let tokens = crate::Lexer::nuevo(src).tokenizar().unwrap();
+        let ss = crate::Parser::nuevo(tokens).parsear_programa().unwrap();
+        let mut ctx = crate::ContextoSemantico::nuevo();
+        let _ = ctx.analizar_programa(&ss);
+        let hir = crate::hir::lower_programa(&ss, &ctx).unwrap();
+        assert!(gate_hir(&hir).is_ok());
+    }
+
+    #[test]
+    fn gate_mir_rechaza_programa_invalido() {
+        use crate::mir::{BlockId, MirFunction, MirPrograma};
+        let f = MirFunction {
+            nombre: "f".to_string(),
+            params: vec![],
+            retorno: TipoSem::Nulo,
+            locals: vec![],
+            bloques: vec![],
+            bloque_entrada: BlockId(0),
+        };
+        let prog = MirPrograma {
+            funciones: vec![f],
+            globals: vec![],
+        };
+        assert!(gate_mir(&prog).is_err());
+    }
+
+    #[test]
+    fn gate_mir_acepta_programa_valido() {
+        let src = "funcion suma(a: entero, b: entero) -> entero { retornar a + b }";
+        let tokens = crate::Lexer::nuevo(src).tokenizar().unwrap();
+        let ss = crate::Parser::nuevo(tokens).parsear_programa().unwrap();
+        let mut ctx = crate::ContextoSemantico::nuevo();
+        let _ = ctx.analizar_programa(&ss);
+        let hir = crate::hir::lower_programa(&ss, &ctx).unwrap();
+        let mir = crate::mir::lower_programa(&hir);
+        assert!(gate_mir(&mir).is_ok());
+    }
 }

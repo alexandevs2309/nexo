@@ -7,6 +7,7 @@
 //! - Decimal: redondeo half-even, exceso de precisión redondea, exceso de rango = error.
 //! - Conversiones: solo implícitas sin pérdida (`entero→decimal`, `entero→real`).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
@@ -132,14 +133,290 @@ pub const LIMITE_ITERACIONES: usize = 100_000;
 static IMPORTANDO: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 static CACHE_MODULOS: LazyLock<Mutex<HashMap<PathBuf, Entorno>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-#[allow(clippy::type_complexity)]
-static TAREAS: LazyLock<Mutex<Vec<Option<thread::JoinHandle<Result<Valor, String>>>>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
 
-/// Canales de comunicación entre tareas (buffer + condvar).
-#[allow(clippy::type_complexity)]
-pub(crate) static CANALES: LazyLock<Mutex<Vec<(Arc<Mutex<Vec<Valor>>>, Arc<Condvar>)>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+pub(crate) type Canal = (Arc<Mutex<Vec<Valor>>>, Arc<Condvar>);
+pub(crate) type RegistroCanales = Vec<Canal>;
+pub(crate) type TareaHandle = Option<thread::JoinHandle<Result<Valor, String>>>;
+pub(crate) type RegistroTareas = Vec<TareaHandle>;
+
+thread_local! {
+    // El flag `managed` distingue un contexto de ejecución gestionado
+    // (instalado por una entrada top-level o heredado por una tarea del mismo
+    // run) de un fallback lazy. Las entradas top-level siempre reemplazan un
+    // contexto lazy con uno fresco (Fase 02, cierre hallazgo BAJO); los
+    // contextos gestionados se preservan para mantener la propagación a
+    // hijos/nietos.
+    static CTX_CANALES: RefCell<Option<(Arc<Mutex<RegistroCanales>>, bool)>> =
+        const { RefCell::new(None) };
+    static CTX_TAREAS: RefCell<Option<(Arc<Mutex<RegistroTareas>>, bool)>> =
+        const { RefCell::new(None) };
+}
+
+/// Instala un contexto de ejecución **fresco y gestionado** (canales y tareas
+/// aislados) para el hilo actual y devuelve una guarda RAII que restaura el
+/// contexto anterior (incluido su estado gestionado/lazy) al salir, también
+/// ante panic. Aísla ejecuciones paralelas; las tareas del mismo run comparten
+/// este contexto (Fase 02).
+pub(crate) fn instalar_contexto_ejecucion() -> GuardaContextoEjecucion {
+    let prev_c = CTX_CANALES.with(|c| c.replace(Some((Arc::new(Mutex::new(Vec::new())), true))));
+    let prev_t = CTX_TAREAS.with(|t| t.replace(Some((Arc::new(Mutex::new(Vec::new())), true))));
+    GuardaContextoEjecucion {
+        prev_canales: prev_c,
+        prev_tareas: prev_t,
+    }
+}
+
+pub(crate) struct GuardaContextoEjecucion {
+    prev_canales: Option<(Arc<Mutex<RegistroCanales>>, bool)>,
+    prev_tareas: Option<(Arc<Mutex<RegistroTareas>>, bool)>,
+}
+
+impl Drop for GuardaContextoEjecucion {
+    fn drop(&mut self) {
+        let pc = self.prev_canales.take();
+        let pt = self.prev_tareas.take();
+        CTX_CANALES.with(|c| c.replace(pc));
+        CTX_TAREAS.with(|t| t.replace(pt));
+    }
+}
+
+pub(crate) fn canales_actual() -> Arc<Mutex<RegistroCanales>> {
+    CTX_CANALES.with(|c| {
+        let mut b = c.borrow_mut();
+        if b.is_none() {
+            // Fallback lazy: no gestionado. Una entrada top-level lo reemplazará
+            // con un contexto fresco gestionado.
+            *b = Some((Arc::new(Mutex::new(Vec::new())), false));
+        }
+        Arc::clone(&b.as_ref().unwrap().0)
+    })
+}
+
+pub(crate) fn tareas_actual() -> Arc<Mutex<RegistroTareas>> {
+    CTX_TAREAS.with(|t| {
+        let mut b = t.borrow_mut();
+        if b.is_none() {
+            *b = Some((Arc::new(Mutex::new(Vec::new())), false));
+        }
+        Arc::clone(&b.as_ref().unwrap().0)
+    })
+}
+
+/// Instala registros compartidos por una tarea hija/nieta del mismo run.
+/// Se marca como gestionado para que `asegurar_contexto_ejecucion` lo preserve
+/// (propagación correcta) y no lo confunda con un fallback lazy.
+pub(crate) fn instalar_registros(
+    canales: Arc<Mutex<RegistroCanales>>,
+    tareas: Arc<Mutex<RegistroTareas>>,
+) {
+    CTX_CANALES.with(|c| c.replace(Some((canales, true))));
+    CTX_TAREAS.with(|t| t.replace(Some((tareas, true))));
+}
+
+/// Devuelve `true` si el hilo actual tiene un contexto **gestionado** de
+/// ejecución (entrada top-level o herencia de tarea). Un contexto lazy de
+/// fallback no cuenta.
+pub(crate) fn tiene_contexto_ejecucion() -> bool {
+    CTX_CANALES.with(|c| c.borrow().as_ref().is_some_and(|(_, m)| *m))
+}
+
+/// Garantiza un contexto fresco para una entrada top-level:
+/// - si ya hay contexto **gestionado** (p. ej. tarea hija ejecutando dentro de
+///   su run compartido), lo preserva (`None`);
+/// - si no hay contexto o el existente es **lazy/fallback**, instala un contexto
+///   fresco gestionado y devuelve guarda RAII que restaura el estado previo.
+///
+/// Así, una entrada VM/TW top-level nunca reutiliza un contexto lazy previo,
+/// y las tareas hijas/nietas conservan el contexto compartido de su padre.
+pub(crate) fn asegurar_contexto_ejecucion() -> Option<GuardaContextoEjecucion> {
+    if tiene_contexto_ejecucion() {
+        None
+    } else {
+        Some(instalar_contexto_ejecucion())
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn sembrar_contexto_lazy_para_pruebas() {
+    CTX_CANALES.with(|c| c.replace(Some((Arc::new(Mutex::new(Vec::new())), false))));
+    CTX_TAREAS.with(|t| t.replace(Some((Arc::new(Mutex::new(Vec::new())), false))));
+}
+
+#[cfg(test)]
+mod fase02_contexto_tests {
+    use super::*;
+    use crate::{Lexer, Parser};
+
+    fn ejecutar_tw(src: &str) -> Result<Option<Valor>, String> {
+        let tokens = Lexer::nuevo(src).tokenizar().map_err(|e| e.to_string())?;
+        let ss = Parser::nuevo(tokens)
+            .parsear_programa()
+            .map_err(|e| e.to_string())?;
+        let mut env = Entorno::nueva();
+        env.ejecutar_programa(&ss).map_err(|e| e.to_string())
+    }
+
+    fn ejecutar_vm(src: &str) -> Result<String, String> {
+        let tokens = Lexer::nuevo(src).tokenizar().map_err(|e| e.to_string())?;
+        let ss = Parser::nuevo(tokens)
+            .parsear_programa()
+            .map_err(|e| e.to_string())?;
+        let mut ctx = crate::semantico::ContextoSemantico::nuevo();
+        let _ = ctx.analizar_programa(&ss);
+        let hir = crate::hir::lower_programa(&ss, &ctx).map_err(|e| format!("{e:?}"))?;
+        let mir = crate::mir::lower_programa(&hir);
+        let mut maquina = crate::vm::MaquinaVirtual::nuevo(mir);
+        maquina.registrar_stdlib();
+        let idx = maquina
+            .indice_de("main")
+            .ok_or_else(|| "sin main".to_string())?;
+        maquina
+            .ejecutar_indice(idx, &[])
+            .map(|v| format!("{:?}", v))
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn fase02_lazy_seguido_de_vm_top_level_obtiene_contexto_fresco() {
+        // Simula un contexto lazy previo en el mismo hilo (hallazgo BAJO):
+        // la entrada VM top-level debe reemplazarlo con uno fresco gestionado,
+        // no reutilizar IDs/canales del lazy.
+        let _rest = instalar_contexto_ejecucion(); // limpia estado controlado
+        drop(_rest);
+        // dejar hilo limpio
+        CTX_CANALES.with(|c| c.replace(None));
+        CTX_TAREAS.with(|t| t.replace(None));
+        sembrar_contexto_lazy_para_pruebas();
+        // crear un canal dentro del contexto lazy (id 0 en ese registro)
+        {
+            let reg = canales_actual();
+            let mut c = reg.lock().unwrap();
+            c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+        }
+        // VM top-level debe ignorar el lazy y obtener contexto fresco: crear_canal
+        // devuelve 0 y recibir/enviar operan sobre el canal nuevo (aislado).
+        let src = "funcion p() { enviar(0, 7)\n retornar 0 }\nfuncion main() -> entero { sea c = crear_canal()\n sea t = iniciar_tarea(\"p\")\n sea v = recibir(0)\n esperar_tarea(t)\n retornar v }";
+        let res = ejecutar_vm(src).expect("vm");
+        assert_eq!(res, "Some(Entero(7))");
+    }
+
+    #[test]
+    fn fase02_dos_ejecuciones_top_level_consecutivas_mismo_hilo() {
+        CTX_CANALES.with(|c| c.replace(None));
+        CTX_TAREAS.with(|t| t.replace(None));
+        let src = "funcion p() { enviar(0, 42)\n retornar 0 }\nfuncion main() -> entero { sea c = crear_canal()\n sea t = iniciar_tarea(\"p\")\n sea v = recibir(0)\n esperar_tarea(t)\n retornar v }";
+        let r1 = ejecutar_vm(src).expect("vm1");
+        let r2 = ejecutar_vm(src).expect("vm2");
+        assert_eq!(r1, "Some(Entero(42))");
+        assert_eq!(r2, "Some(Entero(42))");
+    }
+
+    #[test]
+    fn fase02_contextos_anidados_y_restauracion_raii() {
+        CTX_CANALES.with(|c| c.replace(None));
+        CTX_TAREAS.with(|t| t.replace(None));
+        assert!(!tiene_contexto_ejecucion());
+        {
+            let _g1 = instalar_contexto_ejecucion();
+            assert!(tiene_contexto_ejecucion());
+            let id1 = {
+                let reg = canales_actual();
+                let mut c = reg.lock().unwrap();
+                let id = c.len();
+                c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+                id
+            };
+            assert_eq!(id1, 0);
+            {
+                let _g2 = instalar_contexto_ejecucion(); // anidado, reemplaza
+                let reg = canales_actual();
+                let c = reg.lock().unwrap();
+                assert_eq!(c.len(), 0, "contexto anidado debe ser fresco");
+            }
+            // restaurado g1
+            let reg = canales_actual();
+            let c = reg.lock().unwrap();
+            assert_eq!(c.len(), 1, "debe restaurar contexto externo");
+        }
+        assert!(!tiene_contexto_ejecucion());
+    }
+
+    #[test]
+    fn fase02_restauracion_tras_panic() {
+        CTX_CANALES.with(|c| c.replace(None));
+        CTX_TAREAS.with(|t| t.replace(None));
+        {
+            let _g1 = instalar_contexto_ejecucion();
+            {
+                let reg = canales_actual();
+                let mut c = reg.lock().unwrap();
+                c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+            }
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _g2 = instalar_contexto_ejecucion();
+                {
+                    let reg = canales_actual();
+                    let mut c = reg.lock().unwrap();
+                    c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+                    c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+                }
+                panic!("boom");
+            }));
+            assert!(res.is_err());
+            // g2 dropeado por unwind: restaura g1
+            let reg = canales_actual();
+            let c = reg.lock().unwrap();
+            assert_eq!(c.len(), 1, "RAII debe restaurar tras panic");
+        }
+        assert!(!tiene_contexto_ejecucion());
+    }
+
+    #[test]
+    fn fase02_hija_conserva_contexto_gestionado_asegurar_preserva() {
+        // Simula lo que hace una tarea hija: instalar_registros (gestionado)
+        // y luego ejecutar (asegurar no debe reemplazar con fresco).
+        CTX_CANALES.with(|c| c.replace(None));
+        CTX_TAREAS.with(|t| t.replace(None));
+        let _g = instalar_contexto_ejecucion();
+        {
+            let reg = canales_actual();
+            let mut c = reg.lock().unwrap();
+            c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+        }
+        let canales = canales_actual();
+        let tareas = tareas_actual();
+        // en "hilo hijo" simulado (mismo hilo aquí, pero semántica de registros)
+        CTX_CANALES.with(|c| c.replace(None));
+        CTX_TAREAS.with(|t| t.replace(None));
+        instalar_registros(canales, tareas);
+        let guard = asegurar_contexto_ejecucion();
+        assert!(
+            guard.is_none(),
+            "debe preservar contexto gestionado heredado"
+        );
+        let reg = canales_actual();
+        let c = reg.lock().unwrap();
+        assert_eq!(c.len(), 1, "canal del padre visible en contexto heredado");
+    }
+
+    #[test]
+    fn fase02_tareas_hijas_y_nietas_comparten_contexto_vm() {
+        CTX_CANALES.with(|c| c.replace(None));
+        CTX_TAREAS.with(|t| t.replace(None));
+        // p2 (nieta, lanzada por p1) envía 11; p1 espera a p2 y envía 31; main recibe 31.
+        let src = "funcion p2() { enviar(1, 11)\n retornar 0 }\nfuncion p1() { crear_canal()\n sea tn = iniciar_tarea(\"p2\")\n sea v = recibir(1)\n esperar_tarea(tn)\n enviar(0, v + 20)\n retornar 0 }\nfuncion main() -> entero { crear_canal()\n sea t = iniciar_tarea(\"p1\")\n sea r = recibir(0)\n esperar_tarea(t)\n retornar r }";
+        let res = ejecutar_vm(src).expect("vm nietas");
+        assert_eq!(res, "Some(Entero(31))");
+    }
+
+    #[test]
+    fn fase02_paridad_tw_vm_tras_fix_contexto() {
+        let src = "funcion p() { enviar(0, 42)\n retornar 0 }\nfuncion main() -> entero { sea c = crear_canal()\n sea t = iniciar_tarea(\"p\")\n sea v = recibir(0)\n esperar_tarea(t)\n retornar v }";
+        let tw = ejecutar_tw(&format!("{src}\nmain()")).expect("tw");
+        let vm = ejecutar_vm(src).expect("vm");
+        assert_eq!(format!("{:?}", tw), vm);
+    }
+}
 
 /// Nombres reservados que no pueden reutilizarse como funciones de usuario.
 pub const NOMBRES_RESERVADOS: &[&str] = &[
@@ -710,10 +987,14 @@ impl Entorno {
     /// Devuelve el valor de la última sentencia de expresión **del nivel superior**, si la hay.
     /// Las sentencias internas de bloques, ramas o ciclos no producen valor hacia fuera
     /// (ADR-0007 §1.6).
+    ///
+    /// Instala un contexto de ejecución aislado (canales/tareas) para evitar
+    /// interferencia entre ejecuciones paralelas (Fase 02).
     pub fn ejecutar_programa(
         &mut self,
         sentencias: &[Sentencia],
     ) -> Result<Option<Valor>, ErrorEjecucion> {
+        let _ctx = instalar_contexto_ejecucion();
         // Primer pase: izar las funciones de nivel superior. Así el evaluador
         // coincide con el analizador semántico (llamadas anticipadas y
         // recursión entre funciones declaradas después).
@@ -4988,7 +5269,10 @@ fn evaluar_builtin(
                 ));
             }
             let env_clone = entorno.clone();
+            let canales_ctx = canales_actual();
+            let tareas_ctx = tareas_actual();
             let handle = thread::spawn(move || {
+                instalar_registros(canales_ctx, tareas_ctx);
                 let mut env = env_clone;
                 let expr = Expresion::Llamada {
                     nombre: func_name.clone(),
@@ -4998,7 +5282,8 @@ fn evaluar_builtin(
                 };
                 evaluar_con(&expr, &mut env).map_err(|e| e.to_string())
             });
-            let mut tareas = TAREAS.lock().unwrap();
+            let reg_tareas = tareas_actual();
+            let mut tareas = reg_tareas.lock().unwrap();
             let id = tareas.len();
             tareas.push(Some(handle));
             Ok(Valor::Entero(id as i64))
@@ -5029,7 +5314,8 @@ fn evaluar_builtin(
                 }
             };
             let handle = {
-                let mut tareas = TAREAS.lock().unwrap();
+                let reg_tareas = tareas_actual();
+                let mut tareas = reg_tareas.lock().unwrap();
                 if id >= tareas.len() {
                     return Err(err_builtin(
                         CausaError::VariableNoDefinida(format!("tarea {}", id)),
@@ -5070,7 +5356,8 @@ fn evaluar_builtin(
             }
         }
         "crear_canal" => {
-            let mut canales = CANALES.lock().unwrap();
+            let reg = canales_actual();
+            let mut canales = reg.lock().unwrap();
             let id = canales.len();
             canales.push((
                 std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -5104,7 +5391,8 @@ fn evaluar_builtin(
                 }
             };
             let valor = args[1].clone();
-            let canales = CANALES.lock().unwrap();
+            let reg = canales_actual();
+            let canales = reg.lock().unwrap();
             if id >= canales.len() {
                 return Err(err_builtin(
                     CausaError::VariableNoDefinida(format!("canal {}", id)),
@@ -5145,7 +5433,8 @@ fn evaluar_builtin(
                     ));
                 }
             };
-            let canales = CANALES.lock().unwrap();
+            let reg = canales_actual();
+            let canales = reg.lock().unwrap();
             if id >= canales.len() {
                 return Err(err_builtin(
                     CausaError::VariableNoDefinida(format!("canal {}", id)),

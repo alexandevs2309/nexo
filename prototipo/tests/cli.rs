@@ -253,3 +253,81 @@ fn nuevo_rechaza_extension_distinta() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[cfg(feature = "test-hooks")]
+#[test]
+fn gate_build_aborta_y_no_genera_artefacto() {
+    let dir = directorio_temporal();
+    let src = dir.join("prog.bsk");
+    std::fs::write(&src, "mostrar 42\n").unwrap();
+    let salida = Command::new(env!("CARGO_BIN_EXE_bsk"))
+        .args(["build", src.to_str().unwrap()])
+        .env("BASILISCO_TEST_FORCE_GATE_FAIL", "1")
+        .output()
+        .unwrap();
+    assert!(
+        !salida.status.success(),
+        "stderr: {}",
+        texto(&salida.stderr)
+    );
+    assert!(
+        texto(&salida.stderr).contains("verificacion:"),
+        "stderr: {}",
+        texto(&salida.stderr)
+    );
+    assert!(!src.with_extension("rs").exists(), "no debe generarse .rs");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "test-hooks")]
+#[test]
+fn gate_run_aborta_sin_fallback() {
+    let dir = directorio_temporal();
+    let src = dir.join("prog.bsk");
+    std::fs::write(&src, "mostrar 42\n").unwrap();
+    let salida = Command::new(env!("CARGO_BIN_EXE_bsk"))
+        .args(["run", src.to_str().unwrap()])
+        .env("BASILISCO_TEST_FORCE_GATE_FAIL", "1")
+        .output()
+        .unwrap();
+    assert!(
+        !salida.status.success(),
+        "stderr: {}",
+        texto(&salida.stderr)
+    );
+    assert!(
+        texto(&salida.stderr).contains("verificacion:"),
+        "stderr: {}",
+        texto(&salida.stderr)
+    );
+    assert!(
+        !texto(&salida.stderr).contains("usando motor árbol"),
+        "no debe activar fallback: {}",
+        texto(&salida.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "test-hooks")]
+#[test]
+fn gate_analizar_devuelve_codigo_salida() {
+    let dir = directorio_temporal();
+    let src = dir.join("prog.bsk");
+    std::fs::write(&src, "mostrar 42\n").unwrap();
+    let salida = Command::new(env!("CARGO_BIN_EXE_bsk"))
+        .args(["analizar", src.to_str().unwrap()])
+        .env("BASILISCO_TEST_FORCE_GATE_FAIL", "1")
+        .output()
+        .unwrap();
+    assert!(
+        !salida.status.success(),
+        "stderr: {}",
+        texto(&salida.stderr)
+    );
+    assert!(
+        texto(&salida.stderr).contains("verificacion:"),
+        "stderr: {}",
+        texto(&salida.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

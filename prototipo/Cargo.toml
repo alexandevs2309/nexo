@@ -48,3 +48,6 @@ hex = "0.4.3"
 tracing = "0.1.44"
 libffi = "5.2"
 libloading = "0.9"
+
+[features]
+test-hooks = []

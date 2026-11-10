@@ -1,5 +1,5 @@
-funcion resumen(total) {
-  retornar "total=" + total
+funcion resumen(valor: texto) {
+  retornar "total=" + valor
 }
 
 var valores: arreglo<entero, 3> = [2, 3, 4]

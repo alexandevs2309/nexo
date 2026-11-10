@@ -17,16 +17,6 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
-use std::sync::{LazyLock, Mutex};
-
-/// Valor de retorno de una tarea: `Ok(valor)` o `Err(mensaje)` (como en `evaluador`).
-type ResultadoTarea = Result<Valor, String>;
-/// Handle de tarea esperable (`take` + `join`), análogo al del Tree-Walk.
-type TareaPendiente = Option<std::thread::JoinHandle<ResultadoTarea>>;
-
-/// Registro global de tareas de la VM (`iniciar_tarea` / `esperar_tarea`),
-/// análogo al del evaluador (Tree-Walk).
-static TAREAS_VM: LazyLock<Mutex<Vec<TareaPendiente>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
 use crate::mir::{
     BlockId, MirBinOp, MirConst, MirOperand, MirPlace, MirPrograma, MirProjection, MirRvalue,
@@ -68,6 +58,15 @@ pub enum ErrorVm {
         valor: String,
         esperado: &'static str,
     },
+    /// Asignación/conversión a tipo anotado incompatible (GAP-051, ADR-0005).
+    /// Mensaje espejo de E1004 del Tree-Walk para paridad diferencial.
+    AsignacionIncompatible { esperado: String, obtenido: String },
+    /// Retorno incompatible con la anotación de la función (paridad TW).
+    RetornoIncompatible {
+        funcion: String,
+        esperado: String,
+        obtenido: String,
+    },
     /// Error del puente FFI (carga/llamada de biblioteca dinámica).
     FfiInvalido { detalle: String },
 }
@@ -99,6 +98,18 @@ impl std::fmt::Display for ErrorVm {
             ErrorVm::ConversionInvalido { valor, esperado } => {
                 write!(f, "el texto «{valor}» no es un «{esperado}» válido")
             }
+            ErrorVm::AsignacionIncompatible { esperado, obtenido } => write!(
+                f,
+                "asignación incompatible: se esperaba {esperado} y se obtuvo {obtenido}"
+            ),
+            ErrorVm::RetornoIncompatible {
+                funcion,
+                esperado,
+                obtenido,
+            } => write!(
+                f,
+                "retorno de '{funcion}': se esperaba {esperado} y se obtuvo {obtenido}"
+            ),
             ErrorVm::FfiInvalido { detalle } => write!(f, "ffi inválido: {detalle}"),
         }
     }
@@ -1259,7 +1270,8 @@ impl MaquinaVirtual {
         self.registrar_nativo(
             "crear_canal",
             std::sync::Arc::new(|_args: &[Valor]| {
-                let mut canales = crate::evaluador::CANALES.lock().unwrap();
+                let reg = crate::evaluador::canales_actual();
+                let mut canales = reg.lock().unwrap();
                 let id = canales.len();
                 canales.push((
                     std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -1281,7 +1293,8 @@ impl MaquinaVirtual {
                     }
                 };
                 let valor = args.get(1).cloned().unwrap_or(Valor::Nulo);
-                let canales = crate::evaluador::CANALES.lock().unwrap();
+                let reg = crate::evaluador::canales_actual();
+                let canales = reg.lock().unwrap();
                 if id >= canales.len() {
                     return Err(ErrorVm::TipoEsperado {
                         esperado: "canal válido",
@@ -1309,7 +1322,8 @@ impl MaquinaVirtual {
                         });
                     }
                 };
-                let canales = crate::evaluador::CANALES.lock().unwrap();
+                let reg = crate::evaluador::canales_actual();
+                let canales = reg.lock().unwrap();
                 if id >= canales.len() {
                     return Err(ErrorVm::TipoEsperado {
                         esperado: "canal válido",
@@ -1384,6 +1398,9 @@ impl MaquinaVirtual {
         idx: usize,
         args: &[Valor],
     ) -> Result<Option<Valor>, ErrorVm> {
+        // Aislar canales/tareas por ejecución (Fase 02), preservando un
+        // contexto compartido si el hilo ya participa en una ejecución (tarea).
+        let _ctx = crate::evaluador::asegurar_contexto_ejecucion();
         // Se clona la función para evitar préstamos cruzados con el estado de la
         // VM (los programas del prototipo son pequeños; en bytecode real el
         // código será compartido, no clonado).
@@ -1533,7 +1550,7 @@ impl MaquinaVirtual {
             MirStmt::AsignacionGlobal { global, valor } => {
                 let v = self.evaluar_rvalue(locals, valor)?;
                 if let Some(t) = self.programa.globals.get(global.0) {
-                    self.globals[global.0] = convertir_tipo(v, t);
+                    self.globals[global.0] = convertir_tipo(v, t)?;
                 } else if global.0 < self.globals.len() {
                     self.globals[global.0] = v;
                 }
@@ -1643,7 +1660,16 @@ impl MaquinaVirtual {
                     let v = if f.retorno == crate::semantico::TipoSem::Desconocido {
                         v
                     } else {
-                        convertir_tipo(v, &f.retorno)
+                        convertir_tipo(v, &f.retorno).map_err(|e| match e {
+                            ErrorVm::AsignacionIncompatible { esperado, obtenido } => {
+                                ErrorVm::RetornoIncompatible {
+                                    funcion: f.nombre.clone(),
+                                    esperado,
+                                    obtenido,
+                                }
+                            }
+                            other => other,
+                        })?
                     };
                     Ok(Transicion::Retornar(Some(v)))
                 }
@@ -1893,7 +1919,10 @@ impl MaquinaVirtual {
         let programa = self.programa.clone();
         let globals = self.globals.clone();
         let salida = std::sync::Arc::clone(&self.salida);
+        let canales_ctx = crate::evaluador::canales_actual();
+        let tareas_ctx = crate::evaluador::tareas_actual();
         let handle = std::thread::spawn(move || {
+            crate::evaluador::instalar_registros(canales_ctx, tareas_ctx);
             let mut vm = MaquinaVirtual::nuevo(programa);
             vm.registrar_stdlib();
             // Compartir el estado global (incluye canales) sin re-ejecutar __init.
@@ -1904,7 +1933,8 @@ impl MaquinaVirtual {
                 .map(|v| v.unwrap_or(Valor::Nulo))
                 .map_err(|e| e.to_string())
         });
-        let mut tareas = TAREAS_VM.lock().unwrap();
+        let reg_tareas = crate::evaluador::tareas_actual();
+        let mut tareas = reg_tareas.lock().unwrap();
         let id = tareas.len();
         tareas.push(Some(handle));
         Ok(Valor::Entero(id as i64))
@@ -1922,7 +1952,8 @@ impl MaquinaVirtual {
             }
         };
         let handle = {
-            let mut tareas = TAREAS_VM.lock().unwrap();
+            let reg_tareas = crate::evaluador::tareas_actual();
+            let mut tareas = reg_tareas.lock().unwrap();
             if id >= tareas.len() {
                 return Err(ErrorVm::FuncionNoEncontrada(format!("tarea {id}")));
             }
@@ -1979,7 +2010,7 @@ impl MaquinaVirtual {
         valor: Valor,
     ) -> Result<(), ErrorVm> {
         let valor = if place.projection.is_empty() {
-            self.convertir_tipo_opt(valor, local_types.get(place.local.0))
+            self.convertir_tipo_opt(valor, local_types.get(place.local.0))?
         } else {
             valor
         };
@@ -2501,56 +2532,91 @@ fn comparar_igualdad(a: &Valor, b: &Valor, igual: bool) -> Result<Valor, ErrorVm
     Ok(Valor::Logico(if igual { resultado } else { !resultado }))
 }
 
-/// Convierte `v` al tipo `t` con las conversiones implícitas ADR-0005 §1.4.
-/// Si la conversión no está permitida, devuelve `v` sin cambios.
-fn convertir_tipo(v: Valor, t: &crate::semantico::TipoSem) -> Valor {
+/// Convierte `v` al tipo anotado `t`, aplicando solo las conversiones
+/// implícitas permitidas por ADR-0005 §1.4 / spec normativa §3.1 (únicamente
+/// `entero→decimal` y `entero→real`). Cualquier otra incompatibilidad produce
+/// `AsignacionIncompatible` (GAP-051), espejo estricto de
+/// `evaluador::convertir_a_tipo_anotado` para paridad Tree-Walk↔VM.
+/// `Funcion`/`Desconocido` se pasan sin restricción (sin anotación estática).
+fn convertir_tipo(v: Valor, t: &crate::semantico::TipoSem) -> Result<Valor, ErrorVm> {
     use crate::semantico::TipoSem;
+    let esperado = t.nombre();
+    let obtenido = v.nombre_tipo().to_string();
+    let incompatible = || ErrorVm::AsignacionIncompatible {
+        esperado: esperado.clone(),
+        obtenido: obtenido.clone(),
+    };
     match t {
-        TipoSem::Entero => v,
+        TipoSem::Entero => match v {
+            Valor::Entero(_) => Ok(v),
+            _ => Err(incompatible()),
+        },
         TipoSem::Decimal => match v {
-            Valor::Entero(n) => Valor::decimal_desde_entero(n),
-            Valor::Decimal(_) => v,
-            _ => v,
+            Valor::Decimal(_) => Ok(v),
+            Valor::Entero(n) => Ok(Valor::decimal_desde_entero(n)),
+            _ => Err(incompatible()),
         },
         TipoSem::Real => match v {
-            Valor::Entero(n) => Valor::Real(n as f64),
-            Valor::Real(_) => v,
-            _ => v,
+            Valor::Real(_) => Ok(v),
+            Valor::Entero(n) => Ok(Valor::Real(n as f64)),
+            _ => Err(incompatible()),
         },
-        TipoSem::Logico => v,
-        TipoSem::Texto => v,
-        TipoSem::Nulo => v,
+        TipoSem::Logico => match v {
+            Valor::Logico(_) => Ok(v),
+            _ => Err(incompatible()),
+        },
+        TipoSem::Texto => match v {
+            Valor::Texto(_) => Ok(v),
+            _ => Err(incompatible()),
+        },
+        TipoSem::Nulo => match v {
+            Valor::Nulo => Ok(v),
+            _ => Err(incompatible()),
+        },
         TipoSem::Lista(elem) => match v {
-            Valor::Arreglo(elems) | Valor::Lista(elems) => {
-                Valor::Lista(convertir_elementos(elems, elem))
+            Valor::Lista(elems) | Valor::Arreglo(elems) => {
+                // Error de elemento se reporta a nivel contenedor (paridad TW:
+                // convertir_a_tipo_anotado devuelve None y el llamador emite
+                // E1004 con el tipo declarado completo).
+                let elems = convertir_elementos(elems, elem).map_err(|_| incompatible())?;
+                Ok(Valor::Lista(elems))
             }
-            _ => v,
+            _ => Err(incompatible()),
         },
         TipoSem::Arreglo(elem, n) => match v {
             Valor::Lista(elems) | Valor::Arreglo(elems) if elems.len() == *n => {
-                Valor::Arreglo(convertir_elementos(elems, elem))
+                let elems = convertir_elementos(elems, elem).map_err(|_| incompatible())?;
+                Ok(Valor::Arreglo(elems))
             }
-            _ => v,
+            _ => Err(incompatible()),
         },
         TipoSem::Coleccion(elem) => match v {
-            Valor::Arreglo(elems) | Valor::Lista(elems) => {
-                Valor::Lista(convertir_elementos(elems, elem))
+            Valor::Lista(elems) | Valor::Arreglo(elems) => {
+                let elems = convertir_elementos(elems, elem).map_err(|_| incompatible())?;
+                Ok(Valor::Lista(elems))
             }
-            _ => v,
+            _ => Err(incompatible()),
         },
-        TipoSem::Funcion { .. } | TipoSem::Desconocido => v,
+        TipoSem::Funcion { .. } | TipoSem::Desconocido => Ok(v),
     }
 }
 
-fn convertir_elementos(elems: Vec<Valor>, elem: &crate::semantico::TipoSem) -> Vec<Valor> {
+fn convertir_elementos(
+    elems: Vec<Valor>,
+    elem: &crate::semantico::TipoSem,
+) -> Result<Vec<Valor>, ErrorVm> {
     elems.into_iter().map(|e| convertir_tipo(e, elem)).collect()
 }
 
 impl MaquinaVirtual {
-    fn convertir_tipo_opt(&self, v: Valor, t: Option<&crate::semantico::TipoSem>) -> Valor {
+    fn convertir_tipo_opt(
+        &self,
+        v: Valor,
+        t: Option<&crate::semantico::TipoSem>,
+    ) -> Result<Valor, ErrorVm> {
         match t {
             Some(t) => convertir_tipo(v, t),
-            None => v,
+            None => Ok(v),
         }
     }
 }

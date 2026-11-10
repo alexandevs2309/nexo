@@ -122,3 +122,63 @@ fn hir_verificador_rechaza_params_duplicados() {
         assert!(!hir::VerificadorHir::verificar(&hir_prog));
     }
 }
+
+// --- DT-03: robustecimiento del lowering HIR ---
+
+#[test]
+fn hir_lower_asignacion_no_declarada_falla() {
+    let src = "x = 5";
+    let tokens = Lexer::nuevo(src).tokenizar().unwrap();
+    let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+    let mut ctx = ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    let res = hir::lower_programa(&ss, &ctx);
+    assert!(
+        res.is_err(),
+        "asignación a variable no declarada debe fallar en lowering"
+    );
+    let errs = res.unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("no declarada en lowering")),
+        "debe reportar 'no declarada en lowering': {:?}",
+        errs
+    );
+}
+
+#[test]
+fn hir_lower_programa_con_varios_errores_no_panica() {
+    // Varios errores independientes: no debe panic y debe reportar lista.
+    let src = "x = 5\nw = 10\nz = x + w";
+    let tokens = Lexer::nuevo(src).tokenizar().unwrap();
+    let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+    let mut ctx = ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    let res = hir::lower_programa(&ss, &ctx);
+    assert!(res.is_err());
+    let errs = res.unwrap_err();
+    // Al menos un error por cada asignación no declarada.
+    assert!(!errs.is_empty(), "debe haber al menos un error: {:?}", errs);
+}
+
+#[test]
+fn hir_lower_estructura_incompleta_no_panica() {
+    // Función cuyo cuerpo referencia una variable no declarada.
+    let src = "funcion f() { x = 5 }\nf()";
+    let tokens = Lexer::nuevo(src).tokenizar().unwrap();
+    let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+    let mut ctx = ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    // No debe panic; el resultado puede ser Ok o Err, pero no panic.
+    let _ = hir::lower_programa(&ss, &ctx);
+}
+
+#[test]
+fn hir_lower_valido_sigue_ok() {
+    let src = "sea x = 5\nx = x + 1\nx";
+    let tokens = Lexer::nuevo(src).tokenizar().unwrap();
+    let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+    let mut ctx = ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    let hir = hir::lower_programa(&ss, &ctx).unwrap();
+    assert!(hir::VerificadorHir::verificar(&hir));
+}
