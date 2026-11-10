@@ -50,7 +50,7 @@
 | GAP-027 | IR y máquina virtual | CERRADA | P2 | MIR CFG + VM + verificadores + optimizador + backends experimentales; `tests/mir.rs`, `tests/vm.rs`, `tests/diferencial_vm.rs` |
 | GAP-028 | Verificador HIR — tipo de retorno | ABIERTA | P1 | `hir.rs:472`: `let _ = retorno;` — chequeo de tipo de retorno vacío; declarado pero no implementado |
 | GAP-029 | Verificador MIR — type-checking de operandos | ABIERTA | P1 | `mir.rs:1284`: solo verifica CFG estructural; sin verificación de tipos de operandos ni use-before-def |
-| GAP-030 | Lowering HIR — propagación de errores Result | ABIERTA | P1 | Plan de migración documentado en versión anterior; 51 call sites con panics en lugar de `Result`; refactor pendiente |
+| GAP-030 | Lowering HIR — propagación de errores Result | CERRADA | P1 | `lower_expresion` y `lower_sentencia` ya devolvían `Result`; la única ocultación restante (asignación a variable no declarada creaba variable fantasma vía `unwrap_or_else(|| res.insertar(...))`) se eliminó: ahora propaga `Err`. Locks de mutex y expect del ámbito raíz son invariantes válidas. Tests: `tests/hir.rs` (hir_lower_asignacion_no_declarada_falla, hir_lower_programa_con_varios_errores_no_panica, hir_lower_estructura_incompleta_no_panica, hir_lower_valido_sigue_ok). |
 | GAP-031 | Paridad VM — closures mutables | ABIERTA | P1 | `tests/closures.rs` usa solo tree-walk para closures mutables; sin test diferencial VM para contador mutable |
 | GAP-032 | Formateador — preservación de comentarios | ABIERTA | P2 | Lexer descarta `#` antes del AST; los comentarios no llegan al formateador |
 | GAP-033 | Genéricos definibles por usuario | ABIERTA | P2 | No existe en AST, HIR ni MIR; sería un cambio de diseño mayor |
@@ -62,7 +62,7 @@
 | GAP-039 | LSP | ABIERTA | P3 | No existe ningún servidor LSP |
 | GAP-040 | Debugger DAP | ABIERTA | P3 | No existe ningún adaptador de debug |
 | GAP-041 | Extensión IDE | ABIERTA | P3 | No existe ningún plugin |
-| GAP-042 | Backend nativo — cobertura de tipos | ABIERTA (si se quiere usar en producción) | P2 | `funcion_soportada()` rechaza todo tipo que no sea entero/lógico; inutilizable para programas reales |
+| GAP-042 | Backend nativo — cobertura de tipos | PARCIAL (progreso Etapas A+B+C) | P2 | Ya no limitado a entero/lógico: runtime `Valor` embebido + real/decimal estricto, colecciones, globals/`__init`, `ObjetoModulo`, llamadas indirectas, `leer_archivo`/`json_parsear`. Compila/ejecuta con paridad VM los ejemplos `inventario` y `punto_venta` (`usar`/alias/módulos anidados). Siguen sin soporte: closures/celdas, try/catch/invoke, rangos, y stdlib no cubierta por el runtime; doble inline de un mismo módulo en distintos contextos de alias puede duplicar símbolos (sin impacto en los casos objetivo). |
 | GAP-043 | Backend WASM — binario directo | ABIERTA | P2 | Transpila a Rust, no genera WAT/Wasm directamente |
 | GAP-044 | Documentación / índice desactualizado | ABIERTA | P2 | `INDICE-Y-MAPA-DE-COBERTURA.md` dice "264 pruebas"; `registro-de-brechas.md` anterior decía "580"; real: 782 |
 | GAP-045 | `registry_integration.rs` fuera de CI | ABIERTA | P1 | Test E2E del registro marcado `#[ignore]`; R6 "cerrada" no se verifica en CI estándar |
@@ -71,6 +71,7 @@
 | GAP-048 | Iteradores definibles por usuario | ABIERTA | P2 | `para cada` solo funciona con colecciones integradas y rangos |
 | GAP-049 | Benchmarks del lenguaje | ABIERTA | P3 | No existen benchmarks de rendimiento del intérprete |
 | GAP-050 | Aplicaciones de ejemplo reales | ABIERTA | P3 | Solo ejemplos de tutorial; sin aplicaciones completas |
+| GAP-051 | Paridad TW←→VM en conversiones de asignación | CERRADA | P1 | `convertir_tipo` en `vm.rs` ahora es estricto (réplica de `convertir_a_tipo_anotado` del TW): solo `entero→decimal` y `entero→real` (ADR-0005 §1.4/spec §3.1); rechaza p. ej. `var r: real = 1.5` (decimal→real) con `AsignacionIncompatible` (mensaje E1004 espejo) y retornos anotados incompatibles con `RetornoIncompatible` (mensaje espejo). Aplicado en asignaciones locales/globales y retornos. 12 pruebas diferenciales GAP-051 (`diferencial_vm.rs`); suite 870 passed, 0 failed. Divergencia relacionada hallada (cond. 5): diagnóstico `obtenido` difiere en literales `[...]` por representación preexistente TW(`Lista`) vs VM(`Arreglo`) — sin impacto en la regla; queda como observación. |
 
 ---
 
@@ -85,6 +86,7 @@
 | GAP-012 | Runtime / VM | 782 tests pasando; VM motor por defecto |
 | GAP-016 (local) | Paquetes local | BPK + SHA-256 + Ed25519; 29+ tests |
 | GAP-027 | IR / VM | Completado; 55 tests diferenciales; verificadores funcionales |
+| GAP-051 | Paridad TW←→VM conversiones de asignación | `vm.rs` `convertir_tipo` estricto (ADR-0005/spec §3.1), espejo E1004/retorno; 12 tests diferenciales; 870 passed, 0 failed |
 
 ---
 

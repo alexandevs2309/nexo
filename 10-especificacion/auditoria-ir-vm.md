@@ -428,3 +428,258 @@ Deuda documentada: la conversión elemento a elemento de secuencias *anotadas*
 
 **Estado:** 823 tests pasando, 0 fallos; `cargo fmt --check` y
 `cargo clippy --all-targets --all-features -- -D warnings` limpios.
+
+## DT-03: robustecimiento del lowering HIR (2026-11-08)
+
+**Diagnóstico:** la migración a `Result` ya estaba hecha (`lower_expresion` y
+`lower_sentencia` devuelven `Result` y propagan con `?`; `lower_programa`
+agrega errores en `Vec<String>`). Los únicos `.unwrap()` en `src/hir.rs` son
+3 locks de mutex (invariante válida) y 1 `.expect("siempre hay ámbito raíz")`
+(invariante válida: `scopes` siempre tiene el ámbito raíz). Los `panic!` del
+parser están todos en `#[cfg(test)]`.
+
+**Riesgo real corregido:** en `lower_sentencia`, rama `Asignacion`, se usaba
+`res.resolver(nombre).unwrap_or_else(|| res.insertar(nombre, None))`, creando
+una variable fantasma para asignaciones a variables no declaradas (el semántico
+ya reportaba `VariableNoDefinida`). Esto ocultaba el error y podía producir
+programas HIR que fallaban de forma confusa en runtime.
+
+**Cambio:** si `res.resolver(nombre)` es `None`, se devuelve
+`Err("asignación a variable no declarada en lowering: '...' (el análisis
+semántico debería haberla rechazado)")` en lugar de crear un fantasma. El error
+se agrega a `errores` (patrón existente), sin abortar el lowering abruptamente,
+y se propaga a `ejecutar_fuente_vm` vía `lower_programa(...).map_err(...)?`.
+El diagnóstico complementa (no duplica exactamente) el error semántico: el
+semántico reporta `VariableNoDefinida` (E1002) con ubicación; el lowering
+reporta "no declarada en lowering" como defensa en profundidad.
+
+**Criterios verificados:**
+1. `x = 5` sin declaración → error claro, sin variable fantasma. ✅
+2. Varios errores en un programa → reportados sin panic ni pérdida. ✅
+3. Sin regresiones: asignaciones válidas, funciones, módulos, closures conservan
+   comportamiento (828 tests, 0 fallos). ✅
+4. Paridad TW/VM verificada en los 6 ejemplos vivos (salida idéntica, exit 0,
+   stderr vacío). ✅
+
+**Tests nuevos (4, en `tests/hir.rs`):** `hir_lower_asignacion_no_declarada_falla`,
+`hir_lower_programa_con_varios_errores_no_panica`,
+`hir_lower_estructura_incompleta_no_panica`, `hir_lower_valido_sigue_ok`.
+
+**Estado:** 828 tests pasando, 0 fallos; `cargo fmt --check` y
+`cargo clippy --all-targets --all-features -- -D warnings` limpios.
+GAP-030 marcado CERRADA en `registro-de-brechas.md`.
+
+## Etapa A: backend nativo con colecciones y runtime embebido (2026-11-08)
+
+**Implementado:**
+- Nuevo módulo `src/runtime.rs` (runtime embebido, solo `std`): enum `Valor` uniforme
+  (Entero, Decimal, Real, Logico, Texto, Arreglo, Lista, Objeto, Nulo, Funcion) con
+  Display, aritmética (suma/resta/mul/div/modulo/neg/not), comparaciones
+  (eq/lt), colecciones (indice, indice_set, agregar, eliminar, longitud,
+  discriminante, campo). Errores vía `RuntimeError` (sin panics de Rust).
+- `src/backend_nativo.rs` reescrito: genera código Rust que incluye el runtime
+  (`mod bsk_runtime { ... }`) y opera sobre `Valor`. Funciones retornan
+  `Result<Valor, RuntimeError>`; `main()` maneja el resultado (imprime valor o
+  error + exit 1). Soporta colecciones homogéneas y heterogéneas, indexación,
+  modificación por índice, longitud, agregar, eliminar, anidamiento, para cada.
+- `generar_funciones_enteras` (WASM) preservado en `src/backend_entero.rs`
+  (subconjunto entero/lógico, sin cambios).
+- `src/semantico.rs`: los literales de arreglo heterogéneos ya no se rechazan
+  (el tipo común cae a `Desconocido` sin error), alineando el semántico con
+  el runtime que acepta cualquier `Valor`.
+- `src/lib.rs`: registra `runtime` y `backend_entero`.
+
+**Tests nuevos (8, en `tests/backend_nativo.rs`):** colección de enteros,
+texto, heterogénea, indexación/asignación, agregar/eliminar, anidada,
+fuera de rango (error limpio, sin panic), para cada anidado. Todos comparan
+salida nativa vs VM.
+
+**Verificación:**
+- `consola`, `calculadora`, `gestor_tareas` compilan nativamente con salida
+  idéntica a VM (exit 0, stderr vacío).
+- `hetero.bsk` (arreglo heterogéneo) compila y ejecuta idéntico a VM.
+- `oob.bsk` (índice fuera de rango) imprime `error: índice 10 fuera de rango
+  (tamaño 3)` y exit 1, sin panic de Rust.
+- `cargo fmt --check` ✅, `cargo clippy --all-targets --all-features -- -D
+  warnings` ✅, `cargo test --workspace` → **836 passed, 0 failed**.
+- `backend_wasm` sigue verde (5 tests).
+
+**Limitaciones que permanecen (Etapa A):**
+- Módulos (`usar`) no compilan nativamente: el análisis semántico requiere un
+  cargador (`ContextoSemantico::con_cargador`) y `bsk build` usa
+  `ContextoSemantico::nuevo()`. Los ejemplos `inventario` y `punto_venta` (que
+  usan módulos) no compilan nativamente todavía → Etapa C.
+- `Real`/`Decimal`: el runtime los soporta, pero `es_soportado` los acepta y
+  el código generado los trata como `Valor` (uniforme), así que deberían
+  compilar. Pendiente de test explícito → Etapa B.
+- Closures, first-class funcs, globals, try/catch, invoke: rechazados
+  explícitamente (compile_error! o comentario) → Etapas D/E.
+- stdlib nativa (json_parsear, etc.): no generada (sin serde en std).
+  → Etapa F.
+- WASM: sigue siendo subconjunto entero/lógico (sin texto ni colecciones).
+  → Etapa G (opcional).
+- El código generado es grande (~16 KB por programa) por el runtime embebido.
+
+**Arquitectura:** el runtime embebido (`mod bsk_runtime`) hace el backend
+evolutivo: añadir un tipo nuevo = añadir una variante a `Valor` + arms en los
+métodos, sin tocar el generador. Monomorphization (genéricos) puede recuperar
+performance después.
+
+## Etapa B: Real y Decimal completos en el backend nativo (2026-11-08)
+
+**Diagnóstico previo:** el runtime de Etapa A tenía variantes `Decimal(i128)` y
+`Real(f64)` pero con semántica incorrecta: multiplicación y división decimal
+usaban truncamiento en lugar de half-even, sin validación de rango, y las
+mezclas Decimal↔Real convertían a f64 (justo lo que prohíbe ADR-0005).
+
+**Corregido en `src/runtime.rs` (réplica exacta de `valor.rs`/vm.rs):**
+- `redondear_half_even` (banquero) y `validar_rango_decimal` (límite 10^28-1)
+  copiados de `valor.rs` (sin `TryFrom`, que no está en el prelude de la
+  edición con la que `rustc` compila el código generado).
+- `mul`: `round_half_even(a·b)/10^9` + validación de rango.
+- `div`: `division_decimal(a,b)` con ajuste half-even por residuo.
+- `suma`/`resta` decimales: exactas con `checked_add/sub` + validación de rango.
+- `Decimal↔Real`: todos los operadores aritméticos y comparaciones → error
+  `conversión ilegal` / `tipos incompatibles: decimal y real` (antes mezclaba
+  vía f64). Cero conversiones Decimal→f64 en operaciones.
+- `modulo`: ENTERO%ENTERO únicamente; resto → `conversión ilegal`;
+  `i64::MIN % -1` = 0; `i64::MIN / -1` y `i64::MIN * -1` → `desbordamiento
+  entero`; mensajes normalizados al `Display` de `MotivoAritmetico`
+  (`división entre cero`, `desbordamiento entero`, `exceso de rango decimal`).
+- `neg`: `checked_neg` para entero (i64::MIN).
+- `lt`: mensaje espejo de `ErrorVm::TiposIncompatibles`; comparaciones en el
+  código generado ahora **propagan** el error en vez de degradar a `falso`.
+- Nuevo `TipoConv` + `Valor::convertir_a`: réplica de `convertir_tipo`
+  (vm.rs) — la VM convierte el valor al tipo declarado de la local en cada
+  `escribir_place`; el backend nativo ahora hace lo mismo en asignaciones
+  sin proyección. Error previsible en Etapa A que no era
+  visible entonces: `var r: real = 7` debe almacenar Real(7.0) (y `r/2` = 3.5, no 3).
+
+**Pruebas nuevas (22 → total backend_nativo 41):** half-even con negativos y
+empates (2.675·100, 2.5, 3.5, ±0.5·3, ±1/6, ±1/3), monetario (19.99·3 + IVA
+21%), precisión (0.1+0.2=0.3, 1/7, −7/3), conversiones (entero+decimal),
+comparaciones, división por cero (entero), desbordamiento entero,
+i64::MIN/tablas arriba, decimales/real ilegal, comparación ilegal rango
+decimal (1.3e10²), asignaciones tipadas (real, decimal, lista<entero>).
+
+**Verificación manual (árbol/VM/nativo idénticos):** todos los casos
+anteriores + `x·x` con desborde — árbol imprime y luego reporta E1001 con el
+mismo texto; nativo imprime la salida parcial y sale 1 con `error: …`.
+Ejemplos `consola`, `calculadora`, `gestor_tareas`: salida idéntica nativo vs
+VM tras el cambio de conversiones (diff vacío).
+
+**Limitaciones que permanecen:** `a_real`/`a_decimal`/`a_entero` son nativas
+de la stdlib del intérprete (parser de texto) y aún no se generan en el
+backend (rechazo limpio) → Etapa F.
+
+## GAP-051 cerrada: conversiones de asignación estrictas en la VM (2026-11-08)
+
+**Especificación (verificada):** `tipos-y-conversiones-normativos.md` §3.1 —
+conversiones implícitas solo `entero→decimal` y `entero→real` (únicamente en
+aritmética mixta). §3.2 — `decimal↔real` prohibida. Tree-Walk
+(`evaluador::convertir_a_tipo_anotado`) y semántico rechazan p. ej.
+`var r: real = 1.5` (literal decimal → destino real) con E1004
+«asignación incompatible: se esperaba real y se obtuvo decimal» (ADR-0005).
+
+**Causa raíz (VM):** `vm::convertir_tipo` era permisiva (`_ => v`), aceptando
+conversiones prohibidas (decimal→real, real→decimal, numérico→entero,
+texto/lógico cruzados, etc.). El camino CLI VM (`cli::ejecutar_fuente_vm`)
+además descarta errores semánticos (`let _ = ctx.analizar_programa`), por lo
+que la VM era la única barrera efectiva y no la aplicaba.
+
+**Corrección (`prototipo/src/vm.rs`, sin alterar conversiones válidas):**
+- `convertir_tipo` → `Result<Valor, ErrorVm>`, réplica estricta de
+  `convertir_a_tipo_anotado`: Entero→{Entero}; Decimal→{Decimal|Entero};
+  Real→{Real|Entero}; Lógico/Texto/Nulo exactos; Lista/Arreglo(len)/Coleccion
+  con conversión recursiva de elementos (error reportado a nivel contenedor,
+  paridad TW); `Funcion`/`Desconocido` pasan sin restricción.
+- Nuevos `ErrorVm::AsignacionIncompatible {esperado,obtenido}` (mensaje
+  idéntico a E1004) y `ErrorVm::RetornoIncompatible {funcion,esperado,obtenido}`
+  (mensaje idéntico a `RetornoIncompatibleConAnotacion`).
+- Call sites actualizados: asignación global (1536) y `escribir_place`/locales
+  → `AsignacionIncompatible`; `MirTerminator::Return` → `RetornoIncompatible`
+  con nombre de función. `convertir_elementos` → `Result`.
+
+**Pruebas (cond. 4):** 12 tests `diff_gap051_*` en `tests/diferencial_vm.rs`
+(paridad TW↔VM): rechazo decimal→real (var y retorno), entero←decimal
+(var/reasignación/retorno), texto←entero, lógico←entero, entero←texto,
+elemento decimal en `lista<entero>`; y conversiones válidas entero→real,
+entero→decimal, decimal→decimal.
+
+**Divergencias adicionales revisadas (cond. 5):** (a) retornos anotados
+incompatibles (p. ej. `-> real` devolviendo decimal, `-> entero` devolviendo
+decimal) — la VM los aceptaba; corregidos con `RetornoIncompatible` espejo.
+(b) reasignación de local tipado con valor incompatible — cubierta y corregida
+vía `escribir_place`. (c) literales `[...]` reportan `obtenido` distinto en el
+diagnóstico (TW evalúa a `Lista` → «obtuvo lista», VM a `Arreglo` → «obtuvo
+arreglo»): divergencia de representación *preexistente* del valor, no de la
+regla de conversión; el rechazo es correcto en ambos (test de lista usa
+aserción de rechazo en ambos motores).
+
+**Efecto colateral documentado (cond. 7, sin eliminar pruebas):**
+`tests/backend_nativo.rs::backend_nativo_real_aritmetica` usaba
+`funcion main() -> real` retornando el resultado de literales fraccionarios
+(`2.5`, `3.0`) — es decir, un `decimal` — lo cual era aceptado solo por la
+conversión permisiva. Se ajustó la anotación de retorno a `-> decimal`
+(con comentario) para cumplir ADR-0005; el cuerpo/aritmética/valor esperado
+(`7.333333333`) y la aserción de paridad VM↔nativo se mantienen intactos.
+
+**Validación:** `cargo fmt --check` OK; `cargo clippy --all-targets
+--all-features -- -D warnings` OK; `cargo test --workspace` →
+**870 passed, 0 failed, 2 ignored** (+12 GAP-051). `registro-de-brechas.md`
+GAP-051 → CERRADA.
+
+## Etapa C: compilación nativa de módulos y `usar` (2026-11-08)
+
+**Objetivo:** `bsk build` compila y ejecuta nativamente programas con `usar`;
+ejemplos de referencia `inventario` y `punto_venta` con salida idéntica a VM.
+
+**Investigación (1–6):** (1) `cargador.rs` resuelve/canonicaliza rutas
+relativas al importador (o root), normaliza extensión, cachea por ruta
+canónica, detecta ciclos (`en_carga`), valida nivel superior
+(`Declaracion/Funcion/Usar`) y en runtime-TW ejecuta el módulo recolectando
+exportaciones `publico`. (2) Resolución relativa al padre del importador con
+fallback a root y contención `starts_with(root)`. (3) HIR inlining vía
+`cargar_modulo_items`: lee/lex/parse/analiza/baja con resolvedor compartido
+(ciclo `MODULOS_EN_CARGA`), prefija funciones aliadas `alias_nombre`,
+reescribe llamadas internas, convierte decls top-level del módulo a
+`HirItem::Declaracion` (init global), crea `ObjetoModulo{prefijo,nombres}` →
+MIR `MirRvalue::ObjetoModulo` (VM: `Objeto` de `Valor::Funcion(prefijo_nombre)`);
+`alias.func()` → `Campo` sobre `Global` del alias + `LlamadaIndirecta`.
+Nominal `usar {n}` filtra/registra sin prefijo. MIR maneja globals/`__init`.
+(4) Init en `__init` preservando orden de inlining. (5) `cli.rs::build`
+usaba `ContextoSemantico::nuevo()` sin cargador/archivo → E1038
+«importaciones no disponibles». (6) Integrado cargador en build (patrón
+`depurar`): root = padre del fuente, `con_cargador` + `set_archivo_actual` +
+chequeo `MODULO_ERROR`.
+
+**Cambios (backend nativo / runtime / CLI):** `backend_nativo.rs` soporta
+`MirOperand::Global`, `MirStmt::AsignacionGlobal` (almacén
+`OnceLock<Mutex<Vec<Valor>>>` + accessor `bsk_g()`), `MirRvalue::ObjetoModulo`,
+`MirStmt::LlamadaIndirecta` (dispatch `Valor::Funcion(nombre)` → `bsk_*` sobre
+funciones soportadas); `__init` invocado con propagación de error; wrappers
+stdlib `leer_archivo`/`json_parsear`; `sumas_homogeneas` relajada (tipos
+dinámicos/Desconocido delegados al runtime). `runtime.rs` añade
+`bsk_leer_archivo` y `bsk_json_parsear` (parser JSON recursivo std-only;
+mapeo VM-paridad: int→`Entero`, float→`Real`, array→`Lista`, object→`Objeto`).
+`cli.rs` build con cargador+contexto de módulo; rustc invocado con
+`--edition 2024` (necesario por el runtime embebido).
+
+**Verificación:** `punto_venta` (`bsk build` + ejecución desde su dir) salida
+idéntica a `bsk run` (diff vacío). `inventario` (usa `leer_archivo` +
+`json_parsear`, ejecutado desde su dir) salida idéntica a `bsk run` (diff
+vacío). Pruebas nativas nuevas `tests/backend_nativo.rs` (VM↔nativo, módulos
+en tmpdir con cargador): `backend_nativo_modulo_alias`, `_nominal`,
+`_anidado`, `_con_estado_init` → 4/4 OK. `cargo fmt` OK, `clippy -D warnings`
+OK. Suite completa workspace: ver resultado final adjunto al informe de cierre.
+
+**Limitaciones que permanecen:** doble inline del mismo módulo en
+alias/contextos distintos puede duplicar símbolos/globals en el binario
+nativo (HIR inlining sin caché de "ya emitido" por identidad de módulo;
+sin impacto en los casos objetivo). Soporte stdlib nativa parcial
+(`leer_archivo`/`json_parsear`/`longitud`/`agregar`/`eliminar`/E/S;
+resto según runtime). Sin closures/celdas, try/catch/invoke, rangos en
+nativo. `punto_venta`/`inventario` dependen de CWD para rutas relativas de
+datos (igual que VM). Resolución de rutas en HIR `cargar_modulo_items` usa
+su propia lógica de candidatos (consistente con `ctx.archivo_actual`) además
+de la validación semántica vía cargador.

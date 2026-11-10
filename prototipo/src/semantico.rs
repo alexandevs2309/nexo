@@ -1121,14 +1121,6 @@ impl ContextoSemantico {
                 let mut comun = tipos[0].clone();
                 for t in &tipos[1..] {
                     if !compatible(&comun, t) {
-                        self.error(
-                            CausaError::TiposIncompatibles {
-                                izquierdo: comun.estatico(),
-                                derecho: t.estatico(),
-                            },
-                            1,
-                            1,
-                        );
                         comun = TipoSem::Desconocido;
                         break;
                     }

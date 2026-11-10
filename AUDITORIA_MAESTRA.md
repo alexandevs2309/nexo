@@ -28,27 +28,27 @@ BASILISCO es un lenguaje de programación imperativo con sintaxis en español. S
 | VM (intérprete MIR) | COMPLETO | ALTO |
 | Evaluador tree-walk | COMPLETO | ALTO |
 | Closures / Lambdas — tree-walk | COMPLETO | ALTO |
-| Closures / Lambdas — MIR/VM | PARCIAL | ALTO |
+| Closures / Lambdas — MIR/VM | COMPLETO | ALTO |
 | Genéricos | AUSENTE | ALTO |
 | Traits / Interfaces | AUSENTE | ALTO |
 | OOP / Estructuras | AUSENTE | ALTO |
-| Módulos | PARCIAL | ALTO |
-| Concurrencia | EXPERIMENTAL | ALTO |
-| Canales | AUSENTE | ALTO |
+| Módulos | COMPLETO | ALTO |
+| Concurrencia | IMPLEMENTADO (tareas + canales) | ALTO |
+| Canales | IMPLEMENTADO | ALTO |
 | FFI | EXPERIMENTAL | ALTO |
-| Backend nativo | EXPERIMENTAL | ALTO |
-| Backend WASM | EXPERIMENTAL | ALTO |
+| Backend nativo | IMPLEMENTADO (Etapa A: runtime embebido + colecciones) | ALTO |
+| Backend WASM | EXPERIMENTAL (subconjunto entero/lógico) | ALTO |
 | CLI | COMPLETO | ALTO |
-| REPL | AUSENTE | ALTO |
-| Formateador | PARCIAL | ALTO |
+| REPL | IMPLEMENTADO | ALTO |
+| Formateador | PARCIAL (pierde comentarios) | ALTO |
 | Proyectos / Scaffolding | COMPLETO | ALTO |
 | Gestión de paquetes (local) | COMPLETO | ALTO |
 | Gestión de paquetes (remoto) | COMPLETO | ALTO |
 | Registro de paquetes (servidor) | COMPLETO | ALTO |
-| LSP | AUSENTE | ALTO |
-| Debugger DAP | AUSENTE | ALTO |
+| LSP | IMPLEMENTADO (básico) | ALTO |
+| Debugger (CLI con traza) | IMPLEMENTADO (sin DAP) | ALTO |
 | Extensión IDE | AUSENTE | ALTO |
-| Tests | 782 / 0 fallos | ALTO |
+| Tests | 824 / 0 fallos | ALTO |
 
 ---
 
@@ -56,18 +56,16 @@ BASILISCO es un lenguaje de programación imperativo con sintaxis en español. S
 
 ### 1.1 Suite de pruebas
 
-Resultado de `cargo test --manifest-path prototipo/Cargo.toml` ejecutado durante esta auditoría:
+Resultado de `cargo test --workspace --no-fail-fast` (manifest `prototipo/Cargo.toml`), verificado en esta sesión (GAP-051 + Etapa C):
 
 ```
-test result: ok. 782 passed; 0 failed (suma de todos los harness)
+874 passed; 0 failed; 2 ignored (53 líneas `test result`, workspace completo)
 ```
 
-Desglose por origen:
-- Tests de integración (`tests/*.rs`): **669** (conteo por grep de `#[test]`)
-- Tests unitarios inline (`src/*.rs`): **113** (conteo por grep de `    #[test]`)
-- Total ejecutado: **782**
+- `cargo fmt --check`: OK
+- `cargo clippy --all-targets --all-features -- -D warnings`: OK
 
-> **Contradicción resuelta:** el registro de brechas anterior reportaba "580 pruebas" y el INDICE-Y-MAPA-DE-COBERTURA.md mencionaba "264 pruebas". El número actual verificado es **782**. Ninguna de las cifras anteriores es correcta hoy.
+> **Nota de conteo:** cifras históricas en este documento/índices (264/580/782/824/870) corresponden a auditorías previas; la cifra vigente verificada es **874 passed, 0 failed, 2 ignored**.
 
 ### 1.2 Tamaño de los módulos fuente principales
 
@@ -559,9 +557,8 @@ No existen ejemplos de aplicaciones completas (servidor HTTP, procesamiento de d
 **Evidencia:** verificado que existen `.unwrap()` en `MODULO_ERROR.lock().unwrap()` y `MODULOS_EN_CARGA.lock().unwrap()` en `hir.rs`. Aunque los únicos panics de mutex lock son en condiciones de corrupción de estado, la arquitectura general del lowering no retorna `Result` en todos los caminos.
 
 ### DT-06 · Backend nativo — cobertura de tipos
-**Estado:** EXPERIMENTAL  
-**Evidencia:** `funcion_soportada()` en `backend_nativo.rs` rechaza explícitamente texto, real, decimal, arreglos, objetos, módulos. Solo genera código para `entero`/`lógico`.  
-**Impacto:** el backend nativo no puede compilar más de una fracción mínima de programas reales.
+**Estado:** IMPLEMENTADO (Etapas A + B + C)  
+**Evidencia:** `src/backend_nativo.rs` genera Rust con runtime embebido (`Valor` uniforme) y aritmética decimal fiel a `valor.rs` (half-even, escala 9, rango 10^28−1, sin Decimal→f64). Soporta entero (con desbordamiento controlado incl. casos i64::MIN), lógico, real, decimal (completo estricto), texto, arreglos, listas, objetos, colecciones heterogéneas, indexación, agregar/eliminar, longitud, conversiones de asignación (`convertir_tipo`), E/S, control de flujo, funciones, globals/`__init`, `ObjetoModulo`, llamadas directas/indirectas y módulos inlinados (`usar`/alias/nominal/anidados) con `leer_archivo`/`json_parsear` (runtime std-only). `bsk build` integra `CargadorModulos`+contexto de archivo. Rechaza closures/celdas, try/catch/invoke, rangos y stdlib no cubierta. Ejemplos `consola`, `calculadora`, `gestor_tareas`, **`inventario` y `punto_venta`** compilan/ejecutan nativamente con salida idéntica a VM (diff vacío). Tests: `tests/backend_nativo.rs` (45). **GAP-051 (2026-11-08):** conversiones VM alineadas con semántico/TW; +12 diferenciales. Ver `auditoria-ir-vm.md` y `registro-de-brechas.md`.
 
 ### DT-07 · Backend WASM — cobertura y binario real
 **Estado:** EXPERIMENTAL  
@@ -576,35 +573,36 @@ No existen ejemplos de aplicaciones completas (servidor HTTP, procesamiento de d
 **Evidencia:** `formateador.rs` reconstruye desde el AST. El lexer descarta los comentarios `#` antes de que lleguen al parser. Los comentarios se pierden al formatear.
 
 ### DT-10 · Genéricos definibles por usuario
-**Estado:** AUSENTE  
-**Evidencia:** búsqueda en el AST y HIR confirma que no existe ningún nodo para parámetros de tipo definibles por el usuario.
+**Estado:** AUSENTE (deuda futura acotada)  
+**Evidencia:** búsqueda en AST/HIR confirma que no existe nodo para parámetros de tipo definibles por el usuario. Plan documentado en `10-especificacion/auditoria-ir-vm.md` (sección DT-10..13): monomorphization en HIR. No implementado en este ciclo.
 
 ### DT-11 · Concurrencia — canales y primitivas
-**Estado:** AUSENTE  
-**Evidencia:** búsqueda exhaustiva de `canal`/`channel`/`mpsc` en `src/` devuelve 0 resultados.
+**Estado:** IMPLEMENTADO  
+**Evidencia:** `crear_canal`/`enviar`/`recibir` en `src/evaluador.rs` y `src/vm.rs` (estado compartido vía `CANALES` global). `iniciar_tarea`/`esperar_tarea` en ambos motores. Ejemplo vivo: `ejemplos/concurrencia`. Tests: `diferencial_vm` (diff_canal_*, diff_tarea_*).
 
 ### DT-12 · Módulos — visibilidad fina e inicialización
-**Estado:** PARCIAL  
-**Evidencia:** commit `1267bc0` corrige "orden de ejecución de sentencias top-level en el VM". Solo existe `publico` como modificador de visibilidad.
+**Estado:** IMPLEMENTADO  
+**Evidencia:** importación por alias y nominal, visibilidad `publico`, inicialización de top-level, llamadas internas entre funciones del módulo (reescritura HIR), módulos anidados (A→B→C). Tests: `modulos_e2e` (30+), `sintaxis_modulos`, `semantico_modulos`.
 
 ### DT-13 · REPL
-**Estado:** AUSENTE  
-**Evidencia:** no existe código de REPL en ningún módulo.
+**Estado:** IMPLEMENTADO  
+**Evidencia:** `repl()` en `src/cli.rs` (línea ~537), cableado a `"repl"`. Acumulación multilínea, reporte de errores sin abortar. Sin tests dedicados.
 
 ### DT-14 · LSP
-**Estado:** AUSENTE
+**Estado:** IMPLEMENTADO (básico)  
+**Evidencia:** `src/lsp.rs` (JSON-RPC 2.0 sobre stdio, Content-Length), `initialize`/`initialized`/`shutdown`/`exit`, `didOpen`/`didChange` con `publishDiagnostics`, completion, hover best-effort. Comando `bsk lsp`. Tests: `tests/lsp.rs` (3).
 
-### DT-15 · Debugger DAP
-**Estado:** AUSENTE
+### DT-15 · Debugger
+**Estado:** IMPLEMENTADO (CLI, sin DAP)  
+**Evidencia:** `src/vm.rs` (traza capturable), `bsk depurar`/`debug` con `--punto-funcion`. Tests: `tests/depurador.rs` (3). No es DAP ni tiene breakpoints por línea.
 
 ### DT-16 · Extensión IDE
-**Estado:** AUSENTE
+**Estado:** AUSENTE  
+**Evidencia:** no existe directorio `vscode`/`extension` en el repositorio (verificado con `find`).
 
 ### DT-17 · Documentación/índice desactualizado
-**Estado:** PARCIAL  
-**Evidencia verificada:** `INDICE-Y-MAPA-DE-COBERTURA.md` menciona "264 pruebas", `registro-de-brechas.md` anterior menciona "580 pruebas". La cifra real hoy es 782.
-
----
+**Estado:** PARCIAL (sigue desactualizado)  
+**Evidencia verificada:** `INDICE-Y-MAPA-DE-COBERTURA.md` y `README` siguen con referencias desfasadas (conteos históricos; rutas `examples/`/`.bs` vs reales `ejemplos/`/`.bsk`). Cifra vigente verificada: **874 passed, 0 failed, 2 ignored**.
 
 ## 11. Contradicciones resueltas
 
