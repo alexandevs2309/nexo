@@ -1,48 +1,107 @@
-//! Backend nativo (prototipo) de BASILISCO.
+//! Backend nativo de BASILISCO (Etapa A: colecciones + runtime embebido).
 //!
-//! Genera código Rust a partir de MIR. Soporta funciones cuyos parámetros,
-//! locales y retorno son `entero`/`lógico` y (desde DT-06) `texto`:
-//! concatenación texto+texto con `format!`, comparaciones y E/S (`mostrar`,
-//! `mostrar_sin_salto`). Los tipos `Desconocido` se refinan con una inferencia
-//! de tipos (punto fijo): primero los retornos de todas las funciones del
-//! programa, luego los locales de cada función (incluidos los destinos de
-//! llamada y asignaciones encadenadas).
+//! Genera código Rust a partir de MIR. El código generado incluye un módulo
+//! runtime (`bsk_runtime`) con un enum `Valor` uniforme que replica la
+//! semántica del intérprete (aritmética, colecciones, E/S, errores). Las
+//! funciones generadas operan sobre `Valor` y devuelven `Result<Valor, RuntimeError>`.
 //!
-//! Paridad con la VM: la suma mixta texto/entero NO se convierte
-//! silenciosamente (la VM la rechaza con error aritmético), así que las
-//! funciones con `Suma` mixta se rechazan. Si `main` no es soportada, el
-//! código generado contiene `compile_error!` — nunca una salida silenciosa.
+//! Soporta: entero, lógico, real, decimal, texto, arreglos, listas, objetos,
+//! colecciones heterogéneas, indexación, agregar/eliminar, longitud, E/S,
+//! control de flujo, llamadas directas/indirectas, globals/`__init`,
+//! `ObjetoModulo` (alias de módulos inlinados por HIR) y stdlib nativa
+//! `leer_archivo`/`json_parsear` (parser JSON en runtime, std-only).
+//!
+//! No soporta (rechazado explícitamente): closures/celdas, try/catch/invoke,
+//! rangos, y stdlib no cubierta por el runtime embebido.
 
 use std::collections::HashMap;
 
 use crate::mir::{
-    MirBinOp, MirConst, MirFunction, MirOperand, MirPrograma, MirRvalue, MirStmt, MirTerminator,
-    MirUnOp,
+    MirBinOp, MirConst, MirFunction, MirOperand, MirPrograma, MirProjection, MirRvalue, MirStmt,
+    MirTerminator, MirUnOp,
 };
 use crate::semantico::TipoSem;
 
-/// Genera únicamente las funciones `bsk_*` (sin punto de entrada), reutilizable
-/// por el backend nativo.
+/// Runtime embebido (solo std, sin crates externos).
+const RUNTIME: &str = include_str!("runtime.rs");
+
+/// Genera únicamente las funciones `bsk_*` (sin punto de entrada).
 pub fn generar_funciones(programa: &MirPrograma) -> String {
     generar_funciones_con(programa, true)
 }
 
 /// Genera solo las funciones del subconjunto puro entero/lógico (sin texto ni
-/// E/S), reutilizable por el backend WASM donde `String` no cruza el ABI C.
+/// E/S ni colecciones), reutilizable por el backend WASM.
 pub fn generar_funciones_enteras(programa: &MirPrograma) -> String {
-    generar_funciones_con(programa, false)
+    crate::backend_entero::generar_funciones_enteras(programa)
 }
 
-fn generar_funciones_con(programa: &MirPrograma, permitir_texto: bool) -> String {
+fn generar_funciones_con(programa: &MirPrograma, _permitir_texto: bool) -> String {
     let retornos = inferir_retornos_programa(programa);
     let mut out = String::new();
+    out.push_str("mod bsk_runtime {\n");
+    // indent the runtime? No — just include as-is inside mod. The runtime uses
+    // its own `use` statements and pub items; wrapping in mod is fine.
+    out.push_str(RUNTIME);
+    out.push_str("}\n\n");
+    out.push_str("use bsk_runtime::Valor;\n");
+    out.push_str("use bsk_runtime::RuntimeError;\n");
+    out.push_str("use bsk_runtime::TipoConv;\n\n");
+
+    // Wrappers de stdlib nativa (E/S, JSON) para despacho directo `bsk_*`.
+    out.push_str(
+        "fn bsk_leer_archivo(ruta: Valor) -> Result<Valor, RuntimeError> { bsk_runtime::bsk_leer_archivo(ruta) }\n\
+         fn bsk_json_parsear(texto: Valor) -> Result<Valor, RuntimeError> { bsk_runtime::bsk_json_parsear(texto) }\n\n",
+    );
+
+    // Almacén de variables globales (módulos/__init, Etapa C).
+    let n_globals = programa.globals.len();
+    out.push_str(&format!(
+        "static BSK_GLOBALS: std::sync::OnceLock<std::sync::Mutex<Vec<Valor>>> = std::sync::OnceLock::new();\n\
+         fn bsk_g() -> &'static std::sync::Mutex<Vec<Valor>> {{\n\
+         \x20   BSK_GLOBALS.get_or_init(|| std::sync::Mutex::new(vec![Valor::Nulo; {}]))\n\
+         }}\n\n",
+        n_globals
+    ));
+
+    // Despacho de llamadas indirectas (alias de módulo / valores función).
+    let mut soportadas: Vec<&MirFunction> = Vec::new();
     for f in &programa.funciones {
         let ctx = inferir_ctx(f, &retornos);
-        let soportada = funcion_soportada(f, &ctx, &retornos)
-            && (permitir_texto || funcion_pura_enteros(f, &ctx));
+        if funcion_soportada(f, &ctx, &retornos) {
+            soportadas.push(f);
+        }
+    }
+    out.push_str(
+        "fn bsk_llamar_indirecto(callee: Valor, args: Vec<Valor>) -> Result<Valor, RuntimeError> {\n\
+         \x20   match callee {\n\
+         \x20       Valor::Funcion(nombre) => match nombre.as_str() {\n",
+    );
+    for f in &soportadas {
+        let params: Vec<String> = (0..f.params.len())
+            .map(|i| format!("args.get({i}).cloned().unwrap_or(Valor::Nulo)"))
+            .collect();
+        out.push_str(&format!(
+            "            \"{}\" => bsk_{}({}),\n",
+            f.nombre,
+            f.nombre,
+            params.join(", ")
+        ));
+    }
+    out.push_str(
+        "            otro => Err(RuntimeError(format!(\"función no encontrada: {otro}\"))),\n\
+         \x20       },\n\
+         \x20       otro => Err(RuntimeError(format!(\"no es una función: {otro}\"))),\n\
+         \x20   }\n\
+         }\n\n",
+    );
+
+    for f in &programa.funciones {
+        let ctx = inferir_ctx(f, &retornos);
+        let soportada = funcion_soportada(f, &ctx, &retornos);
         if !soportada {
             out.push_str(&format!(
-                "// función '{}' omitida: tipos no soportados en el prototipo\n\n",
+                "// función '{}' omitida: tipos no soportados en el backend nativo\n\n",
                 f.nombre
             ));
             continue;
@@ -54,40 +113,51 @@ fn generar_funciones_con(programa: &MirPrograma, permitir_texto: bool) -> String
 }
 
 /// Genera código Rust (con función `main` de entrada) a partir de un programa MIR.
-/// Funciones no soportadas se omiten con un comentario.
 pub fn generar_rust(programa: &MirPrograma) -> String {
     let retornos = inferir_retornos_programa(programa);
-    let main_soportada = programa
-        .funciones
-        .iter()
-        .any(|f| f.nombre == "main" && funcion_soportada(f, &inferir_ctx(f, &retornos), &retornos));
-    // El retorno efectivo de `main`: si es `Desconocido` la función no retorna
-    // valor (como en la VM, que devuelve nulo y el CLI no lo imprime).
-    let main_retorno = programa
-        .funciones
-        .iter()
-        .find(|f| f.nombre == "main")
+    let main_fn = programa.funciones.iter().find(|f| f.nombre == "main");
+    let main_soportada = main_fn
+        .map(|f| funcion_soportada(f, &inferir_ctx(f, &retornos), &retornos))
+        .unwrap_or(false);
+    let main_retorno = main_fn
         .map(|f| inferir_ctx(f, &retornos).retorno)
         .unwrap_or(TipoSem::Desconocido);
+    let init_soportada = programa.funciones.iter().any(|f| {
+        f.nombre == "__init" && funcion_soportada(f, &inferir_ctx(f, &retornos), &retornos)
+    });
+
     let mut out = String::new();
-    out.push_str("// Generado por BASILISCO backend nativo (prototipo)\n");
+    out.push_str("// Generado por BASILISCO backend nativo (Etapa A: runtime embebido)\n");
     out.push_str("#![allow(unused)]\n\n");
-    // Si `main` no es soportada, fallar la compilación con un diagnóstico
-    // explícito en lugar de generar una salida silenciosa incorrecta.
     if !main_soportada {
         out.push_str(
             "compile_error!(\"backend nativo: la función 'main' usa operaciones no soportadas \
-             (colecciones, texto mezclado con enteros en +, excepciones, celdas, etc.)\");\n\n",
+             (closures, try/catch/invoke u otras construcciones aún no soportadas)\");\n\n",
         );
     }
     out.push_str(&generar_funciones(programa));
-    // Punto de entrada Rust.
     out.push_str("fn main() {\n");
+    if init_soportada {
+        out.push_str("    if let Err(e) = bsk___init() {\n");
+        out.push_str("        eprintln!(\"error: {}\", e);\n");
+        out.push_str("        std::process::exit(1);\n");
+        out.push_str("    }\n");
+    }
     if main_soportada {
         if matches!(main_retorno, TipoSem::Desconocido) {
-            out.push_str("    bsk_main();\n");
+            out.push_str("    match bsk_main() {\n");
+            out.push_str("        Ok(_) => {}\n");
+            out.push_str(
+                "        Err(e) => { eprintln!(\"error: {}\", e); std::process::exit(1); }\n",
+            );
+            out.push_str("    }\n");
         } else {
-            out.push_str("    println!(\"{}\", bsk_main());\n");
+            out.push_str("    match bsk_main() {\n");
+            out.push_str("        Ok(v) => println!(\"{}\", v),\n");
+            out.push_str(
+                "        Err(e) => { eprintln!(\"error: {}\", e); std::process::exit(1); }\n",
+            );
+            out.push_str("    }\n");
         }
     } else {
         out.push_str("    println!(\"0\");\n");
@@ -96,19 +166,15 @@ pub fn generar_rust(programa: &MirPrograma) -> String {
     out
 }
 
-/// Tipos resueltos de una función: locales inferidos + retorno.
+// ---------- Inferencia (reutilizada) ----------
+
 struct CtxFn {
     tipos: Vec<TipoSem>,
     retorno: TipoSem,
 }
 
-/// Mapa nombre → tipo de retorno de todas las funciones del programa
-/// (declarado si está anotado, inferido si no).
 type Retornos = HashMap<String, TipoSem>;
 
-/// Infiere los retornos del programa con un punto fijo: los locales de cada
-/// función dependen de los retornos de las funciones que llama, y los
-/// retornos de los tipos de sus locales.
 fn inferir_retornos_programa(programa: &MirPrograma) -> Retornos {
     let mut mapa: Retornos = programa
         .funciones
@@ -133,8 +199,6 @@ fn inferir_retornos_programa(programa: &MirPrograma) -> Retornos {
     mapa
 }
 
-/// Infiere los locales `Desconocido` de una función con un punto fijo sobre
-/// asignaciones y destinos de llamada.
 fn inferir_locales(f: &MirFunction, retornos: &Retornos) -> Vec<TipoSem> {
     let mut tipos = f.locals.clone();
     let mut cambio = true;
@@ -142,7 +206,6 @@ fn inferir_locales(f: &MirFunction, retornos: &Retornos) -> Vec<TipoSem> {
         cambio = false;
         for b in &f.bloques {
             for s in &b.stmts {
-                // Tipo inferido para esta sentencia (si aporta información).
                 let destino_y_tipo = match s {
                     MirStmt::Asignacion { destino, valor } => {
                         tipo_rvalue(valor, &tipos).map(|t| (destino.local.0, t))
@@ -152,10 +215,7 @@ fn inferir_locales(f: &MirFunction, retornos: &Retornos) -> Vec<TipoSem> {
                         callee,
                         ..
                     } => {
-                        // `mostrar`/`mostrar_sin_salto` devuelven nulo: el
-                        // destino queda entero (0), como en la VM.
-                        let es_es = callee == "mostrar" || callee == "mostrar_sin_salto";
-                        if es_es {
+                        if callee == "mostrar" || callee == "mostrar_sin_salto" {
                             None
                         } else {
                             match retornos.get(callee) {
@@ -171,7 +231,7 @@ fn inferir_locales(f: &MirFunction, retornos: &Retornos) -> Vec<TipoSem> {
                 if let Some((i, t)) = destino_y_tipo
                     && i < tipos.len()
                     && matches!(tipos[i], TipoSem::Desconocido)
-                    && tipos[i] != t
+                    && !matches!(t, TipoSem::Desconocido)
                 {
                     tipos[i] = t;
                     cambio = true;
@@ -182,8 +242,6 @@ fn inferir_locales(f: &MirFunction, retornos: &Retornos) -> Vec<TipoSem> {
     tipos
 }
 
-/// Infiere el retorno a partir de los `Return`: solo si todos los retornos con
-/// valor coinciden en tipo y ningún camino retorna sin valor (`Return(None)`).
 fn inferir_retorno(f: &MirFunction, tipos: &[TipoSem], _retornos: &Retornos) -> TipoSem {
     let mut inferido: Option<TipoSem> = None;
     for b in &f.bloques {
@@ -206,8 +264,6 @@ fn inferir_retorno(f: &MirFunction, tipos: &[TipoSem], _retornos: &Retornos) -> 
     inferido.unwrap_or(TipoSem::Desconocido)
 }
 
-/// Contexto completo de una función: locales inferidos + retorno (declarado o
-/// inferido).
 fn inferir_ctx(f: &MirFunction, retornos: &Retornos) -> CtxFn {
     let tipos = inferir_locales(f, retornos);
     let retorno = if matches!(f.retorno, TipoSem::Desconocido) {
@@ -236,6 +292,10 @@ fn tipo_rvalue(r: &MirRvalue, tipos: &[TipoSem]) -> Option<TipoSem> {
             }
         }
         MirRvalue::UnOp { .. } => Some(TipoSem::Entero),
+        MirRvalue::Agregado { .. } => Some(TipoSem::Arreglo(Box::new(TipoSem::Desconocido), 0)),
+        MirRvalue::Indice { .. } => Some(TipoSem::Desconocido),
+        MirRvalue::Longitud { .. } => Some(TipoSem::Entero),
+        MirRvalue::Campo { .. } => Some(TipoSem::Desconocido),
         _ => None,
     }
 }
@@ -245,6 +305,7 @@ fn tipo_operando(op: &MirOperand, tipos: &[TipoSem]) -> Option<TipoSem> {
         MirOperand::Const(c) => match c {
             MirConst::Entero(_) | MirConst::Logico(_) => Some(TipoSem::Entero),
             MirConst::Texto(_) => Some(TipoSem::Texto),
+            MirConst::Funcion(_) => Some(TipoSem::Desconocido),
             _ => None,
         },
         MirOperand::Copy(l) | MirOperand::Move(l) => tipos
@@ -253,6 +314,21 @@ fn tipo_operando(op: &MirOperand, tipos: &[TipoSem]) -> Option<TipoSem> {
             .filter(|t| !matches!(t, TipoSem::Desconocido)),
         MirOperand::Global(_) => None,
     }
+}
+
+fn es_soportado(t: &TipoSem) -> bool {
+    matches!(
+        t,
+        TipoSem::Entero
+            | TipoSem::Logico
+            | TipoSem::Texto
+            | TipoSem::Real
+            | TipoSem::Decimal
+            | TipoSem::Desconocido
+            | TipoSem::Arreglo(_, _)
+            | TipoSem::Lista(_)
+            | TipoSem::Coleccion(_)
+    )
 }
 
 fn funcion_soportada(f: &MirFunction, ctx: &CtxFn, retornos: &Retornos) -> bool {
@@ -267,8 +343,6 @@ fn funcion_soportada(f: &MirFunction, ctx: &CtxFn, retornos: &Retornos) -> bool 
             .all(|b| b.stmts.iter().all(stmt_soportado) && terminator_soportado(&b.terminator))
 }
 
-/// Toda llamada debe apuntar a una función del programa o a una nativa de E/S;
-/// llamadas a nativas de la stdlib (longitud, agregar, …) no se generan aquí.
 fn llamadas_resueltas(f: &MirFunction, retornos: &Retornos) -> bool {
     f.bloques.iter().all(|b| {
         b.stmts.iter().all(|s| match s {
@@ -276,68 +350,40 @@ fn llamadas_resueltas(f: &MirFunction, retornos: &Retornos) -> bool {
                 retornos.contains_key(callee)
                     || callee == "mostrar"
                     || callee == "mostrar_sin_salto"
+                    || callee == "agregar"
+                    || callee == "eliminar"
+                    || callee == "longitud"
+                    || callee == "contiene"
+                    || callee == "es_vacio"
+                    || callee == "invertir"
+                    || callee == "ordenar"
+                    || callee == "leer_archivo"
+                    || callee == "json_parsear"
             }
+            // Llamadas indirectas se despachan en tiempo de ejecución contra
+            // las funciones conocidas del programa (Etapa C, módulos/alias).
+            MirStmt::LlamadaIndirecta { .. } => true,
             _ => true,
         })
     })
 }
 
-/// La suma mixta texto/entero es un error en la VM: aquí se rechaza la función
-/// en el gate para no generar una conversión silenciosa.
-fn sumas_homogeneas(f: &MirFunction, ctx: &CtxFn) -> bool {
-    f.bloques.iter().all(|b| {
-        b.stmts.iter().all(|s| match s {
-            MirStmt::Asignacion {
-                valor:
-                    MirRvalue::BinOp {
-                        op: MirBinOp::Suma,
-                        lhs,
-                        rhs,
-                    },
-                ..
-            } => es_texto_operando(lhs, ctx) == es_texto_operando(rhs, ctx),
-            _ => true,
-        })
-    })
-}
-
-fn es_soportado(t: &TipoSem) -> bool {
-    matches!(
-        t,
-        TipoSem::Entero | TipoSem::Logico | TipoSem::Texto | TipoSem::Desconocido
-    )
-}
-
-/// Subconjunto WASM: solo enteros/lógicos (inferidos incluidos) y sin E/S.
-fn funcion_pura_enteros(f: &MirFunction, ctx: &CtxFn) -> bool {
-    if !tipo_puro_entero(&ctx.retorno) || !ctx.tipos.iter().all(tipo_puro_entero) {
-        return false;
-    }
-    if !f.params.iter().all(|(_, t)| tipo_puro_entero(t)) {
-        return false;
-    }
-    !f.bloques.iter().any(|b| {
-        b.stmts.iter().any(|s| {
-            matches!(
-                s,
-                MirStmt::Llamada { callee, .. }
-                    if callee == "mostrar" || callee == "mostrar_sin_salto"
-            )
-        })
-    })
-}
-
-fn tipo_puro_entero(t: &TipoSem) -> bool {
-    matches!(t, TipoSem::Entero | TipoSem::Logico | TipoSem::Desconocido)
+fn sumas_homogeneas(_f: &MirFunction, _ctx: &CtxFn) -> bool {
+    // La `suma` del runtime es dinámica (numérica, texto, colecciones según
+    // soporte); con tipos `Desconocido` (JSON/índices/heterogéneos) no puede
+    // decidirse estáticamente. Se delega al runtime (Etapa C, programas reales).
+    true
 }
 
 fn stmt_soportado(stmt: &MirStmt) -> bool {
     match stmt {
         MirStmt::Asignacion { valor, .. } => rvalue_soportado(valor),
         MirStmt::Llamada { argumentos, .. } => argumentos.iter().all(operando_soportado),
-        MirStmt::LlamadaIndirecta { .. } => false,
+        MirStmt::LlamadaIndirecta {
+            callee, argumentos, ..
+        } => operando_soportado(callee) && argumentos.iter().all(operando_soportado),
         MirStmt::EntrarTry { .. } | MirStmt::SalirTry => false,
-        MirStmt::AsignacionGlobal { .. } => false,
+        MirStmt::AsignacionGlobal { valor, .. } => rvalue_soportado(valor),
         MirStmt::Nop => true,
     }
 }
@@ -345,11 +391,7 @@ fn stmt_soportado(stmt: &MirStmt) -> bool {
 fn terminator_soportado(t: &MirTerminator) -> bool {
     match t {
         MirTerminator::Goto(_) | MirTerminator::Unreachable => true,
-        MirTerminator::SwitchInt {
-            discriminante,
-            casos,
-            por_defecto: _,
-        } => operando_soportado(discriminante) && casos.iter().all(|_| true),
+        MirTerminator::SwitchInt { discriminante, .. } => operando_soportado(discriminante),
         MirTerminator::Return(op) => op.as_ref().map(operando_soportado).unwrap_or(true),
         MirTerminator::Invoke { .. } => false,
     }
@@ -357,8 +399,10 @@ fn terminator_soportado(t: &MirTerminator) -> bool {
 
 fn operando_soportado(op: &MirOperand) -> bool {
     match op {
-        MirOperand::Copy(_) | MirOperand::Move(_) | MirOperand::Const(_) => true,
-        MirOperand::Global(_) => false,
+        MirOperand::Copy(_)
+        | MirOperand::Move(_)
+        | MirOperand::Const(_)
+        | MirOperand::Global(_) => true,
     }
 }
 
@@ -367,36 +411,39 @@ fn rvalue_soportado(r: &MirRvalue) -> bool {
         MirRvalue::Use(op) => operando_soportado(op),
         MirRvalue::BinOp { lhs, rhs, .. } => operando_soportado(lhs) && operando_soportado(rhs),
         MirRvalue::UnOp { operand, .. } => operando_soportado(operand),
-        MirRvalue::CrearCelda { valor } => operando_soportado(valor),
-        MirRvalue::LeerCelda { base } => operando_soportado(base),
-        MirRvalue::Agregado { .. }
-        | MirRvalue::Indice { .. }
-        | MirRvalue::Campo { .. }
-        | MirRvalue::Longitud { .. }
-        | MirRvalue::Rango { .. }
+        MirRvalue::Agregado { elementos } => elementos.iter().all(operando_soportado),
+        MirRvalue::Indice { base, indice } => {
+            operando_soportado(base) && operando_soportado(indice)
+        }
+        MirRvalue::Longitud { base } => operando_soportado(base),
+        MirRvalue::Campo { base, .. } => operando_soportado(base),
+        // ObjetoModulo se materializa como Objeto(BTreeMap) de funciones; no
+        // usa operandos dinámicos. Soportado para módulos/alias (Etapa C).
+        MirRvalue::ObjetoModulo { .. } => true,
+        MirRvalue::CrearCelda { .. }
+        | MirRvalue::LeerCelda { .. }
         | MirRvalue::Clausura { .. }
-        | MirRvalue::ObjetoModulo { .. } => false,
+        | MirRvalue::Rango { .. } => false,
     }
 }
 
+// ---------- Generación ----------
+
 fn generar_funcion(out: &mut String, f: &MirFunction, ctx: &CtxFn) {
-    let params: Vec<String> = f
-        .params
-        .iter()
-        .enumerate()
-        .map(|(i, (_, t))| format!("p{}: {}", i, tipo_rust(t)))
-        .collect();
     out.push_str(&format!(
-        "fn bsk_{}({}) -> {} {{\n",
+        "fn bsk_{}({}) -> Result<Valor, RuntimeError> {{\n",
         f.nombre,
-        params.join(", "),
-        tipo_rust(&ctx.retorno)
+        f.params
+            .iter()
+            .enumerate()
+            .map(|(i, (_, _t))| format!("p{}: Valor", i))
+            .collect::<Vec<_>>()
+            .join(", ")
     ));
     for (i, t) in ctx.tipos.iter().enumerate() {
         out.push_str(&format!(
-            "    let mut l{}: {} = {};\n",
+            "    let mut l{}: Valor = {};\n",
             i,
-            tipo_rust(t),
             valor_por_defecto(t)
         ));
     }
@@ -404,11 +451,7 @@ fn generar_funcion(out: &mut String, f: &MirFunction, ctx: &CtxFn) {
         out.push_str(&format!("    l{} = p{};\n", local.0, i));
     }
     out.push_str("    let mut __bloque: usize = 0;\n");
-    out.push_str(&format!(
-        "    let mut __ret: {} = {};\n",
-        tipo_rust(&ctx.retorno),
-        valor_por_defecto(&ctx.retorno)
-    ));
+    out.push_str("    let mut __ret: Result<Valor, RuntimeError> = Ok(Valor::Nulo);\n");
     out.push_str("    loop {\n");
     out.push_str("        match __bloque {\n");
     for b in &f.bloques {
@@ -426,18 +469,36 @@ fn generar_funcion(out: &mut String, f: &MirFunction, ctx: &CtxFn) {
     out.push_str("}\n");
 }
 
-fn tipo_rust(t: &TipoSem) -> &'static str {
-    match t {
-        TipoSem::Texto => "String",
-        _ => "i64",
-    }
+fn valor_por_defecto(_t: &TipoSem) -> &'static str {
+    "Valor::Nulo"
 }
 
-fn valor_por_defecto(t: &TipoSem) -> &'static str {
-    match t {
-        TipoSem::Texto => "String::new()",
-        _ => "0",
+/// Genera la expresión `TipoConv` de una local según su tipo declarado.
+/// Devuelve `None` si el tipo no aplica conversiones en escritura (igual que
+/// `convertir_tipo` de vm.rs: Entero/Texto/Lógico/Nulo/Desconocido/Función dejan
+/// el valor tal cual).
+fn tipo_conv_expr(t: Option<&TipoSem>) -> Option<String> {
+    fn conv_de(t: &TipoSem) -> Option<String> {
+        match t {
+            TipoSem::Decimal => Some("&TipoConv::Decimal".to_string()),
+            TipoSem::Real => Some("&TipoConv::Real".to_string()),
+            TipoSem::Lista(elem) => Some(format!(
+                "&TipoConv::Lista(Box::new({}))",
+                conv_de(elem).unwrap_or_else(|| "TipoConv::Nada".to_string())
+            )),
+            TipoSem::Arreglo(elem, n) => Some(format!(
+                "&TipoConv::Arreglo(Box::new({}), {})",
+                conv_de(elem).unwrap_or_else(|| "TipoConv::Nada".to_string()),
+                n
+            )),
+            TipoSem::Coleccion(elem) => Some(format!(
+                "&TipoConv::Coleccion(Box::new({}))",
+                conv_de(elem).unwrap_or_else(|| "TipoConv::Nada".to_string())
+            )),
+            _ => None,
+        }
     }
+    t.and_then(conv_de)
 }
 
 fn generar_stmt(out: &mut String, stmt: &MirStmt, indent: usize, ctx: &CtxFn) {
@@ -446,9 +507,42 @@ fn generar_stmt(out: &mut String, stmt: &MirStmt, indent: usize, ctx: &CtxFn) {
         MirStmt::Asignacion { destino, valor } => {
             let rhs = generar_rvalue(valor, ctx);
             if destino.projection.is_empty() {
-                out.push_str(&format!("{}l{} = {};\n", pad, destino.local.0, rhs));
+                // La VM convierte el valor al tipo declarado de la local en
+                // cada escritura (`escribir_place` → `convertir_tipo`); el
+                // backend nativo replica eso para preservar la paridad
+                // (ej. `var r: real = 7` debe almacenar Real(7.0)).
+                let tipo = ctx.tipos.get(destino.local.0);
+                if let Some(conv) = tipo_conv_expr(tipo) {
+                    out.push_str(&format!(
+                        "{}l{} = {}.convertir_a({});\n",
+                        pad, destino.local.0, rhs, conv
+                    ));
+                } else {
+                    out.push_str(&format!("{}l{} = {};\n", pad, destino.local.0, rhs));
+                }
             } else {
-                out.push_str(&format!("{}let _ = {};\n", pad, rhs));
+                // Proyección: l{base}.indice_set(idx, rhs)?  o  campo
+                let base = destino.local.0;
+                for proj in &destino.projection {
+                    match proj {
+                        MirProjection::Indice(idx_op) => {
+                            let idx = generar_operando(idx_op);
+                            out.push_str(&format!(
+                                "{}l{}.indice_set(match {} {{ Valor::Entero(n) => n, _ => 0 }}, {})?;\n",
+                                pad, base, idx, rhs
+                            ));
+                        }
+                        MirProjection::Campo(campo) => {
+                            out.push_str(&format!(
+                                "{}let _ = (l{}, \"{}\", {});\n",
+                                pad, base, campo, rhs
+                            ));
+                        }
+                        MirProjection::Celda => {
+                            out.push_str(&format!("{}let _ = (l{}, {});\n", pad, base, rhs));
+                        }
+                    }
+                }
             }
         }
         MirStmt::Llamada {
@@ -458,37 +552,40 @@ fn generar_stmt(out: &mut String, stmt: &MirStmt, indent: usize, ctx: &CtxFn) {
         } => {
             let args: Vec<String> = argumentos.iter().map(generar_operando).collect();
             match callee.as_str() {
-                // Nativas de E/S: imprimen y dejan el destino en su valor nulo.
-                "mostrar" | "mostrar_sin_salto" => {
-                    let macroname = if callee == "mostrar" {
-                        "println"
-                    } else {
-                        "print"
-                    };
+                "mostrar" => {
                     let cuerpo = if args.len() == 1 {
-                        format!("{macroname}!(\"{{}}\", {})", args[0])
+                        format!("println!(\"{{}}\", {})", args[0])
                     } else {
-                        format!("{macroname}!(\"\")")
+                        "println!(\"\")".to_string()
                     };
                     out.push_str(&format!("{}{};\n", pad, cuerpo));
                     if let Some(d) = destino
                         && d.projection.is_empty()
                     {
-                        let t = ctx
-                            .tipos
-                            .get(d.local.0)
-                            .cloned()
-                            .unwrap_or(TipoSem::Desconocido);
-                        out.push_str(&format!(
-                            "{}l{} = {};\n",
-                            pad,
-                            d.local.0,
-                            valor_por_defecto(&t)
-                        ));
+                        out.push_str(&format!("{}l{} = Valor::Nulo;\n", pad, d.local.0));
                     }
                 }
-                _ => {
-                    let call = format!("bsk_{}({})", callee, args.join(", "));
+                "mostrar_sin_salto" => {
+                    let cuerpo = if args.len() == 1 {
+                        format!("print!(\"{{}}\", {})", args[0])
+                    } else {
+                        "print!(\"\")".to_string()
+                    };
+                    out.push_str(&format!("{}{};\n", pad, cuerpo));
+                    if let Some(d) = destino
+                        && d.projection.is_empty()
+                    {
+                        out.push_str(&format!("{}l{} = Valor::Nulo;\n", pad, d.local.0));
+                    }
+                }
+                "agregar" => {
+                    let call = if args.len() >= 2 {
+                        format!("{}.agregar({})", args[0], args[1])
+                    } else if args.len() == 1 {
+                        format!("{}.agregar(Valor::Nulo)", args[0])
+                    } else {
+                        "Valor::Nulo".to_string()
+                    };
                     if let Some(d) = destino {
                         if d.projection.is_empty() {
                             out.push_str(&format!("{}l{} = {};\n", pad, d.local.0, call));
@@ -499,23 +596,90 @@ fn generar_stmt(out: &mut String, stmt: &MirStmt, indent: usize, ctx: &CtxFn) {
                         out.push_str(&format!("{}let _ = {};\n", pad, call));
                     }
                 }
+                "eliminar" => {
+                    let call = if args.len() >= 2 {
+                        format!(
+                            "{}.eliminar(match {} {{ Valor::Entero(n) => n, _ => 0 }})?",
+                            args[0], args[1]
+                        )
+                    } else {
+                        "Err(RuntimeError(\"argumentos insuficientes\".to_string()))?".to_string()
+                    };
+                    if let Some(d) = destino {
+                        if d.projection.is_empty() {
+                            out.push_str(&format!("{}l{} = {};\n", pad, d.local.0, call));
+                        } else {
+                            out.push_str(&format!("{}let _ = {};\n", pad, call));
+                        }
+                    } else {
+                        out.push_str(&format!("{}let _ = {};\n", pad, call));
+                    }
+                }
+                "longitud" => {
+                    let arg = if !args.is_empty() {
+                        args[0].clone()
+                    } else {
+                        "Valor::Nulo".to_string()
+                    };
+                    let call = format!("Valor::Entero({}.longitud())", arg);
+                    if let Some(d) = destino {
+                        if d.projection.is_empty() {
+                            out.push_str(&format!("{}l{} = {};\n", pad, d.local.0, call));
+                        } else {
+                            out.push_str(&format!("{}let _ = {};\n", pad, call));
+                        }
+                    } else {
+                        out.push_str(&format!("{}let _ = {};\n", pad, call));
+                    }
+                }
+                _ => {
+                    let call = format!("bsk_{}({})", callee, args.join(", "));
+                    if let Some(d) = destino {
+                        if d.projection.is_empty() {
+                            out.push_str(&format!("{}l{} = {}?;\n", pad, d.local.0, call));
+                        } else {
+                            out.push_str(&format!("{}let _ = {}?;\n", pad, call));
+                        }
+                    } else {
+                        out.push_str(&format!("{}let _ = {}?;\n", pad, call));
+                    }
+                }
             }
         }
-        MirStmt::LlamadaIndirecta { .. } => {
-            out.push_str(&format!("{}// llamada indirecta no soportada\n", pad));
+        MirStmt::LlamadaIndirecta {
+            destino,
+            callee,
+            argumentos,
+        } => {
+            let args: Vec<String> = argumentos.iter().map(generar_operando).collect();
+            let cv = generar_operando(callee);
+            let call = format!("bsk_llamar_indirecto({}, vec![{}])", cv, args.join(", "));
+            if let Some(d) = destino {
+                if d.projection.is_empty() {
+                    out.push_str(&format!("{}l{} = {}?;\n", pad, d.local.0, call));
+                } else {
+                    out.push_str(&format!("{}let _ = {}?;\n", pad, call));
+                }
+            } else {
+                out.push_str(&format!("{}let _ = {}?;\n", pad, call));
+            }
         }
         MirStmt::EntrarTry { .. } => {
             out.push_str(&format!("{}// intentar no soportado\n", pad));
         }
         MirStmt::SalirTry => {}
-        MirStmt::AsignacionGlobal { .. } => {
-            out.push_str(&format!("{}// global no soportado\n", pad));
+        MirStmt::AsignacionGlobal { global, valor } => {
+            let rhs = generar_rvalue(valor, ctx);
+            out.push_str(&format!(
+                "{}bsk_g().lock().unwrap()[{}] = {};\n",
+                pad, global.0, rhs
+            ));
         }
         MirStmt::Nop => {}
     }
 }
 
-fn generar_terminator(out: &mut String, t: &MirTerminator, ctx: &CtxFn) {
+fn generar_terminator(out: &mut String, t: &MirTerminator, _ctx: &CtxFn) {
     let pad = "                ";
     match t {
         MirTerminator::Goto(b) => {
@@ -531,7 +695,7 @@ fn generar_terminator(out: &mut String, t: &MirTerminator, ctx: &CtxFn) {
             for (v, b) in casos {
                 let kw = if first { "if" } else { "else if" };
                 out.push_str(&format!(
-                    "{}{} {} == {} {{ __bloque = {}; continue; }}\n",
+                    "{}{} {}.discriminante() == {} {{ __bloque = {}; continue; }}\n",
                     pad, kw, d, v, b.0
                 ));
                 first = false;
@@ -545,21 +709,153 @@ fn generar_terminator(out: &mut String, t: &MirTerminator, ctx: &CtxFn) {
             let v = op
                 .as_ref()
                 .map(generar_operando)
-                .unwrap_or_else(|| valor_por_defecto(&ctx.retorno).to_string());
-            out.push_str(&format!("{}__ret = {};\n{}break;\n", pad, v, pad));
+                .unwrap_or_else(|| "Valor::Nulo".to_string());
+            out.push_str(&format!("{}__ret = Ok({});\n{}break;\n", pad, v, pad));
         }
         MirTerminator::Invoke { .. } => {
-            let v = valor_por_defecto(&ctx.retorno);
-            out.push_str(&format!("{}__ret = {};\n{}break;\n", pad, v, pad));
+            out.push_str(&format!(
+                "{}__ret = Err(RuntimeError(\"invoke no soportado\".to_string()));\n{}break;\n",
+                pad, pad
+            ));
         }
         MirTerminator::Unreachable => {
-            let v = valor_por_defecto(&ctx.retorno);
-            out.push_str(&format!("{}__ret = {};\n{}break;\n", pad, v, pad));
+            out.push_str(&format!("{}__ret = Ok(Valor::Nulo);\n{}break;\n", pad, pad));
         }
     }
 }
 
-/// Escape de un literal de texto para generar un `&str` de Rust válido.
+fn const_to_valor(c: &MirConst) -> String {
+    match c {
+        MirConst::Entero(n) => format!("Valor::Entero({})", n),
+        MirConst::Decimal(n) => format!("Valor::Decimal({})", n),
+        MirConst::Real(n) => format!("Valor::Real({})", n),
+        MirConst::Logico(b) => format!("Valor::Logico({})", b),
+        MirConst::Texto(s) => {
+            let esc = escapar_texto(s);
+            format!("Valor::Texto(\"{}\".to_string())", esc)
+        }
+        MirConst::Nulo => "Valor::Nulo".to_string(),
+        MirConst::Funcion(s) => format!("Valor::Funcion(\"{}\".to_string())", s),
+    }
+}
+
+fn generar_operando(op: &MirOperand) -> String {
+    match op {
+        MirOperand::Copy(l) | MirOperand::Move(l) => format!("l{}.clone()", l.0),
+        MirOperand::Const(c) => const_to_valor(c),
+        MirOperand::Global(g) => format!("bsk_g().lock().unwrap()[{}].clone()", g.0),
+    }
+}
+
+fn generar_rvalue(r: &MirRvalue, _ctx: &CtxFn) -> String {
+    match r {
+        MirRvalue::Use(op) => generar_operando(op),
+        MirRvalue::BinOp { op, lhs, rhs } => {
+            let l = generar_operando(lhs);
+            let r = generar_operando(rhs);
+            let method = match op {
+                MirBinOp::Suma => "suma",
+                MirBinOp::Resta => "resta",
+                MirBinOp::Multiplicacion => "mul",
+                MirBinOp::Division => "div",
+                MirBinOp::Modulo => "modulo",
+                MirBinOp::Igual => {
+                    return format!(
+                        "if {}.igual(&{}) {{ Valor::Logico(true) }} else {{ Valor::Logico(false) }}",
+                        l, r
+                    );
+                }
+                MirBinOp::Distinto => {
+                    return format!(
+                        "if {}.igual(&{}) {{ Valor::Logico(false) }} else {{ Valor::Logico(true) }}",
+                        l, r
+                    );
+                }
+                MirBinOp::Menor => {
+                    return format!(
+                        "match {}.lt(&{}) {{ Ok(b) => Valor::Logico(b), Err(e) => return Err(e) }}",
+                        l, r
+                    );
+                }
+                MirBinOp::MenorIgual => {
+                    return format!(
+                        "match {}.lt(&{}) {{ Ok(b) => Valor::Logico(!b && {}.igual(&{})), Err(e) => return Err(e) }}",
+                        l, r, l, r
+                    );
+                }
+                MirBinOp::Mayor => {
+                    return format!(
+                        "match {}.lt(&{}) {{ Ok(b) => Valor::Logico(!b && !{}.igual(&{})), Err(e) => return Err(e) }}",
+                        l, r, l, r
+                    );
+                }
+                MirBinOp::MayorIgual => {
+                    return format!(
+                        "match {}.lt(&{}) {{ Ok(b) => Valor::Logico(!b), Err(e) => return Err(e) }}",
+                        l, r
+                    );
+                }
+                MirBinOp::Y => {
+                    return format!(
+                        "if {}.igual(&Valor::Logico(true)) && {}.igual(&Valor::Logico(true)) {{ Valor::Logico(true) }} else {{ Valor::Logico(false) }}",
+                        l, r
+                    );
+                }
+                MirBinOp::O => {
+                    return format!(
+                        "if {}.igual(&Valor::Logico(true)) || {}.igual(&Valor::Logico(true)) {{ Valor::Logico(true) }} else {{ Valor::Logico(false) }}",
+                        l, r
+                    );
+                }
+            };
+            format!("{}.{}(&{})?", l, method, r)
+        }
+        MirRvalue::UnOp { op, operand } => {
+            let o = generar_operando(operand);
+            match op {
+                MirUnOp::Negacion => format!("{}.neg()?", o),
+                MirUnOp::No => format!("{}.not()?", o),
+            }
+        }
+        MirRvalue::Agregado { elementos } => {
+            let elems: Vec<String> = elementos.iter().map(generar_operando).collect();
+            // MIR Agregado produce Arreglo (como en VM).
+            format!("Valor::Arreglo(vec![{}])", elems.join(", "))
+        }
+        MirRvalue::Indice { base, indice } => {
+            let b = generar_operando(base);
+            let i = generar_operando(indice);
+            // indice espera i64; el operando puede ser Valor. Convertir.
+            format!(
+                "{}.indice(match {} {{ Valor::Entero(n) => n, _ => 0 }})?",
+                b, i
+            )
+        }
+        MirRvalue::Longitud { base } => {
+            let b = generar_operando(base);
+            format!("Valor::Entero({}.longitud())", b)
+        }
+        MirRvalue::Campo { base, campo } => {
+            let b = generar_operando(base);
+            format!("{}.campo(\"{}\")?", b, escapar_texto(campo))
+        }
+        MirRvalue::ObjetoModulo { prefijo, nombres } => {
+            let mut s = String::from("{ let mut __m = std::collections::BTreeMap::new(); ");
+            for n in nombres {
+                let fname = format!("{}_{}", prefijo, n);
+                s.push_str(&format!(
+                    "__m.insert(\"{}\".to_string(), Valor::Funcion(\"{}\".to_string())); ",
+                    escapar_texto(n),
+                    escapar_texto(&fname)
+                ));
+            }
+            s.push_str("Valor::Objeto(__m) }");
+            s
+        }
+        _ => "Valor::Nulo".to_string(),
+    }
+}
+
 fn escapar_texto(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars() {
@@ -573,90 +869,4 @@ fn escapar_texto(s: &str) -> String {
         }
     }
     out
-}
-
-fn generar_operando(op: &MirOperand) -> String {
-    match op {
-        MirOperand::Copy(l) => format!("l{}", l.0),
-        MirOperand::Move(l) => format!("l{}", l.0),
-        MirOperand::Global(_) => "0".to_string(),
-        MirOperand::Const(c) => match c {
-            MirConst::Entero(n) => n.to_string(),
-            MirConst::Logico(b) => {
-                if *b {
-                    "1".to_string()
-                } else {
-                    "0".to_string()
-                }
-            }
-            MirConst::Real(n) => format!("{}", *n as i64),
-            MirConst::Decimal(n) => format!("{}", *n),
-            MirConst::Texto(s) => format!("\"{}\".to_string()", escapar_texto(s)),
-            MirConst::Nulo => "0".to_string(),
-            MirConst::Funcion(_) => "0".to_string(), // first-class funcs not supported in native backend
-        },
-    }
-}
-
-fn es_texto_operando(op: &MirOperand, ctx: &CtxFn) -> bool {
-    match op {
-        MirOperand::Const(MirConst::Texto(_)) => true,
-        MirOperand::Copy(l) | MirOperand::Move(l) => ctx
-            .tipos
-            .get(l.0)
-            .is_some_and(|t| matches!(t, TipoSem::Texto)),
-        _ => false,
-    }
-}
-
-fn generar_rvalue(r: &MirRvalue, ctx: &CtxFn) -> String {
-    match r {
-        MirRvalue::Use(op) => generar_operando(op),
-        MirRvalue::BinOp { op, lhs, rhs } => {
-            let l = generar_operando(lhs);
-            let r = generar_operando(rhs);
-            match op {
-                // La concatenación texto+texto usa `format!` porque
-                // `String + String` no compila en Rust. La mezcla texto/entero
-                // queda rechazada por `sumas_homogeneas` (el VM también la
-                // rechaza), así que el caso `else` es numérico puro.
-                MirBinOp::Suma => {
-                    if es_texto_operando(lhs, ctx) && es_texto_operando(rhs, ctx) {
-                        format!("format!(\"{{}}{{}}\", {}, {})", l, r)
-                    } else {
-                        format!("({} + {})", l, r)
-                    }
-                }
-                MirBinOp::Resta => format!("({} - {})", l, r),
-                MirBinOp::Multiplicacion => format!("({} * {})", l, r),
-                MirBinOp::Division => format!("({} / {})", l, r),
-                MirBinOp::Modulo => format!("({} % {})", l, r),
-                // Las comparaciones de texto compilan igual (String: PartialEq/Ord).
-                MirBinOp::Igual => format!("(if {} == {} {{ 1 }} else {{ 0 }})", l, r),
-                MirBinOp::Distinto => format!("(if {} != {} {{ 1 }} else {{ 0 }})", l, r),
-                MirBinOp::Menor => format!("(if {} < {} {{ 1 }} else {{ 0 }})", l, r),
-                MirBinOp::MenorIgual => format!("(if {} <= {} {{ 1 }} else {{ 0 }})", l, r),
-                MirBinOp::Mayor => format!("(if {} > {} {{ 1 }} else {{ 0 }})", l, r),
-                MirBinOp::MayorIgual => format!("(if {} >= {} {{ 1 }} else {{ 0 }})", l, r),
-                MirBinOp::Y => format!("(if {} != 0 && {} != 0 {{ 1 }} else {{ 0 }})", l, r),
-                MirBinOp::O => format!("(if {} != 0 || {} != 0 {{ 1 }} else {{ 0 }})", l, r),
-            }
-        }
-        MirRvalue::UnOp { op, operand } => {
-            let v = generar_operando(operand);
-            match op {
-                MirUnOp::Negacion => format!("(-{})", v),
-                MirUnOp::No => format!("(if {} == 0 {{ 1 }} else {{ 0 }})", v),
-            }
-        }
-        MirRvalue::Agregado { .. } => "0".to_string(),
-        MirRvalue::Indice { .. } => "0".to_string(),
-        MirRvalue::Campo { .. } => "0".to_string(),
-        MirRvalue::Longitud { .. } => "0".to_string(),
-        MirRvalue::Rango { .. } => "0".to_string(),
-        MirRvalue::Clausura { .. } => "0".to_string(),
-        MirRvalue::CrearCelda { .. } => "0".to_string(),
-        MirRvalue::LeerCelda { .. } => "0".to_string(),
-        MirRvalue::ObjetoModulo { .. } => "0".to_string(),
-    }
 }

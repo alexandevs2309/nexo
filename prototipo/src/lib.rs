@@ -4,6 +4,7 @@
 //! Contratos de decisión: ADR-0003 (léxico), ADR-0004 (precedencia).
 //! Identidad y CLI: ADR-0009 y ADR-0010.
 
+pub mod backend_entero;
 pub mod backend_nativo;
 pub mod backend_wasm;
 pub mod cargador;
@@ -22,6 +23,7 @@ pub mod optimizador;
 pub mod paquetes;
 pub mod parser;
 pub mod proyecto;
+pub mod runtime;
 pub mod semantico;
 pub mod servidor;
 pub mod simbodo;

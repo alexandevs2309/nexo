@@ -173,6 +173,8 @@ pub fn main() -> ExitCode {
                     println!("Código Rust generado: {}", salida_rs.display());
                     // Compilar con rustc.
                     let out = std::process::Command::new("rustc")
+                        .arg("--edition")
+                        .arg("2024")
                         .arg("-O")
                         .arg(&salida_rs)
                         .arg("-o")
