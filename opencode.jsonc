@@ -1,0 +1,168 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // BAS-SEC-002: enforcement técnico (OpenCode v2.2.1). No inventa propiedades fuera de la documentación v2.
+  // Precedencia: reglas más tardías ganan; se colocan denies/restricciones críticas al final de cada lista.
+  "permissions": [
+    // Lectura/auditoría disponibles (ajustes explícitos para claridad; base permite).
+    { "action": "read", "resource": "*", "effect": "allow" },
+    { "action": "glob", "resource": "*", "effect": "allow" },
+    { "action": "grep", "resource": "*", "effect": "allow" },
+
+    // Modificaciones: permitidas en general para trabajo normal; archivos sensibles protegidos abajo.
+    { "action": "edit", "resource": "*", "effect": "allow" },
+    { "action": "external_directory", "resource": "*", "effect": "ask" },
+
+    // Shell: por defecto pedir aprobación; bloquear operaciones Git/destructivas/publicación no autorizadas.
+    { "action": "shell", "resource": "*", "effect": "ask" },
+
+    // Proteger DEVELOPMENT_STATE.md contra ediciones por herramientas de escritura/parche.
+    { "action": "edit", "resource": "DEVELOPMENT_STATE.md", "effect": "deny" },
+    { "action": "edit", "resource": "**/DEVELOPMENT_STATE.md", "effect": "deny" },
+
+    // Git destructivo / descarte de cambios locales (prohibido).
+    { "action": "shell", "resource": "git reset *", "effect": "deny" },
+    { "action": "shell", "resource": "git clean *", "effect": "deny" },
+    { "action": "shell", "resource": "git restore *", "effect": "deny" },
+    { "action": "shell", "resource": "git checkout -- *", "effect": "deny" },
+    { "action": "shell", "resource": "git checkout -f *", "effect": "deny" },
+    { "action": "shell", "resource": "git checkout --force *", "effect": "deny" },
+
+    // Commits, push, merges, tags y publicaciones sin autorización (prohibido).
+    { "action": "shell", "resource": "git commit *", "effect": "deny" },
+    { "action": "shell", "resource": "git push *", "effect": "deny" },
+    { "action": "shell", "resource": "git merge *", "effect": "deny" },
+    { "action": "shell", "resource": "git tag *", "effect": "deny" },
+    { "action": "shell", "resource": "git cherry-pick *", "effect": "deny" },
+    { "action": "shell", "resource": "git rebase *", "effect": "deny" },
+    { "action": "shell", "resource": "gh release *", "effect": "deny" },
+    { "action": "shell", "resource": "npm publish *", "effect": "deny" },
+    { "action": "shell", "resource": "cargo publish *", "effect": "deny" },
+
+    // Restricción de creación/cambio de ramas y operaciones que alteran flujo de ramas (prohibido).
+    { "action": "shell", "resource": "git branch *", "effect": "deny" },
+    { "action": "shell", "resource": "git checkout -b *", "effect": "deny" },
+    { "action": "shell", "resource": "git checkout -B *", "effect": "deny" },
+    { "action": "shell", "resource": "git switch *", "effect": "deny" },
+    { "action": "shell", "resource": "git worktree *", "effect": "deny" }
+  ],
+  "policies": [
+    // Refuerzo (hard-deny) para operaciones críticas y protección de DEVELOPMENT_STATE.md.
+    { "action": "tool.use", "resource": "edit:DEVELOPMENT_STATE.md", "effect": "deny" },
+    { "action": "tool.use", "resource": "edit:**/DEVELOPMENT_STATE.md", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git reset *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git clean *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git restore *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git checkout -- *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git commit *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git push *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git merge *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git tag *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git branch *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git switch *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git worktree *", "effect": "deny" }
+  ],
+  "agents": {
+    "basilisco-architect": {
+      "permissions": [
+        { "action": "subagent", "resource": "*", "effect": "deny" },
+        { "action": "edit", "resource": "DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "edit", "resource": "**/DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "shell", "resource": "git reset *", "effect": "deny" },
+        { "action": "shell", "resource": "git clean *", "effect": "deny" },
+        { "action": "shell", "resource": "git restore *", "effect": "deny" },
+        { "action": "shell", "resource": "git checkout -- *", "effect": "deny" },
+        { "action": "shell", "resource": "git commit *", "effect": "deny" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" },
+        { "action": "shell", "resource": "git merge *", "effect": "deny" },
+        { "action": "shell", "resource": "git tag *", "effect": "deny" },
+        { "action": "shell", "resource": "git branch *", "effect": "deny" },
+        { "action": "shell", "resource": "git switch *", "effect": "deny" }
+      ]
+    },
+    "basilisco-backend-engineer": {
+      "permissions": [
+        { "action": "subagent", "resource": "*", "effect": "deny" },
+        { "action": "edit", "resource": "DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "edit", "resource": "**/DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "shell", "resource": "git reset *", "effect": "deny" },
+        { "action": "shell", "resource": "git clean *", "effect": "deny" },
+        { "action": "shell", "resource": "git restore *", "effect": "deny" },
+        { "action": "shell", "resource": "git checkout -- *", "effect": "deny" },
+        { "action": "shell", "resource": "git commit *", "effect": "deny" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" },
+        { "action": "shell", "resource": "git merge *", "effect": "deny" },
+        { "action": "shell", "resource": "git tag *", "effect": "deny" },
+        { "action": "shell", "resource": "git branch *", "effect": "deny" },
+        { "action": "shell", "resource": "git switch *", "effect": "deny" }
+      ]
+    },
+    "basilisco-compiler-engineer": {
+      "permissions": [
+        { "action": "subagent", "resource": "*", "effect": "deny" },
+        { "action": "edit", "resource": "DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "edit", "resource": "**/DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "shell", "resource": "git reset *", "effect": "deny" },
+        { "action": "shell", "resource": "git clean *", "effect": "deny" },
+        { "action": "shell", "resource": "git restore *", "effect": "deny" },
+        { "action": "shell", "resource": "git checkout -- *", "effect": "deny" },
+        { "action": "shell", "resource": "git commit *", "effect": "deny" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" },
+        { "action": "shell", "resource": "git merge *", "effect": "deny" },
+        { "action": "shell", "resource": "git tag *", "effect": "deny" },
+        { "action": "shell", "resource": "git branch *", "effect": "deny" },
+        { "action": "shell", "resource": "git switch *", "effect": "deny" }
+      ]
+    },
+    "basilisco-qa-engineer": {
+      "permissions": [
+        { "action": "subagent", "resource": "*", "effect": "deny" },
+        { "action": "edit", "resource": "DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "edit", "resource": "**/DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "shell", "resource": "git reset *", "effect": "deny" },
+        { "action": "shell", "resource": "git clean *", "effect": "deny" },
+        { "action": "shell", "resource": "git restore *", "effect": "deny" },
+        { "action": "shell", "resource": "git checkout -- *", "effect": "deny" },
+        { "action": "shell", "resource": "git commit *", "effect": "deny" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" },
+        { "action": "shell", "resource": "git merge *", "effect": "deny" },
+        { "action": "shell", "resource": "git tag *", "effect": "deny" },
+        { "action": "shell", "resource": "git branch *", "effect": "deny" },
+        { "action": "shell", "resource": "git switch *", "effect": "deny" }
+      ]
+    },
+    "basilisco-runtime-engineer": {
+      "permissions": [
+        { "action": "subagent", "resource": "*", "effect": "deny" },
+        { "action": "edit", "resource": "DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "edit", "resource": "**/DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "shell", "resource": "git reset *", "effect": "deny" },
+        { "action": "shell", "resource": "git clean *", "effect": "deny" },
+        { "action": "shell", "resource": "git restore *", "effect": "deny" },
+        { "action": "shell", "resource": "git checkout -- *", "effect": "deny" },
+        { "action": "shell", "resource": "git commit *", "effect": "deny" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" },
+        { "action": "shell", "resource": "git merge *", "effect": "deny" },
+        { "action": "shell", "resource": "git tag *", "effect": "deny" },
+        { "action": "shell", "resource": "git branch *", "effect": "deny" },
+        { "action": "shell", "resource": "git switch *", "effect": "deny" }
+      ]
+    },
+    "basilisco-security-auditor": {
+      "permissions": [
+        { "action": "subagent", "resource": "*", "effect": "deny" },
+        { "action": "edit", "resource": "DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "edit", "resource": "**/DEVELOPMENT_STATE.md", "effect": "deny" },
+        { "action": "shell", "resource": "git reset *", "effect": "deny" },
+        { "action": "shell", "resource": "git clean *", "effect": "deny" },
+        { "action": "shell", "resource": "git restore *", "effect": "deny" },
+        { "action": "shell", "resource": "git checkout -- *", "effect": "deny" },
+        { "action": "shell", "resource": "git commit *", "effect": "deny" },
+        { "action": "shell", "resource": "git push *", "effect": "deny" },
+        { "action": "shell", "resource": "git merge *", "effect": "deny" },
+        { "action": "shell", "resource": "git tag *", "effect": "deny" },
+        { "action": "shell", "resource": "git branch *", "effect": "deny" },
+        { "action": "shell", "resource": "git switch *", "effect": "deny" }
+      ]
+    }
+  }
+}
