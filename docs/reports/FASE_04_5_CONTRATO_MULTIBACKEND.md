@@ -1,0 +1,72 @@
+# Reporte 04.5 — Contrato diferencial multi-backend (TW/VM/Nativo/WASM)
+
+- **Fecha:** 2026-11-14
+- **Fase/Lote:** 04 / 04.5 (autorizado en MISIÓN 02)
+- **Alcance:** contrato y clasificación multi-backend reutilizando `paridad.rs`, matriz de capacidades, pruebas/fixtures diferenciales y documentación. Sin cerrar Fase 04, sin iniciar Fase 05, sin commits/push.
+
+## 1. Resumen
+
+Se extendió el contrato existente (`prototipo/src/paridad.rs`) con un modelo multi-backend 04.5 que clasifica comparaciones entre Tree-Walk, VM, backend nativo y backend WASM como `EQUIVALENT`, `DIVERGENCE`, `UNSUPPORTED` o `UNVERIFIABLE`. La ausencia de soporte declarada se distingue de divergencia semántica. Se añadieron pruebas diferenciales multi-backend ejecutables y reproducibles.
+
+## 2. Implementación
+
+- **`prototipo/src/paridad.rs`** (reutilizado, sin arquitectura paralela): `Backend`, `Capacidad`, `SoporteBackend`, `capacidades_backend` (matriz declarada), `ClasificacionMulti {Equivalent,Divergence,Unsupported,Unverifiable}`, `clasificar_multibackend` (reusa `comparar_semantica` cuando ambos soportan), `resultado_desde_salida_simple`, `EjecucionBackend`.
+- **`prototipo/src/lib.rs`**: re-export de la API 04.5.
+- **`prototipo/tests/diferencial_multibackend.rs`**: harness que ejecuta VM y backends reales (rustc/node+wasm32 cuando disponibles), normaliza/compara y clasifica.
+
+## 3. Matriz de capacidades (subconjuntos declarados)
+
+| Capacidad | TW | VM | Nativo | WASM |
+|---|:--:|:--:|:--:|:--:|
+| Numéricos/lógicos básicos | ✓ | ✓ | ✓ | ✓ |
+| Control de flujo básico | ✓ | ✓ | ✓ | ✓ |
+| Funciones/llamadas directas | ✓ | ✓ | ✓ | ✓ |
+| Recursión | ✓ | ✓ | ✓ | ✓ |
+| Texto/colecciones básicas | ✓ | ✓ | ✓ | — |
+| Try/rescatar | ✓ | ✓ | — | — |
+| Módulos (alias/nominal) | ✓ | ✓ | ✓ | — |
+| Closures/lambdas | ✓ | ✓ | — | — |
+| Concurrencia/canales/tareas | ✓ | ✓ | — | — |
+| FFI | ✓ | ✓ | — | — |
+| IO archivos | ✓ | ✓ | — | — |
+| JSON stdlib | ✓ | ✓ | ✓ | — |
+| Efectos stdout deterministas | ✓ | ✓ | ✓ | — |
+| Export entero WASM (`bsk_main`) | — | — | — | ✓ |
+
+**Limitaciones:** Nativo requiere rustc y no soporta try/invoke/closures/celdas/rangos ni stdlib fuera del runtime embebido; sin declaración de soporte para concurrencia/FFI/IO archivos en este contrato. WASM es subconjunto entero/lógico sin texto/colecciones/try/módulos/closures/concurrencia/FFI/IO/JSON.
+
+## 4. Clasificación y reglas
+
+- `EQUIVALENT`: equivalente dentro del subconjunto soportado (incluye diferencias diagnósticas/representación absorbidas por contrato).
+- `DIVERGENCE`: ambos declaran soporte y el resultado difiere semánticamente.
+- `UNSUPPORTED`: al menos un backend no declara soporte/capacidad para el caso (no se confunde con divergencia).
+- `UNVERIFIABLE`: evidencia insuficiente (p. ej. salida no normalizable de forma fiable, dependencia de entorno no disponible).
+
+## 5. Evidencia de pruebas (ejecutada)
+
+- `cargo test --test diferencial_multibackend` → **11 passed, 0 failed** (MISIÓN 03, ampliación): matriz declarada, equivalencias VM↔Nativo (aritmética, control/recursión, texto/colecciones básicas), equivalencias VM↔WASM (aritmética/loop entero, condicional/funciones), `UNSUPPORTED` texto y módulos en WASM, `UNSUPPORTED` try en Nativo por subconjunto, clasificaciones de divergencia/unverificable.
+- Suites específicas preservadas (MISIÓN 03): `diferencial_vm` 118/118, `mir` 3/3, `vm` 11/11, `backend_nativo` 45/45, `backend_wasm` 11/11, `optimizador` 12/12. Validación integral workspace **1024 passed, 0 failed, 2 ignored**.
+
+## 6. GAP-051 (decisión técnica fundamentada, sin cierre formal)
+
+- **Situación:** GAP-051 (conversiones/asignaciones tipadas estrictas, ADR-0005; divergencia diagnóstica `obtenido` Lista/Arreglo en casos tipados) permanece cubierto por whitelist acotada en `paridad.rs` y por corrección 04.4 (literales colección como `Lista` en VM). Los casos diferenciales dirigidos (`diff_gap051_*`, incluido colección tipada incompatible) resultan equivalentes/aceptados según contrato.
+- **Decisión:** **no eliminar la whitelist existente**. Motivo: la tolerancia sigue siendo necesaria como defensa acotada ante posibles diferencias residuales de representación diagnóstica entre motores/rutas, mientras no exista evidencia sistemática completa de identidad diagnóstica en todos los contextos tipados afectados. Se mantiene la regla estricta (misma categoría/esperado/contexto) y el estado **parcialmente resuelto, pendiente de decisión formal de cierre**.
+- **Acción futura (autorizada por separado):** ampliar evidencia sistemática (asignación/retorno/parámetro tipado en más formas) y, solo con demostración suficiente, retirar o reducir whitelist.
+
+## 7. Cobertura ampliada y viabilidad (04.5/alcance)
+
+- **Módulos `importar/usar`:** fixtures comparables existentes en `backend_nativo` (alias/nominal/anidado/init) con paridad frente a VM; harness TW↔VM directo no extendido a módulos con cargador en este lote (coste de instrumentación). Clasificable como capacidad soportada en nativo según matriz; evidencia TW↔VM de módulos requiere fixtures/harness dedicado.
+- **Rutas `Invoke` expresables en MIR:** ejercitadas indirectamente vía semántica try/rescatar en paridad TW↔VM (casos `diff_intentar_rescatar*`, 04.3). No se añadió ruta MIR directa adicional aislada.
+- **Efectos stdout homogéneos:** VM captura salida; TW emite a stdout de proceso en rutas generales (captura in-process no homogénea/determinista en el harness actual). No forzados; clasificados fuera de comparación homogénea salvo casos instrumentados.
+- **Mutación de objetos/campos:** no se identificó sintaxis/soporte estable de asignación de campo mutable de objeto comparable en los motores para este alcance; no inventado. Lectura de objetos JSON cubierta (`json_obtener`).
+- **Determinismo de entorno:** casos deterministas existentes (archivos temporales, HTTP local, FFI con compilación controlada) se mantienen en diferencial TW↔VM.
+
+## 8. Pendientes (vigentes tras MISIÓN 03)
+
+- 04.8 cierre formal de Fase 04 (requiere revisión/autorización humana). Expediente preparado: `docs/reports/FASE_04_EXPEDIENTE_CIERRE.md`.
+- Módulos TW↔VM con fixtures comparables en harness diferencial directo: **limitación arquitectónica** (VM sin cargador file-based `importar/usar`); evidencia de módulos existe en subconjunto nativo por suites específicas, no como paridad TW↔VM in-process homogénea.
+- Stdout homogéneo TW↔VM in-process: **limitado** (TW imprime a proceso; VM captura `salida()`). MISIÓN 03 añadió validación determinista de stdout en VM y comparación por valor; comparación de efectos stdout TW↔VM requiere instrumentación/captura fuera del harness actual.
+- Mutación/asignación de campos de objeto: **no expresable** con sintaxis/soporte identificado; lectura JSON cubierta.
+- `Invoke` MIR: ejercitado indirectamente vía try/rescatar expresable (evidencia diferencial); ruta MIR directa aislada desde fuente no identificada como expresable.
+- GAP-051: mantener whitelist acotada, **sin cierre formal**; ampliar evidencia sistemática y evaluar alineación en parámetros tipados (divergencias exploradas fuera de whitelist).
+- `DEVELOPMENT_STATE.md`: Fase 04 no marcada como cerrada.
