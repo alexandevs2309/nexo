@@ -43,4 +43,4 @@ Visión y requisitos; sintaxis y gramática; semántica; tipos; memoria; funcion
 Los ejemplos ejecutables actuales están en `prototipo/examples/*.bsk`; los de `ejemplos/` son conceptuales. Consulta el [registro de brechas](10-especificacion/registro-de-brechas.md) y el [plan de migración de convenciones](08-plan/migracion-convenciones-basilisco.md) para prioridades, estado y criterios de aceptación.
 
 ## Estado de publicación
-La versión declarada por `prototipo/Cargo.toml` en la rama auditada es `0.6.0`. La publicación en crates.io es un estado distinto del número del manifiesto y debe verificarse antes de anunciar una versión disponible.
+La versión declarada por `prototipo/Cargo.toml` en la rama auditada es `0.7.0`. La publicación en crates.io es un estado distinto del número del manifiesto y debe verificarse antes de anunciar una versión disponible. La revisión del cierre técnico de Fase 04 (paridad de motores) está en curso en árbol local y **no implica cierre/aprobación automática** de la fase.

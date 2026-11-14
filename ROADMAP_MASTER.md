@@ -53,15 +53,15 @@
 - **Estado:** `APROBADA` (autorización humana explícita, 2026-11-10, incl. 3D.4–3D.6). **Fase 04 NO iniciada** (pendiente auditoría/planificación y autorización).
 
 ## Fase 04 — Unificación semántica de motores
-- **Objetivo:** Reducir divergencias de semántica entre TW, VM y nativo en las capacidades declaradas soportadas.
-- **Alcance permitido:** `evaluador.rs`, `vm.rs`, `hir.rs`, `mir.rs`, `backend_nativo.rs`, `runtime.rs`, diferenciales; acotado a brechas identificadas en Fase 00.
-- **Dependencias:** Fases 00–03 `APROBADAS` (según hallazgos).
-- **Tareas:** Matriz de paridad por feature soportada; corregir divergencias con evidencia; ampliar diferenciales TW↔VM↔nativo.
-- **Archivos afectados previstos:** motores, lowering, runtime, `tests/diferencial_*`, `tests/backend_nativo.rs`.
-- **Pruebas requeridas:** diferenciales/paridad relevantes; `workspace`.
-- **Criterios de aceptación:** features en alcance tienen comportamiento equivalente demostrado o exclusiones explícitas documentadas/probadas.
-- **Evidencias:** matriz, tests, comandos.
-- **Estado:** `PENDIENTE`.
+- **Objetivo:** Reducir divergencias de semántica entre TW, VM y nativo/WASM en las capacidades declaradas soportadas, con evidencia diferencial y clasificación explícita.
+- **Alcance permitido:** `evaluador.rs`, `vm.rs`, `hir.rs`, `mir.rs`, `backend_nativo.rs`, `runtime.rs`, `paridad.rs`, diferenciales, documentación de fase; acotado a brechas identificadas y subconjuntos declarados.
+- **Dependencias:** Fases 00–03 `APROBADAS`.
+- **Tareas realizadas/verificadas (local, en progreso):** contrato y harness diferencial TW↔VM (04.1–04.3), correcciones/mapeos de paridad (04.4/04.6, ref. TW), contrato y matriz multi-backend TW/VM/Nativo/WASM con clasificación EQUIVALENT/DIVERGENCE/UNSUPPORTED/UNVERIFIABLE (04.5), ampliación de evidencia/casos y revisión de GAP-051/registry/docs (MISIÓN 03, expediente en preparación).
+- **Archivos afectados (principales):** `prototipo/src/{paridad,vm,mir,runtime,backend_nativo,lib}.rs`, `prototipo/tests/{diferencial_vm,diferencial_multibackend,optimizador}.rs`, `docs/semantica/CONTRATO_SEMANTICO.md`, `docs/reports/FASE_04_*`, `docs/AUDITORIA_FASE04_PARIDAD_MOTORES.md`, `DEVELOPMENT_STATE.md`.
+- **Pruebas requeridas:** diferenciales/paridad relevantes y multi-backend; `fmt`/`clippy`/`cargo test --workspace --no-fail-fast`.
+- **Criterios de aceptación:** features en alcance con comportamiento equivalente demostrado o exclusiones explícitas documentadas/probadas; sin afirmar paridad fuera de subconjuntos soportados; evidencia reproducible. **Cierre formal pendiente de revisión/autorización humana.**
+- **Evidencias (local, vigentes):** `diferencial_vm` 118/118, `diferencial_multibackend` 11/11 y suites específicas en verde; validación integral `fmt` OK, `clippy -D warnings` OK, `cargo test --workspace --no-fail-fast` **1024 passed, 0 failed, 2 ignored** (56 suites). 2 ignorados `registry_integration` (B-REG-001, PostgreSQL aislado; CI `e2e-postgres` preparado). Expediente: `docs/reports/FASE_04_EXPEDIENTE_CIERRE.md`.
+- **Estado:** `APROBADA` (autorización humana explícita 2026-11-14, con limitaciones documentadas). GAP-051 parcialmente resuelto sin cierre formal (decisión registrada). Limitaciones aceptadas: módulos TW↔VM no comparables en harness directo (VM sin cargador file-based), stdout homogéneo in-process TW↔VM, mutación de campos de objeto no expresable, `Invoke` MIR indirecto, subconjuntos nativo/WASM, B-REG-001 externo, árbol local no commiteado. **Fase 05 no iniciada.**
 
 ## Fase 05 — Backend nativo y funciones de primera clase
 - **Objetivo:** Definir e implementar (o delimitar con rechazo claro y probado) soporte nativo para closures/celdas/funciones de primera clase y brechas críticas relacionadas.
@@ -71,8 +71,8 @@
 - **Archivos afectados previstos:** backend/runtime/lowering, tests.
 - **Pruebas requeridas:** casos closure/lambda/indirecta en nativo vs VM; `workspace`.
 - **Criterios de aceptación:** soporte demostrado con paridad o no-soporte explícito, estable y probado (sin comportamiento indefinido silencioso).
-- **Evidencias:** tests, e2e, matriz.
-- **Estado:** `PENDIENTE`.
+- **Evidencias:** `prototipo/src/{runtime.rs,backend_nativo.rs}`, `prototipo/tests/backend_nativo.rs`; `docs/reports/FASE_05_BACKEND_NATIVO_FUNCIONES_PRIMERA_CLASE.md`. 12 pruebas de paridad nativa↔VM (closures/celdas/funciones de primera clase, incl. `para cada`) y 2 rechazos explícitos (try/catch, rango). Validación (MISIÓN 05): fmt/clippy OK, `backend_nativo` 59/0/0, workspace **1038/0/2** (56 suites). Ignorados B-REG-001 (externos). Límites propios (sin try/invoke/rangos, stdlib/HOF acotada, sin límites de pasos/profundidad equivalentes a VM, errores runtime textuales) y heredados de Fase 04 (GAP-051 parcialmente resuelto, sin cierre formal) documentados.
+- **Estado:** `APROBADA` (autorización humana explícita 2026-11-14, con limitaciones documentadas; GAP-051 heredado de Fase 04 conservado). Fase 06 permanece **NO INICIADA** (pendiente de autorización).
 
 ## Fase 06 — Sistema de tipos avanzado
 - **Objetivo:** Fortalecer tipado (inferencia útil, compatibilidad/unificación coherente, reducción de `Desconocido` crítico, chequeos estáticos efectivos).
