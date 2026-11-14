@@ -15,6 +15,7 @@ fn run_vm(src: &str, optimizar: bool) -> String {
         optimizador::optimizar(&mut mir);
     }
     let mut maquina = vm::MaquinaVirtual::nuevo(mir);
+    maquina.registrar_stdlib();
     let Some(idx) = maquina.indice_de("main") else {
         return "NOFUNC".to_string();
     };

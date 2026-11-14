@@ -74,24 +74,30 @@ fn generar_funciones_con(programa: &MirPrograma, _permitir_texto: bool) -> Strin
     }
     out.push_str(
         "fn bsk_llamar_indirecto(callee: Valor, args: Vec<Valor>) -> Result<Valor, RuntimeError> {\n\
-         \x20   match callee {\n\
-         \x20       Valor::Funcion(nombre) => match nombre.as_str() {\n",
+         \x20   let (nombre, full_args) = match callee {\n\
+         \x20       Valor::Funcion(nombre) => (nombre, args),\n\
+         \x20       Valor::Clausura(nombre, capturas) => {\n\
+         \x20           let mut full = args;\n\
+         \x20           full.extend(capturas);\n\
+         \x20           (nombre, full)\n\
+         \x20       }\n\
+         \x20       otro => return Err(RuntimeError(format!(\"no es una función: {otro}\"))),\n\
+         \x20   };\n\
+         \x20   match nombre.as_str() {\n",
     );
     for f in &soportadas {
         let params: Vec<String> = (0..f.params.len())
-            .map(|i| format!("args.get({i}).cloned().unwrap_or(Valor::Nulo)"))
+            .map(|i| format!("full_args.get({i}).cloned().unwrap_or(Valor::Nulo)"))
             .collect();
         out.push_str(&format!(
-            "            \"{}\" => bsk_{}({}),\n",
+            "        \"{}\" => bsk_{}({}),\n",
             f.nombre,
             f.nombre,
             params.join(", ")
         ));
     }
     out.push_str(
-        "            otro => Err(RuntimeError(format!(\"función no encontrada: {otro}\"))),\n\
-         \x20       },\n\
-         \x20       otro => Err(RuntimeError(format!(\"no es una función: {otro}\"))),\n\
+        "        otro => Err(RuntimeError(format!(\"función no encontrada: {otro}\"))),\n\
          \x20   }\n\
          }\n\n",
     );
@@ -132,7 +138,7 @@ pub fn generar_rust(programa: &MirPrograma) -> String {
     if !main_soportada {
         out.push_str(
             "compile_error!(\"backend nativo: la función 'main' usa operaciones no soportadas \
-             (closures, try/catch/invoke u otras construcciones aún no soportadas)\");\n\n",
+             (try/catch/invoke, rangos u otras construcciones aún no soportadas)\");\n\n",
         );
     }
     out.push_str(&generar_funciones(programa));
@@ -359,6 +365,7 @@ fn llamadas_resueltas(f: &MirFunction, retornos: &Retornos) -> bool {
                     || callee == "ordenar"
                     || callee == "leer_archivo"
                     || callee == "json_parsear"
+                    || callee == "__bsk_assert_logico"
             }
             // Llamadas indirectas se despachan en tiempo de ejecución contra
             // las funciones conocidas del programa (Etapa C, módulos/alias).
@@ -420,10 +427,10 @@ fn rvalue_soportado(r: &MirRvalue) -> bool {
         // ObjetoModulo se materializa como Objeto(BTreeMap) de funciones; no
         // usa operandos dinámicos. Soportado para módulos/alias (Etapa C).
         MirRvalue::ObjetoModulo { .. } => true,
-        MirRvalue::CrearCelda { .. }
-        | MirRvalue::LeerCelda { .. }
-        | MirRvalue::Clausura { .. }
-        | MirRvalue::Rango { .. } => false,
+        MirRvalue::CrearCelda { valor } => operando_soportado(valor),
+        MirRvalue::LeerCelda { base } => operando_soportado(base),
+        MirRvalue::Clausura { capturas, .. } => capturas.iter().all(operando_soportado),
+        MirRvalue::Rango { .. } => false,
     }
 }
 
@@ -539,7 +546,7 @@ fn generar_stmt(out: &mut String, stmt: &MirStmt, indent: usize, ctx: &CtxFn) {
                             ));
                         }
                         MirProjection::Celda => {
-                            out.push_str(&format!("{}let _ = (l{}, {});\n", pad, base, rhs));
+                            out.push_str(&format!("{}l{}.escribir_celda({})?;\n", pad, base, rhs));
                         }
                     }
                 }
@@ -622,6 +629,28 @@ fn generar_stmt(out: &mut String, stmt: &MirStmt, indent: usize, ctx: &CtxFn) {
                         "Valor::Nulo".to_string()
                     };
                     let call = format!("Valor::Entero({}.longitud())", arg);
+                    if let Some(d) = destino {
+                        if d.projection.is_empty() {
+                            out.push_str(&format!("{}l{} = {};\n", pad, d.local.0, call));
+                        } else {
+                            out.push_str(&format!("{}let _ = {};\n", pad, call));
+                        }
+                    } else {
+                        out.push_str(&format!("{}let _ = {};\n", pad, call));
+                    }
+                }
+                "__bsk_assert_logico" => {
+                    let v = args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "Valor::Nulo".to_string());
+                    let op = args
+                        .get(1)
+                        .cloned()
+                        .unwrap_or_else(|| "Valor::Texto(\"y\".to_string())".to_string());
+                    let call = format!(
+                        "bsk_assert_logico({v}, match {op} {{ Valor::Texto(s) => s.as_str(), _ => \"y\" }})?"
+                    );
                     if let Some(d) = destino {
                         if d.projection.is_empty() {
                             out.push_str(&format!("{}l{} = {};\n", pad, d.local.0, call));
@@ -852,7 +881,23 @@ fn generar_rvalue(r: &MirRvalue, _ctx: &CtxFn) -> String {
             s.push_str("Valor::Objeto(__m) }");
             s
         }
-        _ => "Valor::Nulo".to_string(),
+        MirRvalue::CrearCelda { valor } => {
+            let v = generar_operando(valor);
+            format!("Valor::crear_celda({})", v)
+        }
+        MirRvalue::LeerCelda { base } => {
+            let b = generar_operando(base);
+            format!("{}.leer_celda()?", b)
+        }
+        MirRvalue::Clausura { nombre, capturas } => {
+            let caps: Vec<String> = capturas.iter().map(generar_operando).collect();
+            format!(
+                "Valor::Clausura(\"{}\".to_string(), vec![{}])",
+                escapar_texto(nombre),
+                caps.join(", ")
+            )
+        }
+        MirRvalue::Rango { .. } => "Valor::Nulo".to_string(),
     }
 }
 

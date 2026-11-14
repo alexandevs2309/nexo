@@ -21,6 +21,7 @@ pub mod lsp;
 pub mod mir;
 pub mod optimizador;
 pub mod paquetes;
+pub mod paridad;
 pub mod parser;
 pub mod proyecto;
 pub mod runtime;
@@ -33,6 +34,12 @@ pub mod vm;
 
 pub use evaluador::{CausaError, Entorno, ErrorEjecucion, evaluar};
 pub use lexer::Lexer;
+pub use paridad::{
+    Backend, Capacidad, ClasificacionMulti, Comparacion, EfectosObservables, EjecucionBackend,
+    ResultadoNormalizado, SoporteBackend, ValorNormalizado, capacidades_backend,
+    clasificar_multibackend, comparar_semantica, normalizar_error_tw, normalizar_error_vm,
+    normalizar_valor, resultado_desde_salida_simple,
+};
 pub use parser::{ErrorSintactico, Expresion, Parser, Sentencia};
 pub use semantico::ContextoSemantico;
 pub use simbodo::{AmbitoId, CategoriaSimbodo, GestorAmbitos, Simbodo, SimbodoId, TablaSimbodo};

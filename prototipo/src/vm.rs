@@ -44,6 +44,13 @@ pub enum ErrorVm {
         izquierdo: &'static str,
         derecho: &'static str,
     },
+    /// Operando no lógico en operador lógico/cortocircuito (paridad TW E1006).
+    OperandoNoLogico {
+        operador: &'static str,
+        obtenido: &'static str,
+    },
+    /// Condición no lógica en estructura de control (paridad TW E1005).
+    CondicionNoLogica { obtenido: &'static str },
     /// Se esperaba un tipo concreto (p. ej. índice entero).
     TipoEsperado {
         esperado: &'static str,
@@ -84,6 +91,15 @@ impl std::fmt::Display for ErrorVm {
             ErrorVm::Aritmetico(m) => write!(f, "error aritmético: {m}"),
             ErrorVm::TiposIncompatibles { izquierdo, derecho } => {
                 write!(f, "tipos incompatibles: {izquierdo} y {derecho}")
+            }
+            ErrorVm::OperandoNoLogico { operador, obtenido } => {
+                write!(
+                    f,
+                    "el operador «{operador}» requiere operandos lógicos, se obtuvo «{obtenido}»"
+                )
+            }
+            ErrorVm::CondicionNoLogica { obtenido } => {
+                write!(f, "la condición debe ser lógica, se obtuvo «{obtenido}»")
             }
             ErrorVm::TipoEsperado {
                 esperado,
@@ -233,6 +249,31 @@ impl MaquinaVirtual {
 
     /// Registra la biblioteca estándar mínima (mostrar, mostrar_sin_salto, longitud, etc.).
     pub fn registrar_stdlib(&mut self) {
+        // Intrínseco interno: valida operando lógico para cortocircuito Y/O (paridad TW).
+        self.registrar_nativo(
+            "__bsk_assert_logico",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let v = args.first().cloned().unwrap_or(Valor::Nulo);
+                let op = args.get(1).and_then(|x| {
+                    if let Valor::Texto(s) = x {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                });
+                let operador: &'static str = match op {
+                    Some("o") => "o",
+                    _ => "y",
+                };
+                match v {
+                    Valor::Logico(_) => Ok(v),
+                    _ => Err(ErrorVm::OperandoNoLogico {
+                        operador,
+                        obtenido: v.nombre_tipo(),
+                    }),
+                }
+            }),
+        );
         let salida = std::sync::Arc::clone(&self.salida);
         self.registrar_nativo(
             "mostrar",
@@ -1646,6 +1687,22 @@ impl MaquinaVirtual {
                 por_defecto,
             } => {
                 let v = self.operando_a_valor(locals, discriminante)?;
+                // Forma booleana (if/while/para-cada): casos [(1, destino)] y default.
+                if casos.len() == 1 && casos[0].0 == 1 {
+                    let cond = match v {
+                        Valor::Logico(b) => b,
+                        otro => {
+                            return Err(ErrorVm::CondicionNoLogica {
+                                obtenido: otro.nombre_tipo(),
+                            });
+                        }
+                    };
+                    return Ok(Transicion::Salto(if cond {
+                        casos[0].1
+                    } else {
+                        *por_defecto
+                    }));
+                }
                 let disc = valor_a_discriminante(&v)?;
                 for (valor, b) in casos {
                     if disc == *valor {
@@ -2023,9 +2080,9 @@ impl MaquinaVirtual {
                     });
                 };
                 if i < 0 {
-                    return Err(ErrorVm::IndiceFueraDeRango {
-                        indice: i,
-                        tamano: 0,
+                    return Err(ErrorVm::AsignacionIncompatible {
+                        esperado: "índice válido".into(),
+                        obtenido: format!("índice {} fuera de rango (tamaño 0)", i),
                     });
                 }
                 Some(i as usize)
@@ -2058,9 +2115,13 @@ impl MaquinaVirtual {
                 match local_val {
                     Valor::Arreglo(elems) | Valor::Lista(elems) => {
                         if idx >= elems.len() {
-                            return Err(ErrorVm::IndiceFueraDeRango {
-                                indice: idx as i64,
-                                tamano: elems.len(),
+                            return Err(ErrorVm::AsignacionIncompatible {
+                                esperado: "índice válido".into(),
+                                obtenido: format!(
+                                    "índice {} fuera de rango (tamaño {})",
+                                    idx,
+                                    elems.len()
+                                ),
                             });
                         }
                         elems[idx] = valor;
@@ -2095,9 +2156,54 @@ impl MaquinaVirtual {
         match r {
             MirRvalue::Use(op) => self.operando_a_valor(locals, op),
             MirRvalue::BinOp { op, lhs, rhs } => {
-                let a = self.operando_a_valor(locals, lhs)?;
-                let b = self.operando_a_valor(locals, rhs)?;
-                aplicar_binop(op, &a, &b)
+                // Cortocircuito para Y/O con semántica de operandos lógicos (paridad TW).
+                match op {
+                    MirBinOp::Y => {
+                        let a = self.operando_a_valor(locals, lhs)?;
+                        match a {
+                            Valor::Logico(false) => Ok(Valor::Logico(false)),
+                            Valor::Logico(true) => {
+                                let b = self.operando_a_valor(locals, rhs)?;
+                                match b {
+                                    Valor::Logico(v) => Ok(Valor::Logico(v)),
+                                    _ => Err(ErrorVm::OperandoNoLogico {
+                                        operador: "y",
+                                        obtenido: b.nombre_tipo(),
+                                    }),
+                                }
+                            }
+                            _ => Err(ErrorVm::OperandoNoLogico {
+                                operador: "y",
+                                obtenido: a.nombre_tipo(),
+                            }),
+                        }
+                    }
+                    MirBinOp::O => {
+                        let a = self.operando_a_valor(locals, lhs)?;
+                        match a {
+                            Valor::Logico(true) => Ok(Valor::Logico(true)),
+                            Valor::Logico(false) => {
+                                let b = self.operando_a_valor(locals, rhs)?;
+                                match b {
+                                    Valor::Logico(v) => Ok(Valor::Logico(v)),
+                                    _ => Err(ErrorVm::OperandoNoLogico {
+                                        operador: "o",
+                                        obtenido: b.nombre_tipo(),
+                                    }),
+                                }
+                            }
+                            _ => Err(ErrorVm::OperandoNoLogico {
+                                operador: "o",
+                                obtenido: a.nombre_tipo(),
+                            }),
+                        }
+                    }
+                    _ => {
+                        let a = self.operando_a_valor(locals, lhs)?;
+                        let b = self.operando_a_valor(locals, rhs)?;
+                        aplicar_binop(op, &a, &b)
+                    }
+                }
             }
             MirRvalue::UnOp { op, operand } => {
                 let a = self.operando_a_valor(locals, operand)?;
@@ -2108,7 +2214,8 @@ impl MaquinaVirtual {
                     .iter()
                     .map(|op| self.operando_a_valor(locals, op))
                     .collect();
-                Ok(Valor::Arreglo(elems?))
+                // Literales `[...]` en BASILISCO son Lista por defecto (paridad TW).
+                Ok(Valor::Lista(elems?))
             }
             MirRvalue::Indice { base, indice } => {
                 let base_v = self.operando_a_valor(locals, base)?;
@@ -2122,9 +2229,13 @@ impl MaquinaVirtual {
                 match &base_v {
                     Valor::Arreglo(elems) | Valor::Lista(elems) => {
                         if idx < 0 || idx as usize >= elems.len() {
-                            return Err(ErrorVm::IndiceFueraDeRango {
-                                indice: idx,
-                                tamano: elems.len(),
+                            return Err(ErrorVm::AsignacionIncompatible {
+                                esperado: "índice válido".into(),
+                                obtenido: format!(
+                                    "índice {} fuera de rango (tamaño {})",
+                                    idx,
+                                    elems.len()
+                                ),
                             });
                         }
                         Ok(elems[idx as usize].clone())
@@ -2296,12 +2407,24 @@ fn aplicar_binop(op: &MirBinOp, a: &Valor, b: &Valor) -> Result<Valor, ErrorVm> 
     }
 }
 
-/// Comparaciones numéricas/texto (entero↔decimal/real implícito, ADR-0005 §1.4).
+/// Comparaciones de orden con semántica TW: nulo/lógicos no comparables, conversiones implícitas limitadas.
 fn comparar(
     a: &Valor,
     b: &Valor,
     acepta: impl Fn(std::cmp::Ordering) -> bool,
 ) -> Result<Valor, ErrorVm> {
+    if matches!(a, Valor::Nulo) || matches!(b, Valor::Nulo) {
+        return Err(ErrorVm::TiposIncompatibles {
+            izquierdo: a.nombre_tipo(),
+            derecho: b.nombre_tipo(),
+        });
+    }
+    if matches!(a, Valor::Logico(_)) || matches!(b, Valor::Logico(_)) {
+        return Err(ErrorVm::TiposIncompatibles {
+            izquierdo: a.nombre_tipo(),
+            derecho: b.nombre_tipo(),
+        });
+    }
     let orden = match (a, b) {
         (Valor::Entero(x), Valor::Entero(y)) => x.cmp(y),
         (Valor::Entero(x), Valor::Decimal(y)) => (*x as i128 * FACTOR_ESCALA).cmp(y),
@@ -2516,10 +2639,26 @@ fn convertir_a_tipo_anotado_escalar(
     }
 }
 
-/// Igualdad con conversiones implícitas ADR-0005 §1.4 (entero↔decimal↔real).
+/// Igualdad/desigualdad con semántica TW (ADR-0005/0007): sin comparación de
+/// lógicos ni de colecciones/objetos por operador, nulo solo con nulo.
 fn comparar_igualdad(a: &Valor, b: &Valor, igual: bool) -> Result<Valor, ErrorVm> {
     use crate::valor::FACTOR_ESCALA;
-    let resultado = match (a, b) {
+    if matches!(a, Valor::Nulo) || matches!(b, Valor::Nulo) {
+        if matches!((a, b), (Valor::Nulo, Valor::Nulo)) {
+            return Ok(Valor::Logico(igual));
+        }
+        return Err(ErrorVm::TiposIncompatibles {
+            izquierdo: a.nombre_tipo(),
+            derecho: b.nombre_tipo(),
+        });
+    }
+    if matches!(a, Valor::Logico(_)) || matches!(b, Valor::Logico(_)) {
+        return Err(ErrorVm::TiposIncompatibles {
+            izquierdo: a.nombre_tipo(),
+            derecho: b.nombre_tipo(),
+        });
+    }
+    let eq = match (a, b) {
         (Valor::Entero(x), Valor::Entero(y)) => x == y,
         (Valor::Entero(x), Valor::Decimal(y)) => (*x as i128 * FACTOR_ESCALA) == *y,
         (Valor::Decimal(x), Valor::Entero(y)) => *x == (*y as i128 * FACTOR_ESCALA),
@@ -2527,9 +2666,15 @@ fn comparar_igualdad(a: &Valor, b: &Valor, igual: bool) -> Result<Valor, ErrorVm
         (Valor::Real(x), Valor::Entero(y)) => *x == (*y as f64),
         (Valor::Decimal(x), Valor::Decimal(y)) => x == y,
         (Valor::Real(x), Valor::Real(y)) => x == y,
-        _ => a == b,
+        (Valor::Texto(x), Valor::Texto(y)) => x == y,
+        _ => {
+            return Err(ErrorVm::TiposIncompatibles {
+                izquierdo: a.nombre_tipo(),
+                derecho: b.nombre_tipo(),
+            });
+        }
     };
-    Ok(Valor::Logico(if igual { resultado } else { !resultado }))
+    Ok(Valor::Logico(if igual { eq } else { !eq }))
 }
 
 /// Convierte `v` al tipo anotado `t`, aplicando solo las conversiones

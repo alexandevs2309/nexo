@@ -805,3 +805,143 @@ fn backend_nativo_modulo_con_estado_init() {
     };
     assert_eq!(salida, vm_run_mod(&dir, "main.bsk"));
 }
+
+#[test]
+fn backend_nativo_closure_inmutable() {
+    let src = "funcion crear_sumador(x) {\n  funcion sumar(yy) {\n    retornar x + yy\n  }\n  retornar sumar\n}\nfuncion main() -> entero {\n  sea sumar10 = crear_sumador(10)\n  retornar sumar10(5)\n}";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_closure_mutable() {
+    let src = "funcion crear_contador() {\n  sea x = 0\n  funcion inc() {\n    x = x + 1\n    retornar x\n  }\n  retornar inc\n}\nfuncion main() -> entero {\n  sea c = crear_contador()\n  c()\n  retornar c()\n}";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_closure_dos_instancias() {
+    let src = "funcion crear(x) { retornar funcion (yy) { retornar x + yy } }\nfuncion main() -> entero { sea a = crear(10)\n sea b = crear(20)\n retornar a(5) + b(5) }";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_funcion_indirecta() {
+    let src = "funcion aplicar(f, x) { retornar f(x) }\nfuncion doble(n) { retornar n * 2 }\nfuncion main() -> entero { retornar aplicar(doble, 4) }";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_closure_retornada_llamada_inmediata() {
+    let src = "funcion obtener() { retornar funcion (x) { retornar x + 1 } }\nfuncion main() -> entero { retornar obtener()(9) }";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_closure_captura_simple() {
+    let src = "funcion crear(x) { retornar funcion (yy) { retornar x + yy } }\nfuncion main() -> entero { sea c = crear(10)\n retornar c(5) }";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_closure_mutable_multiples_llamadas() {
+    let src = "funcion crear_contador(inicio) {\n  sea x = inicio\n  funcion inc(paso) {\n    x = x + paso\n    retornar x\n  }\n  retornar inc\n}\nfuncion main() -> entero {\n  sea c = crear_contador(1)\n  c(2)\n  c(3)\n  retornar c(4)\n}";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_closure_pasada_y_llamada_varias_veces() {
+    let src = "funcion aplicar_dos(f, a, b) { retornar f(a) + f(b) }\nfuncion crear_sumador(base) { retornar funcion (x) { retornar base + x } }\nfuncion main() -> entero {\n  sea s = crear_sumador(10)\n  retornar aplicar_dos(s, 1, 2)\n}";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_rechaza_try_catch_explicito() {
+    let src = "funcion main() -> entero {\n  intentar {\n    retornar 1\n  } rescatar e {\n    retornar 0\n  }\n}";
+    let rust = generar(src);
+    assert!(
+        rust.contains("compile_error!"),
+        "se esperaba rechazo explícito para try/catch no soportado: {rust}"
+    );
+}
+
+#[test]
+fn backend_nativo_rechaza_rango_explicito() {
+    let src = "funcion main() -> entero {\n  sea s = 0\n  para cada i en 1..3 {\n    s = s + i\n  }\n  retornar s\n}";
+    let rust = generar(src);
+    assert!(
+        rust.contains("compile_error!"),
+        "se esperaba rechazo explícito para rango no soportado: {rust}"
+    );
+}
+
+#[test]
+fn backend_nativo_closure_en_bucle_mientras() {
+    let src = "funcion crear_acumulador() {\n  sea total = 0\n  funcion agregar(x) {\n    total = total + x\n    retornar total\n  }\n  retornar agregar\n}\nfuncion main() -> entero {\n  sea acc = crear_acumulador()\n  sea i = 1\n  mientras i <= 4 {\n    acc(i)\n    i = i + 1\n  }\n  retornar acc(0)\n}";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_closure_en_condicional() {
+    let src = "funcion crear(a) { retornar funcion (x) { retornar a + x } }\nfuncion main() -> entero {\n  sea f = crear(10)\n  si f(5) == 15 {\n    retornar f(1)\n  } sino {\n    retornar 0\n  }\n}";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_funcion_como_valor_en_variable() {
+    let src = "funcion doble(n) { retornar n * 2 }\nfuncion main() -> entero {\n  sea f = doble\n  retornar f(21)\n}";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}
+
+#[test]
+fn backend_nativo_closure_creada_en_para_cada() {
+    let src = "funcion main() -> entero {\n  sea total = 0\n  para cada x en [1, 2, 3, 4] {\n    sea f = funcion () { retornar x }\n    total = total + f()\n  }\n  retornar total\n}";
+    let rust = generar(src);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        return;
+    };
+    assert_eq!(salida, vm_run(src));
+}

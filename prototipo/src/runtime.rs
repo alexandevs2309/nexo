@@ -7,8 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub enum Valor {
     Entero(i64),
     Decimal(i128),
@@ -20,6 +21,30 @@ pub enum Valor {
     Objeto(BTreeMap<String, Valor>),
     Nulo,
     Funcion(String),
+    /// Celda de referencia mutable compartida (capturas mutables en clausuras).
+    Celda(Arc<Mutex<Valor>>),
+    /// Clausura: nombre de función + valores capturados (celdas/valores).
+    Clausura(String, Vec<Valor>),
+}
+
+impl PartialEq for Valor {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Valor::Entero(a), Valor::Entero(b)) => a == b,
+            (Valor::Decimal(a), Valor::Decimal(b)) => a == b,
+            (Valor::Real(a), Valor::Real(b)) => a.to_bits() == b.to_bits(),
+            (Valor::Logico(a), Valor::Logico(b)) => a == b,
+            (Valor::Texto(a), Valor::Texto(b)) => a == b,
+            (Valor::Arreglo(a), Valor::Arreglo(b)) | (Valor::Lista(a), Valor::Lista(b)) => a == b,
+            (Valor::Arreglo(a), Valor::Lista(b)) | (Valor::Lista(a), Valor::Arreglo(b)) => a == b,
+            (Valor::Objeto(a), Valor::Objeto(b)) => a == b,
+            (Valor::Nulo, Valor::Nulo) => true,
+            (Valor::Funcion(a), Valor::Funcion(b)) => a == b,
+            (Valor::Celda(a), Valor::Celda(b)) => Arc::ptr_eq(a, b),
+            (Valor::Clausura(na, ca), Valor::Clausura(nb, cb)) => na == nb && ca == cb,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +101,8 @@ impl fmt::Display for Valor {
             }
             Valor::Nulo => write!(f, "nulo"),
             Valor::Funcion(s) => write!(f, "<función: {}>", s),
+            Valor::Celda(_) => write!(f, "<celda>"),
+            Valor::Clausura(nombre, _) => write!(f, "<clausura {}>", nombre),
         }
     }
 }
@@ -421,6 +448,10 @@ impl Valor {
             (Valor::Nulo, Valor::Nulo) => true,
             (Valor::Arreglo(a), Valor::Arreglo(b)) => a == b,
             (Valor::Lista(a), Valor::Lista(b)) => a == b,
+            (Valor::Objeto(a), Valor::Objeto(b)) => a == b,
+            (Valor::Funcion(a), Valor::Funcion(b)) => a == b,
+            (Valor::Celda(a), Valor::Celda(b)) => std::sync::Arc::ptr_eq(a, b),
+            (Valor::Clausura(na, ca), Valor::Clausura(nb, cb)) => na == nb && ca == cb,
             _ => false,
         }
     }
@@ -456,6 +487,35 @@ impl Valor {
             Valor::Objeto(_) => "objeto",
             Valor::Nulo => "nulo",
             Valor::Funcion(_) => "función",
+            Valor::Celda(_) => "celda",
+            Valor::Clausura(_, _) => "función",
+        }
+    }
+
+    pub fn crear_celda(v: Valor) -> Valor {
+        Valor::Celda(std::sync::Arc::new(std::sync::Mutex::new(v)))
+    }
+
+    pub fn leer_celda(&self) -> Result<Valor, RuntimeError> {
+        match self {
+            Valor::Celda(c) => Ok(c.lock().unwrap().clone()),
+            otro => Err(RuntimeError(format!(
+                "se esperaba «celda», se encontró «{}»",
+                otro.nombre()
+            ))),
+        }
+    }
+
+    pub fn escribir_celda(&self, v: Valor) -> Result<(), RuntimeError> {
+        match self {
+            Valor::Celda(c) => {
+                *c.lock().unwrap() = v;
+                Ok(())
+            }
+            otro => Err(RuntimeError(format!(
+                "se esperaba «celda», se encontró «{}»",
+                otro.nombre()
+            ))),
         }
     }
 
@@ -796,5 +856,16 @@ impl<'a> JsonParser<'a> {
             }
         }
         Ok(Valor::Objeto(map))
+    }
+}
+
+pub fn bsk_assert_logico(v: Valor, op: &str) -> Result<Valor, RuntimeError> {
+    match v {
+        Valor::Logico(_) => Ok(v),
+        ref otro => Err(RuntimeError(format!(
+            "el operador «{}» requiere operandos lógicos, se obtuvo «{}»",
+            op,
+            otro.nombre()
+        ))),
     }
 }

@@ -512,38 +512,112 @@ fn lower_expr(ctx: &mut LoweringCtx, e: &HirExpresion) -> MirOperand {
             MirOperand::Copy(tmp)
         }
         HirExpresion::Y(a, b, tipo) => {
+            // Cortocircuito: evaluar RHS solo si LHS es verdadero; validar operandos lógicos.
             let la = lower_expr(ctx, a);
-            let lb = lower_expr(ctx, b);
-            let tmp = ctx.nuevo_temp(tipo.clone());
+            let la_ok = ctx.nuevo_temp(TipoSem::Logico);
+            ctx.emitir_stmt(MirStmt::Llamada {
+                destino: Some(MirPlace {
+                    local: la_ok,
+                    projection: vec![],
+                }),
+                callee: "__bsk_assert_logico".to_string(),
+                argumentos: vec![la, MirOperand::Const(MirConst::Texto("y".to_string()))],
+            });
+            let result = ctx.nuevo_temp(tipo.clone());
             ctx.emitir_stmt(MirStmt::Asignacion {
                 destino: MirPlace {
-                    local: tmp,
+                    local: result,
                     projection: vec![],
                 },
-                valor: MirRvalue::BinOp {
-                    op: MirBinOp::Y,
-                    lhs: la,
-                    rhs: lb,
-                },
+                valor: MirRvalue::Use(MirOperand::Copy(la_ok)),
             });
-            MirOperand::Copy(tmp)
+            let bloque_rhs = ctx.nuevo_bloque();
+            let bloque_done = ctx.nuevo_bloque();
+            ctx.set_terminator(MirTerminator::SwitchInt {
+                discriminante: MirOperand::Copy(la_ok),
+                casos: vec![(1, bloque_rhs)],
+                por_defecto: bloque_done,
+            });
+            ctx.cambiar_bloque(bloque_rhs);
+            let lb = lower_expr(ctx, b);
+            let lb_ok = ctx.nuevo_temp(TipoSem::Logico);
+            ctx.emitir_stmt(MirStmt::Llamada {
+                destino: Some(MirPlace {
+                    local: lb_ok,
+                    projection: vec![],
+                }),
+                callee: "__bsk_assert_logico".to_string(),
+                argumentos: vec![lb, MirOperand::Const(MirConst::Texto("y".to_string()))],
+            });
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local: result,
+                    projection: vec![],
+                },
+                valor: MirRvalue::Use(MirOperand::Copy(lb_ok)),
+            });
+            if matches!(
+                ctx.bloque_mut(ctx.bloque_actual).terminator,
+                MirTerminator::Unreachable
+            ) {
+                ctx.set_terminator(MirTerminator::Goto(bloque_done));
+            }
+            ctx.cambiar_bloque(bloque_done);
+            MirOperand::Copy(result)
         }
         HirExpresion::O(a, b, tipo) => {
+            // Cortocircuito: evaluar RHS solo si LHS es falso; validar operandos lógicos.
             let la = lower_expr(ctx, a);
-            let lb = lower_expr(ctx, b);
-            let tmp = ctx.nuevo_temp(tipo.clone());
+            let la_ok = ctx.nuevo_temp(TipoSem::Logico);
+            ctx.emitir_stmt(MirStmt::Llamada {
+                destino: Some(MirPlace {
+                    local: la_ok,
+                    projection: vec![],
+                }),
+                callee: "__bsk_assert_logico".to_string(),
+                argumentos: vec![la, MirOperand::Const(MirConst::Texto("o".to_string()))],
+            });
+            let result = ctx.nuevo_temp(tipo.clone());
             ctx.emitir_stmt(MirStmt::Asignacion {
                 destino: MirPlace {
-                    local: tmp,
+                    local: result,
                     projection: vec![],
                 },
-                valor: MirRvalue::BinOp {
-                    op: MirBinOp::O,
-                    lhs: la,
-                    rhs: lb,
-                },
+                valor: MirRvalue::Use(MirOperand::Copy(la_ok)),
             });
-            MirOperand::Copy(tmp)
+            let bloque_rhs = ctx.nuevo_bloque();
+            let bloque_done = ctx.nuevo_bloque();
+            ctx.set_terminator(MirTerminator::SwitchInt {
+                discriminante: MirOperand::Copy(la_ok),
+                casos: vec![(1, bloque_done)],
+                por_defecto: bloque_rhs,
+            });
+            ctx.cambiar_bloque(bloque_rhs);
+            let lb = lower_expr(ctx, b);
+            let lb_ok = ctx.nuevo_temp(TipoSem::Logico);
+            ctx.emitir_stmt(MirStmt::Llamada {
+                destino: Some(MirPlace {
+                    local: lb_ok,
+                    projection: vec![],
+                }),
+                callee: "__bsk_assert_logico".to_string(),
+                argumentos: vec![lb, MirOperand::Const(MirConst::Texto("o".to_string()))],
+            });
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local: result,
+                    projection: vec![],
+                },
+                valor: MirRvalue::Use(MirOperand::Copy(lb_ok)),
+            });
+            if matches!(
+                ctx.bloque_mut(ctx.bloque_actual).terminator,
+                MirTerminator::Unreachable
+            ) {
+                ctx.set_terminator(MirTerminator::Goto(bloque_done));
+            }
+            ctx.cambiar_bloque(bloque_done);
+            MirOperand::Copy(result)
         }
         HirExpresion::ArregloLiteral { elementos, tipo } => {
             let ops: Vec<MirOperand> = elementos.iter().map(|e| lower_expr(ctx, e)).collect();
