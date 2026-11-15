@@ -301,6 +301,13 @@ impl ContextoSemantico {
                                 linea,
                                 columna,
                             );
+                        } else if matches!(info.tipo, TipoSem::Desconocido)
+                            && !matches!(vt, TipoSem::Desconocido)
+                        {
+                            // B.2/B.3: refinar tipo local cuando hay evidencia demostrable
+                            // en una variable sin tipo conocido, preservando el
+                            // comportamiento conservador ante ambigüedad.
+                            self.actualizar_tipo_variable(&nombre, vt);
                         }
                     }
                 }
@@ -312,11 +319,33 @@ impl ContextoSemantico {
                 linea,
                 columna,
             } => {
-                self.analizar_expresion(&objeto);
-                self.analizar_expresion(&indice);
-                self.analizar_expresion(&valor);
-                // no comprobaciones adicionales estáticas
-                let _ = (linea, columna);
+                let to = self.analizar_expresion(&objeto);
+                let ti = self.analizar_expresion(&indice);
+                let tv = self.analizar_expresion(&valor);
+                if !matches!(ti, TipoSem::Desconocido | TipoSem::Entero) {
+                    self.error(
+                        CausaError::TiposIncompatibles {
+                            izquierdo: "entero",
+                            derecho: ti.estatico(),
+                        },
+                        linea,
+                        columna,
+                    );
+                }
+                let te = tipo_elemento_coleccion(&to);
+                if !matches!(te, TipoSem::Desconocido)
+                    && !matches!(tv, TipoSem::Desconocido)
+                    && !compatible(&te, &tv)
+                {
+                    self.error(
+                        CausaError::AsignacionIncompatible {
+                            esperado: te.nombre(),
+                            obtenido: tv.nombre(),
+                        },
+                        linea,
+                        columna,
+                    );
+                }
             }
             Sentencia::Si {
                 condicion,
@@ -364,13 +393,14 @@ impl ContextoSemantico {
                 cuerpo,
                 ..
             } => {
-                self.analizar_expresion(&iterable);
+                let tipo_iterable = self.analizar_expresion(&iterable);
+                let tipo_elemento = tipo_elemento_iterable(&tipo_iterable);
                 self.scopes.push(HashMap::new());
                 self.gestor.entrar();
                 self.scopes.last_mut().unwrap().insert(
                     variable,
                     VarInfo {
-                        tipo: TipoSem::Desconocido,
+                        tipo: tipo_elemento,
                         mutable: true,
                     },
                 );
@@ -411,9 +441,12 @@ impl ContextoSemantico {
                     .iter()
                     .map(|(n, t)| (n.clone(), t.as_ref().map(tipo_anotacion_a_sem)))
                     .collect();
+                // C.1: el retorno conocido en la firma proviene únicamente de la
+                // anotación explícita. No se infiere desde el cuerpo (C.2).
+                let retorno_firma = tipo_retorno.as_ref().map(tipo_anotacion_a_sem);
                 let firma = FuncionSig {
                     parametros: params.clone(),
-                    retorno: tipo_retorno.as_ref().map(tipo_anotacion_a_sem),
+                    retorno: retorno_firma.clone(),
                 };
                 let firma_previa = self.funciones.get(&nombre).cloned();
                 self.funciones.insert(nombre.clone(), firma.clone());
@@ -432,12 +465,7 @@ impl ContextoSemantico {
                                 .iter()
                                 .map(|(_, t)| t.clone().unwrap_or(TipoSem::Desconocido))
                                 .collect(),
-                            retorno: Box::new(
-                                tipo_retorno
-                                    .as_ref()
-                                    .map(tipo_anotacion_a_sem)
-                                    .unwrap_or(TipoSem::Desconocido),
-                            ),
+                            retorno: Box::new(retorno_firma.unwrap_or(TipoSem::Desconocido)),
                         },
                         mutable: false,
                     },
@@ -483,6 +511,10 @@ impl ContextoSemantico {
                 for st in &cuerpo {
                     self.analizar_sentencia(st.clone());
                 }
+                // Se preserva propagación preexistente de retorno inferido en la
+                // firma registrada para compatibilidad (contratos existentes);
+                // C.1 no introduce nueva inferencia de cuerpo y las firmas usadas
+                // como valor-función en ámbitos se construyen desde anotaciones.
                 if tipo_retorno.is_none()
                     && let Some(inf) = &self.retorno_inferido
                     && let Some(sig) = self.funciones.get_mut(&nombre)
@@ -892,54 +924,55 @@ impl ContextoSemantico {
                 linea,
                 columna,
             } => {
-                let sig = self.funciones.get(nombre).cloned();
                 let builtin = crate::evaluador::NOMBRES_RESERVADOS.contains(&nombre.as_str());
-                let var_existe = self.buscar_variable(nombre).is_some();
-                if sig.is_none() && !builtin && !var_existe {
+                let var_info = self.buscar_variable(nombre);
+                let sig_map = self.funciones.get(nombre).cloned();
+
+                // C.1: resolución léxica conservadora. Se respeta el sombreado
+                // prefiriendo el valor en ámbito; si no hay valor-función en
+                // ámbito se usa la firma registrada (p.ej. función nombrada).
+                let callee = if let Some(VarInfo { tipo, .. }) = var_info.clone() {
+                    match tipo {
+                        TipoSem::Funcion { params, retorno } => Some((params, *retorno)),
+                        _ => None,
+                    }
+                } else if let Some(sig) = sig_map.clone() {
+                    // Sin valor-función sombreante: usar firma registrada de la
+                    // función nombrada (incluye compatibilidad preexistente).
+                    let params = sig
+                        .parametros
+                        .iter()
+                        .map(|(_, t)| t.clone().unwrap_or(TipoSem::Desconocido))
+                        .collect();
+                    let retorno = sig.retorno.clone().unwrap_or(TipoSem::Desconocido);
+                    Some((params, retorno))
+                } else {
+                    None
+                };
+
+                if var_info.is_none() && sig_map.is_none() && !builtin {
                     self.error(
                         CausaError::VariableNoDefinida(nombre.clone()),
                         *linea,
                         *columna,
                     );
                 }
+
                 let mut arg_types = Vec::new();
                 for a in argumentos {
                     arg_types.push(self.analizar_expresion(a));
                 }
-                // Una función valor (anidada asignada en ámbito o lambda) da
-                // su firma; validarla como lo hace el evaluador en tiempo real.
-                if let Some(sig) = sig {
-                    if sig.parametros.len() != argumentos.len() {
-                        self.error(
-                            CausaError::FirmaInvalida {
-                                funcion: nombre.clone(),
-                                esperado: sig.parametros.len(),
-                                obtenido: argumentos.len(),
-                            },
-                            *linea,
-                            *columna,
-                        );
+
+                if let Some((params, mut retorno)) = callee {
+                    // Compatibilidad: si el retorno desde ámbito es desconocido,
+                    // preservar retorno conocido de la firma registrada (p.ej.
+                    // inferido preexistente) para no romper contratos/regresiones.
+                    if matches!(retorno, TipoSem::Desconocido)
+                        && let Some(sig) = sig_map.as_ref()
+                        && let Some(r) = sig.retorno.clone()
+                    {
+                        retorno = r;
                     }
-                    for (i, (pname, ptype)) in sig.parametros.iter().enumerate() {
-                        if let (Some(pt), Some(at)) = (ptype, arg_types.get(i))
-                            && !compatible(pt, at)
-                        {
-                            self.error(
-                                CausaError::TipoParametroIncompatible {
-                                    funcion: nombre.clone(),
-                                    parametro: pname.clone(),
-                                    esperado: pt.nombre(),
-                                    obtenido: at.nombre(),
-                                },
-                                *linea,
-                                *columna,
-                            );
-                        }
-                    }
-                    sig.retorno.clone().unwrap_or(TipoSem::Desconocido)
-                } else if let Some(VarInfo { tipo, .. }) = self.buscar_variable(nombre)
-                    && let TipoSem::Funcion { params, retorno } = tipo
-                {
                     if params.len() != argumentos.len() {
                         self.error(
                             CausaError::FirmaInvalida {
@@ -968,7 +1001,17 @@ impl ContextoSemantico {
                             );
                         }
                     }
-                    *retorno
+                    retorno
+                } else if let Some(VarInfo { tipo, .. }) = var_info {
+                    // Variable conocida pero no-función: solo diagnóstico si el
+                    // tipo es demostrablemente incompatible con "función".
+                    if !matches!(tipo, TipoSem::Desconocido) && !builtin {
+                        // Conservador: no forzar error adicional aquí para evitar
+                        // falsos positivos en usos no callee; la llamada a un no-
+                        // función conocido se trata de forma permisiva/conservadora.
+                        let _ = tipo;
+                    }
+                    TipoSem::Desconocido
                 } else {
                     TipoSem::Desconocido
                 }
@@ -986,11 +1029,7 @@ impl ContextoSemantico {
                         1,
                     );
                 }
-                match to {
-                    TipoSem::Arreglo(t, _) => *t,
-                    TipoSem::Lista(t) => *t,
-                    _ => TipoSem::Desconocido,
-                }
+                tipo_elemento_coleccion(&to)
             }
             Expresion::Acceso { objeto, .. } => {
                 self.analizar_expresion(objeto);
@@ -1118,13 +1157,20 @@ impl ContextoSemantico {
                 for e in elementos {
                     tipos.push(self.analizar_expresion(e));
                 }
+                // B.2: inferencia local de elemento de colección. Si algún elemento
+                // carece de tipo conocido no hay evidencia suficiente; si los tipos
+                // son heterogéneos sin tipo común demostrable se mantiene Desconocido.
+                if tipos.iter().any(|t| matches!(t, TipoSem::Desconocido)) {
+                    return TipoSem::Coleccion(Box::new(TipoSem::Desconocido));
+                }
                 let mut comun = tipos[0].clone();
                 for t in &tipos[1..] {
-                    if !compatible(&comun, t) {
+                    let siguiente = tipo_comun(&comun, t);
+                    if matches!(siguiente, TipoSem::Desconocido) {
                         comun = TipoSem::Desconocido;
                         break;
                     }
-                    comun = tipo_comun(&comun, t);
+                    comun = siguiente;
                 }
                 TipoSem::Coleccion(Box::new(comun))
             }
@@ -1337,6 +1383,15 @@ impl ContextoSemantico {
         None
     }
 
+    fn actualizar_tipo_variable(&mut self, nombre: &str, tipo: TipoSem) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(v) = scope.get_mut(nombre) {
+                v.tipo = tipo;
+                return;
+            }
+        }
+    }
+
     /// Resuelve un identificador a su símbodo usando la infraestructura de la
     /// Etapa 1, caminando la pila de ámbitos del gestor en orden léxico.
     pub fn resolver_simbodo(&self, nombre: &str) -> Option<SimbodoId> {
@@ -1510,6 +1565,19 @@ fn tipo_comun(a: &TipoSem, b: &TipoSem) -> TipoSem {
         (TipoSem::Logico, TipoSem::Logico) => TipoSem::Logico,
         _ => TipoSem::Desconocido,
     }
+}
+
+fn tipo_elemento_coleccion(t: &TipoSem) -> TipoSem {
+    match t {
+        TipoSem::Arreglo(elem, _) | TipoSem::Lista(elem) | TipoSem::Coleccion(elem) => {
+            (**elem).clone()
+        }
+        _ => TipoSem::Desconocido,
+    }
+}
+
+fn tipo_elemento_iterable(t: &TipoSem) -> TipoSem {
+    tipo_elemento_coleccion(t)
 }
 
 impl ContextoSemantico {
