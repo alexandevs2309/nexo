@@ -77,13 +77,22 @@
 ## Fase 06 — Sistema de tipos avanzado
 - **Objetivo:** Fortalecer tipado (inferencia útil, compatibilidad/unificación coherente, reducción de `Desconocido` crítico, chequeos estáticos efectivos).
 - **Alcance permitido:** `semantico.rs`, `parser/ast` si necesario, `hir/mir`, verificadores, tests.
-- **Dependencias:** Fases 03–04 `APROBADAS`.
-- **Tareas:** Reglas tipadas con especificación/evidencia; mejorar diagnósticos; tests positivos/negativos.
+- **Dependencias:** Fases 00–05 `APROBADAS`.
+- **Tareas:** Reglas tipadas con especificación/evidencia; mejorar diagnósticos; tests positivos/negativos (ejecución incremental por etapas/lotes según planificación autorizada). Etapa B completada; Etapa C en progreso (C.0/C.1 cerrados, C.2 pendiente de autorización/ejecución); Etapa D pendiente.
 - **Archivos afectados previstos:** semántico, lowering, verificadores, tests.
 - **Pruebas requeridas:** suite de tipos/conversiones/inferencia; `workspace`.
 - **Criterios de aceptación:** reglas implementadas comprobadas; regresiones cero.
-- **Evidencias:** tests, comandos.
-- **Estado:** `PENDIENTE`.
+- **Evidencias (Etapa B, conservadas):**
+  - **B.1 (CLOSED, 2026-11-15):** `prototipo/src/semantico.rs`, `prototipo/tests/semantico.rs` (inferencia de elemento en `para cada` e indexación para `Arreglo/Lista/Coleccion`; 11 pruebas nuevas). Validación (informe B.1, `main@0e41fb2`, árbol local): `cargo fmt --check` exit 0; `cargo clippy --all-targets --all-features -- -D warnings` exit 0; `cargo test --test semantico` **70 passed, 0 failed, 0 ignored**; `cargo test --workspace --no-fail-fast` **1049 passed, 0 failed, 2 ignored** (56 suites).
+  - **B.2 (CLOSED, 2026-11-15, MISIÓN 06.3):** inferencia local de colecciones y refinamiento de variables inicialmente `Desconocido` (evidencia MISIÓN 06.2, `prototipo/src/semantico.rs`, `prototipo/tests/semantico.rs`).
+  - **B.3 (CLOSED, 2026-11-15, MISIÓN 06.3):** validación estática de asignaciones por índice, conservadora ante `Desconocido` (evidencia MISIÓN 06.2).
+  - **Validación conjunta B.2+B.3 (MISIÓN 06.2, `main@0e41fb2`, árbol local):** 20 pruebas nuevas; `cargo fmt --check` **PASS**; `cargo clippy --all-targets --all-features -- -D warnings` **PASS**; `cargo test --test semantico` **90 passed**; `cargo test --test conformidad_tipos` **7 passed**; `cargo test --test inferencia_tipos` **18 passed**; `cargo test --workspace --no-fail-fast` **1069 passed, 0 failed, 2 ignored** (56 suites). Ignoradas: 2 `registry_integration` (B-REG-001, PostgreSQL aislado).
+- **Evidencias (Etapa C):**
+  - **C.0 (CLOSED, MISIÓN 06.6, ADR-0018):** cierre formal de diseño (Opción A conservadora) aprobado.
+  - **C.1 (CLOSED, aprobado/cerrado formalmente posterior a MISIÓN 06.8):** unificación semántica conservadora de firmas de valores-función (commit `229feb6`, `feat(semantico): etapa B y C.1 de tipos en análisis estático`, publicado en `origin/main`; `prototipo/src/semantico.rs`, `prototipo/tests/semantico.rs`). Validación: `cargo fmt --check` **PASS**; Clippy `-D warnings` **PASS**; `--test semantico` **109 passed**; `--test conformidad_tipos` **7 passed**; `--test inferencia_tipos` **18 passed**; `--test lambdas` **6 passed**; `--test closures` **5 passed**; `cargo test --workspace --no-fail-fast` **1088 passed, 0 failed, 2 ignored** (56 suites). Ignorados: 2 `registry_integration` (B-REG-001, PostgreSQL aislado).
+  - **C.2:** **NOT STARTED** (pendiente de autorización/ejecución).
+- **Limitaciones documentadas (conservadas):** sin unificación general/análisis interprocedimental completo; inferencia de retornos de funciones/lambdas desde cuerpos/casos inequívocos (según diseño aprobado) pendiente en **C.2** (Etapa C); colecciones vacías/heterogéneas/con elementos desconocidos conservadoras; sin modificar runtime/VM/backends/HIR/MIR por B/C.1; GAP-051 y B-REG-001 pendientes.
+- **Estado:** `EN PROGRESO` (no cerrada). **Etapa B = COMPLETADA / CLOSED** (**B.1 = CLOSED**, **B.2 = CLOSED**, **B.3 = CLOSED**). **Etapa C = IN PROGRESS** (**C.0 = CLOSED**, **C.1 = CLOSED**, **C.2 = NOT STARTED**). **Etapa D = NOT STARTED**. Fase 06 no cerrada.
 
 ## Fase 07 — Genéricos y monomorfización
 - **Objetivo:** Soporte real de genéricos **de usuario** con estrategia de implementación (monomorfización u otra) demostrada end-to-end.
