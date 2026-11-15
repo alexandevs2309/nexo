@@ -181,24 +181,35 @@ pub fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            let tokens =
-                match Lexer::con_archivo(&fuente, Some(ruta.display().to_string())).tokenizar() {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("error léxico: {e}");
-                        return ExitCode::from(1);
-                    }
-                };
-            let sentencias = match Parser::con_archivo(tokens, Some(ruta.display().to_string()))
-                .parsear_programa()
-            {
-                Ok(s) => s,
+            let ruta_str = ruta.display().to_string();
+            let tokens = match Lexer::con_archivo(&fuente, Some(ruta_str.clone())).tokenizar() {
+                Ok(t) => t,
                 Err(e) => {
-                    eprintln!("error sintáctico: {e}");
+                    eprintln!("error léxico: {e}");
                     return ExitCode::from(1);
                 }
             };
-            let mut ctx = ContextoSemantico::nuevo();
+            let sentencias =
+                match Parser::con_archivo(tokens, Some(ruta_str.clone())).parsear_programa() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("error sintáctico: {e}");
+                        return ExitCode::from(1);
+                    }
+                };
+            let root = ruta
+                .parent()
+                .map(|p| {
+                    if p.as_os_str().is_empty() {
+                        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                    } else {
+                        p.to_path_buf()
+                    }
+                })
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let cargador = Arc::new(Mutex::new(CargadorModulos::nuevo(root)));
+            let mut ctx = ContextoSemantico::con_cargador(cargador, Some(ruta_str.clone()));
+            ctx.set_archivo_actual(Some(ruta.clone()));
             let errs = ctx.analizar_programa(&sentencias);
             if !errs.is_empty() {
                 for e in errs {
@@ -206,6 +217,7 @@ pub fn main() -> ExitCode {
                 }
                 return ExitCode::from(1);
             }
+            *crate::hir::MODULO_ERROR.lock().unwrap() = None;
             let hir = match hir::lower_programa(&sentencias, &ctx) {
                 Ok(h) => h,
                 Err(e) => {
@@ -213,6 +225,10 @@ pub fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
+            if let Some(e) = crate::hir::MODULO_ERROR.lock().unwrap().take() {
+                eprintln!("{e}");
+                return ExitCode::from(1);
+            }
             if let Err(e) = gate_hir(&hir) {
                 eprintln!("{}", e);
                 return ExitCode::from(1);

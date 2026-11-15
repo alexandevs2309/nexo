@@ -331,3 +331,59 @@ fn gate_analizar_devuelve_codigo_salida() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn run_modular_resuelve_importaciones() {
+    let dir = directorio_temporal();
+    std::fs::write(
+        dir.join("lib.bsk"),
+        "publico funcion saludar() {\n  retornar \"hola-modulo\"\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.bsk"),
+        "usar \"lib.bsk\" como m\nmostrar m.saludar()\n",
+    )
+    .unwrap();
+    let salida = Command::new(env!("CARGO_BIN_EXE_bsk"))
+        .args(["run", "main.bsk"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(salida.status.success(), "stderr: {}", texto(&salida.stderr));
+    assert_eq!(texto(&salida.stdout).trim(), "hola-modulo");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn build_modular_genera_y_ejecuta_binario() {
+    let dir = directorio_temporal();
+    std::fs::write(
+        dir.join("lib.bsk"),
+        "publico funcion sumar(a, b) {\n  retornar a + b\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.bsk"),
+        "usar \"lib.bsk\" como m\nmostrar m.sumar(20, 22)\n",
+    )
+    .unwrap();
+    let salida = Command::new(env!("CARGO_BIN_EXE_bsk"))
+        .args(["build", "main.bsk"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(salida.status.success(), "stderr: {}", texto(&salida.stderr));
+    assert!(dir.join("main.rs").is_file(), "debe generarse main.rs");
+    let bin = dir.join(if cfg!(windows) { "main.exe" } else { "main" });
+    assert!(bin.is_file(), "debe generarse binario nativo");
+
+    let salida_bin = Command::new(&bin).current_dir(&dir).output().unwrap();
+    assert!(
+        salida_bin.status.success(),
+        "stderr: {}",
+        texto(&salida_bin.stderr)
+    );
+    assert_eq!(texto(&salida_bin.stdout).trim(), "42");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -2248,6 +2248,9 @@ fn rvalue_valido(
         MirRvalue::UnOp { op, operand } => {
             operando_valido(operand, f, prog, ctx, &format!("{sitio}.operand"))?;
             if let Some(t) = tipo_operando(operand, f, prog) {
+                if matches!(t, TipoSem::Desconocido) {
+                    return Ok(());
+                }
                 let ok = match op {
                     MirUnOp::Negacion => {
                         matches!(t, TipoSem::Entero | TipoSem::Decimal | TipoSem::Real)
@@ -2773,6 +2776,31 @@ mod verificacion_3d3_tests {
         let f = main_func(
             TipoSem::Nulo,
             vec![TipoSem::Logico, TipoSem::Logico],
+            vec![bb(
+                0,
+                vec![MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: LocalId(1),
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::UnOp {
+                        op: MirUnOp::No,
+                        operand: MirOperand::Copy(LocalId(0)),
+                    },
+                }],
+                MirTerminator::Return(None),
+            )],
+        );
+        assert!(VerificadorMir::verificar_detallado(&programa(vec![f], vec![])).es_ok());
+    }
+
+    #[test]
+    fn d3_3_unop_no_operando_desconocido_acepta() {
+        // Regresión MIR042: el verificador debe ser conservador ante tipos
+        // desconocidos (p.ej. resultados de llamadas/modulos) en operadores unarios.
+        let f = main_func(
+            TipoSem::Nulo,
+            vec![TipoSem::Desconocido, TipoSem::Logico],
             vec![bb(
                 0,
                 vec![MirStmt::Asignacion {

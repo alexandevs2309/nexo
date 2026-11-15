@@ -649,7 +649,7 @@ fn generar_stmt(out: &mut String, stmt: &MirStmt, indent: usize, ctx: &CtxFn) {
                         .cloned()
                         .unwrap_or_else(|| "Valor::Texto(\"y\".to_string())".to_string());
                     let call = format!(
-                        "bsk_assert_logico({v}, match {op} {{ Valor::Texto(s) => s.as_str(), _ => \"y\" }})?"
+                        "bsk_runtime::bsk_assert_logico({v}, match &({op}) {{ Valor::Texto(s) => s.as_str(), _ => \"y\" }})?"
                     );
                     if let Some(d) = destino {
                         if d.projection.is_empty() {
