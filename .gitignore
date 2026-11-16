@@ -1,1 +1,13 @@
 target/
+
+# Artefactos locales generados (no publicar)
+ejemplos/calculadora/main
+ejemplos/calculadora/main.rs
+ejemplos/consola/main
+ejemplos/consola/main.rs
+ejemplos/gestor_tareas/main
+ejemplos/gestor_tareas/main.rs
+ejemplos/inventario/main
+ejemplos/inventario/main.rs
+ejemplos/punto_venta/main
+ejemplos/punto_venta/main.rs

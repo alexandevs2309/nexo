@@ -79,6 +79,8 @@ pub struct VarInfo {
 struct FuncionSig {
     parametros: Vec<(String, Option<TipoSem>)>,
     retorno: Option<TipoSem>,
+    // true si `retorno` proviene de anotación explícita en la firma.
+    retorno_anotado: bool,
 }
 
 #[derive(Clone)]
@@ -91,6 +93,13 @@ enum ExportadoSem {
 struct ModuloInfo {
     exports: HashMap<String, ExportadoSem>,
     nombres: HashSet<String>,
+}
+
+#[derive(Clone)]
+#[allow(dead_code)]
+struct C2ResultadoDecl {
+    nombre: String,
+    tipo: Option<TipoSem>,
 }
 
 /// Analizador semántico. Independiente del evaluador: no ejecuta código.
@@ -109,6 +118,15 @@ pub struct ContextoSemantico {
     en_funcion: bool,
     modulos: HashMap<PathBuf, ModuloInfo>,
     en_carga: HashSet<PathBuf>,
+    // C.2: resultados de inferencia local conservadora de retornos para
+    // funciones nombradas no anotadas. Canal separado del mecanismo legado C.1
+    // (FuncionSig.retorno/propagación/fallback): no se usa para resolución de
+    // llamadas ni se propaga interprocedimentalmente. Clave = identidad estable
+    // de declaración (SimbodoId), no nombre simple. `tipo: None` = Desconocido.
+    c2_resultados: HashMap<SimbodoId, C2ResultadoDecl>,
+    c2_retorno_tipos: Vec<TipoSem>,
+    c2_evidencia_insuficiente: bool,
+    c2_activo: bool,
 }
 
 impl ContextoSemantico {
@@ -128,6 +146,10 @@ impl ContextoSemantico {
             en_funcion: false,
             modulos: HashMap::new(),
             en_carga: HashSet::new(),
+            c2_resultados: HashMap::new(),
+            c2_retorno_tipos: Vec::new(),
+            c2_evidencia_insuficiente: false,
+            c2_activo: false,
         }
     }
 
@@ -180,11 +202,13 @@ impl ContextoSemantico {
                         .iter()
                         .map(|(n, t)| (n.clone(), t.as_ref().map(tipo_anotacion_a_sem)))
                         .collect();
+                    let retorno_anotado = tipo_retorno.is_some();
                     self.funciones.insert(
                         nombre.clone(),
                         FuncionSig {
                             parametros: params,
                             retorno: tipo_retorno.as_ref().map(tipo_anotacion_a_sem),
+                            retorno_anotado,
                         },
                     );
                     self.tabla.registrar(
@@ -443,14 +467,16 @@ impl ContextoSemantico {
                     .collect();
                 // C.1: el retorno conocido en la firma proviene únicamente de la
                 // anotación explícita. No se infiere desde el cuerpo (C.2).
+                let retorno_anotado_flag = tipo_retorno.is_some();
                 let retorno_firma = tipo_retorno.as_ref().map(tipo_anotacion_a_sem);
                 let firma = FuncionSig {
                     parametros: params.clone(),
                     retorno: retorno_firma.clone(),
+                    retorno_anotado: retorno_anotado_flag,
                 };
                 let firma_previa = self.funciones.get(&nombre).cloned();
                 self.funciones.insert(nombre.clone(), firma.clone());
-                self.tabla.registrar(
+                let decl_id = self.tabla.registrar(
                     nombre.clone(),
                     self.gestor.actual(),
                     CategoriaSimbodo::Funcion,
@@ -504,13 +530,23 @@ impl ContextoSemantico {
                 let prev_ret = self.retorno_esperado.clone();
                 let prev_inf = self.retorno_inferido.clone();
                 let prev_en = self.en_funcion;
+                let prev_c2_tipos = std::mem::take(&mut self.c2_retorno_tipos);
+                let prev_c2_insuf = std::mem::replace(&mut self.c2_evidencia_insuficiente, false);
+                let prev_c2_activo = std::mem::replace(&mut self.c2_activo, false);
                 self.funcion_actual = Some(nombre.clone());
                 self.retorno_esperado = tipo_retorno.as_ref().map(tipo_anotacion_a_sem);
                 self.retorno_inferido = None;
                 self.en_funcion = true;
+                // C.2: inferencia local conservadora solo para funciones nombradas
+                // sin anotación explícita de retorno; lambdas/closures excluidas.
+                self.c2_activo = tipo_retorno.is_none();
+                self.c2_retorno_tipos.clear();
+                self.c2_evidencia_insuficiente = false;
                 for st in &cuerpo {
                     self.analizar_sentencia(st.clone());
                 }
+                // Finalizar C.2 en canal separado (sin afectar FuncionSig/fallback legado).
+                self.c2_finalizar(decl_id, &nombre, &cuerpo, tipo_retorno.is_none());
                 // Se preserva propagación preexistente de retorno inferido en la
                 // firma registrada para compatibilidad (contratos existentes);
                 // C.1 no introduce nueva inferencia de cuerpo y las firmas usadas
@@ -525,6 +561,9 @@ impl ContextoSemantico {
                 self.retorno_esperado = prev_ret;
                 self.retorno_inferido = prev_inf;
                 self.en_funcion = prev_en;
+                self.c2_retorno_tipos = prev_c2_tipos;
+                self.c2_evidencia_insuficiente = prev_c2_insuf;
+                self.c2_activo = prev_c2_activo;
                 self.scopes.pop();
                 self.gestor.salir();
                 // Al salir de una función anidada, devolver la firma global
@@ -553,42 +592,93 @@ impl ContextoSemantico {
                     }
                     return;
                 }
-                let vt = match valor {
-                    Some(v) => self.analizar_expresion(&v),
-                    None => TipoSem::Nulo,
-                };
-                if let Some(expected) = &self.retorno_esperado
-                    && !compatible(expected, &vt)
-                    && !matches!(vt, TipoSem::Desconocido)
-                    && !matches!(expected, TipoSem::Desconocido)
-                {
-                    self.error(
-                        CausaError::RetornoIncompatibleConAnotacion {
-                            funcion: self.funcion_actual.clone().unwrap_or_default(),
-                            esperado: expected.nombre(),
-                            obtenido: vt.nombre(),
-                        },
-                        linea,
-                        columna,
-                    );
-                }
-                if self.retorno_esperado.is_none() {
-                    if let Some(inferred) = &self.retorno_inferido {
-                        if !compatible(inferred, &vt)
+                match valor {
+                    Some(v) => {
+                        // C.2: evidencia local conservadora y separada (D4/D5).
+                        // Se evalúa admisibilidad sin emitir diagnósticos.
+                        let c2_admisible = self.c2_activo && self.c2_expr_admisible(&v);
+                        let vt = self.analizar_expresion(&v);
+                        if self.c2_activo {
+                            if c2_admisible && !matches!(vt, TipoSem::Desconocido) {
+                                self.c2_registrar_tipo(vt.clone());
+                            } else {
+                                self.c2_marcar_insuficiente();
+                            }
+                        }
+                        if let Some(expected) = &self.retorno_esperado
+                            && !compatible(expected, &vt)
                             && !matches!(vt, TipoSem::Desconocido)
-                            && !matches!(inferred, TipoSem::Desconocido)
+                            && !matches!(expected, TipoSem::Desconocido)
                         {
                             self.error(
-                                CausaError::TipoDeRetornoIncompatible {
-                                    esperado: inferred.estatico(),
-                                    obtenido: vt.estatico(),
+                                CausaError::RetornoIncompatibleConAnotacion {
+                                    funcion: self.funcion_actual.clone().unwrap_or_default(),
+                                    esperado: expected.nombre(),
+                                    obtenido: vt.nombre(),
                                 },
                                 linea,
                                 columna,
                             );
                         }
-                    } else if !matches!(vt, TipoSem::Desconocido) {
-                        self.retorno_inferido = Some(vt.clone());
+                        if self.retorno_esperado.is_none() {
+                            if let Some(inferred) = &self.retorno_inferido {
+                                if !compatible(inferred, &vt)
+                                    && !matches!(vt, TipoSem::Desconocido)
+                                    && !matches!(inferred, TipoSem::Desconocido)
+                                {
+                                    self.error(
+                                        CausaError::TipoDeRetornoIncompatible {
+                                            esperado: inferred.estatico(),
+                                            obtenido: vt.estatico(),
+                                        },
+                                        linea,
+                                        columna,
+                                    );
+                                }
+                            } else if !matches!(vt, TipoSem::Desconocido) {
+                                self.retorno_inferido = Some(vt.clone());
+                            }
+                        }
+                    }
+                    None => {
+                        // D4: `retornar` sin expresión es evidencia insuficiente para C.2.
+                        // Se preserva el tratamiento semántico/diagnóstico legado.
+                        self.c2_marcar_insuficiente();
+                        let vt = TipoSem::Nulo;
+                        if let Some(expected) = &self.retorno_esperado
+                            && !compatible(expected, &vt)
+                            && !matches!(vt, TipoSem::Desconocido)
+                            && !matches!(expected, TipoSem::Desconocido)
+                        {
+                            self.error(
+                                CausaError::RetornoIncompatibleConAnotacion {
+                                    funcion: self.funcion_actual.clone().unwrap_or_default(),
+                                    esperado: expected.nombre(),
+                                    obtenido: vt.nombre(),
+                                },
+                                linea,
+                                columna,
+                            );
+                        }
+                        if self.retorno_esperado.is_none() {
+                            if let Some(inferred) = &self.retorno_inferido {
+                                if !compatible(inferred, &vt)
+                                    && !matches!(vt, TipoSem::Desconocido)
+                                    && !matches!(inferred, TipoSem::Desconocido)
+                                {
+                                    self.error(
+                                        CausaError::TipoDeRetornoIncompatible {
+                                            esperado: inferred.estatico(),
+                                            obtenido: vt.estatico(),
+                                        },
+                                        linea,
+                                        columna,
+                                    );
+                                }
+                            } else if !matches!(vt, TipoSem::Desconocido) {
+                                self.retorno_inferido = Some(vt.clone());
+                            }
+                        }
                     }
                 }
             }
@@ -1589,5 +1679,746 @@ impl ContextoSemantico {
     }
     pub fn cargador(&self) -> Option<&Arc<Mutex<CargadorModulos>>> {
         self.cargador.as_ref()
+    }
+
+    /// Consumidor semántico C.2: recupera el resultado de retorno inferido para
+    /// una declaración específica por su identidad estable (`SimbodoId`).
+    ///
+    /// - `None`: no existe resultado C.2 registrado para esa declaración
+    ///   (ausente/no candidata/no registrada como resultado C.2).
+    /// - `Some(None)`: resultado C.2 presente y conservadoramente `Desconocido`.
+    /// - `Some(Some(t))`: resultado C.2 presente con tipo inferido conocido.
+    ///
+    /// Canal separado de C.1: no altera `FuncionSig.retorno`, diagnósticos ni
+    /// ejecución.
+    #[allow(dead_code)]
+    fn consultar_c2_retorno(&self, decl_id: SimbodoId) -> Option<Option<TipoSem>> {
+        self.c2_resultados.get(&decl_id).map(|r| r.tipo.clone())
+    }
+
+    fn c2_registrar_tipo(&mut self, t: TipoSem) {
+        if self.c2_activo {
+            if Self::c2_tipo_conocido(&t) {
+                self.c2_retorno_tipos.push(t);
+            } else {
+                self.c2_evidencia_insuficiente = true;
+            }
+        }
+    }
+
+    fn c2_tipo_conocido(t: &TipoSem) -> bool {
+        match t {
+            TipoSem::Desconocido => false,
+            TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te) => {
+                Self::c2_tipo_conocido(te)
+            }
+            TipoSem::Funcion { params, retorno } => {
+                params.iter().all(Self::c2_tipo_conocido) && Self::c2_tipo_conocido(retorno)
+            }
+            _ => true,
+        }
+    }
+
+    fn c2_marcar_insuficiente(&mut self) {
+        if self.c2_activo {
+            self.c2_evidencia_insuficiente = true;
+        }
+    }
+
+    fn c2_unificar(tipos: &[TipoSem]) -> Option<TipoSem> {
+        let mut it = tipos.iter();
+        let mut acc = it.next()?.clone();
+        for t in it {
+            let u = tipo_comun(&acc, t);
+            if matches!(u, TipoSem::Desconocido) {
+                return None;
+            }
+            acc = u;
+        }
+        Some(acc)
+    }
+
+    fn c2_finalizar(
+        &mut self,
+        decl_id: SimbodoId,
+        nombre: &str,
+        cuerpo: &[Sentencia],
+        es_candidato: bool,
+    ) {
+        if !es_candidato {
+            return;
+        }
+        let resultado = if self.c2_evidencia_insuficiente
+            || self.c2_retorno_tipos.is_empty()
+            || !Self::bloque_definitivamente_retorna(cuerpo)
+        {
+            None
+        } else {
+            Self::c2_unificar(&self.c2_retorno_tipos)
+        };
+        self.c2_resultados.insert(
+            decl_id,
+            C2ResultadoDecl {
+                nombre: nombre.to_string(),
+                tipo: resultado,
+            },
+        );
+    }
+
+    fn bloque_definitivamente_retorna(stmts: &[Sentencia]) -> bool {
+        stmts.iter().any(Self::sentencia_definitivamente_retorna)
+    }
+
+    fn sentencia_definitivamente_retorna(s: &Sentencia) -> bool {
+        match s {
+            Sentencia::Retorno { .. } => true,
+            Sentencia::Bloque(stmts) => Self::bloque_definitivamente_retorna(stmts),
+            Sentencia::Si {
+                rama_si,
+                rama_sino: Some(sino),
+                ..
+            } => {
+                Self::bloque_definitivamente_retorna(rama_si)
+                    && Self::bloque_definitivamente_retorna(sino)
+            }
+            // Conservador: bucles, intentar/rescatar, si-sin-sino y otras formas
+            // no demuestran retorno en todos los caminos relevantes.
+            _ => false,
+        }
+    }
+
+    fn c2_llamada_admisible(&self, nombre: &str) -> bool {
+        if let Some(VarInfo { tipo, .. }) = self.buscar_variable(nombre) {
+            if let TipoSem::Funcion { retorno, .. } = tipo {
+                // En ámbito, el retorno conocido proviene de anotación explícita
+                // (la firma de ámbito no se actualiza con inferencia de cuerpo).
+                return !matches!(retorno.as_ref(), TipoSem::Desconocido);
+            }
+            // Sombreado por valor no-función: no hay firma explícita utilizable.
+            return false;
+        }
+        if let Some(sig) = self.funciones.get(nombre) {
+            return sig.retorno_anotado;
+        }
+        false
+    }
+
+    fn c2_expr_admisible(&self, e: &Expresion) -> bool {
+        match e {
+            Expresion::Literal { .. } | Expresion::Variable { .. } | Expresion::Rango { .. } => {
+                true
+            }
+            Expresion::Suma(a, b)
+            | Expresion::Resta(a, b)
+            | Expresion::Multiplicacion(a, b)
+            | Expresion::Division(a, b)
+            | Expresion::Modulo(a, b)
+            | Expresion::IgualIgual(a, b)
+            | Expresion::Distinto(a, b)
+            | Expresion::Menor(a, b)
+            | Expresion::MenorIgual(a, b)
+            | Expresion::Mayor(a, b)
+            | Expresion::MayorIgual(a, b)
+            | Expresion::Y(a, b)
+            | Expresion::O(a, b) => self.c2_expr_admisible(a) && self.c2_expr_admisible(b),
+            Expresion::No(x) => self.c2_expr_admisible(x),
+            Expresion::Llamada {
+                nombre, argumentos, ..
+            } => {
+                self.c2_llamada_admisible(nombre)
+                    && argumentos.iter().all(|a| self.c2_expr_admisible(a))
+            }
+            // Llamadas indirectas y accesos: conservador para D5 (origen de la
+            // firma/retorno no demostrable como anotación explícita local).
+            Expresion::LlamadaIndirecta { .. } | Expresion::Acceso { .. } => false,
+            Expresion::Indice { objeto, indice, .. } => {
+                self.c2_expr_admisible(objeto) && self.c2_expr_admisible(indice)
+            }
+            Expresion::ArregloLiteral { elementos, .. } => {
+                elementos.iter().all(|x| self.c2_expr_admisible(x))
+            }
+            // Lambdas excluidas de inferencia C.2; tratadas conservadoramente.
+            Expresion::Lambda { .. } => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Lexer, Parser};
+
+    fn analizar_ctx(fuente: &str) -> (ContextoSemantico, Vec<ErrorEjecucion>) {
+        let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico");
+        let ss = Parser::nuevo(tokens).parsear_programa().expect("sintaxis");
+        let mut ctx = ContextoSemantico::nuevo();
+        let errs = ctx.analizar_programa(&ss);
+        (ctx, errs)
+    }
+
+    fn c2_entradas(ctx: &ContextoSemantico, nombre: &str) -> Vec<(SimbodoId, Option<TipoSem>)> {
+        let mut v: Vec<(SimbodoId, Option<TipoSem>)> = ctx
+            .c2_resultados
+            .iter()
+            .filter(|(_, r)| r.nombre == nombre)
+            .map(|(id, _)| {
+                // Consumo a través del consumidor semántico C.2 por identidad.
+                let res = ctx
+                    .consultar_c2_retorno(*id)
+                    .expect("entrada C.2 presente debe ser consultable");
+                (*id, res)
+            })
+            .collect();
+        v.sort_by_key(|(id, _)| id.0);
+        v
+    }
+
+    fn c2_unico(ctx: &ContextoSemantico, nombre: &str) -> Option<TipoSem> {
+        let v = c2_entradas(ctx, nombre);
+        assert_eq!(
+            v.len(),
+            1,
+            "se esperaba 1 resultado C.2 para '{nombre}', encontrados: {:?}",
+            v
+        );
+        v[0].1.clone()
+    }
+
+    fn c2(ctx: &ContextoSemantico, nombre: &str) -> Option<TipoSem> {
+        c2_unico(ctx, nombre)
+    }
+
+    #[test]
+    fn c2_retorno_explicito_unico() {
+        let (ctx, e) = analizar_ctx("funcion f() { retornar 1 }\nf()");
+        assert!(e.is_empty(), "errores: {:?}", e);
+        assert_eq!(c2(&ctx, "f"), Some(TipoSem::Entero));
+    }
+
+    #[test]
+    fn c2_varios_retornos_mismo_tipo_caminos_completos() {
+        let (ctx, e) = analizar_ctx(
+            "funcion f(x: logico) { si x { retornar 1 } sino { retornar 2 } }\nf(verdadero)",
+        );
+        assert!(e.is_empty(), "errores: {:?}", e);
+        assert_eq!(c2(&ctx, "f"), Some(TipoSem::Entero));
+    }
+
+    #[test]
+    fn c2_retornos_compatibles_unificables() {
+        let (ctx, e) = analizar_ctx(
+            "funcion f(x: logico) { si x { retornar 1 } sino { retornar 1.5 } }\nf(verdadero)",
+        );
+        // Puede existir diagnóstico legado por tipado de retornos (D0: no se altera);
+        // C.2 computa unificación conservadora en canal separado.
+        let _ = e;
+        assert_eq!(c2(&ctx, "f"), Some(TipoSem::Decimal));
+    }
+
+    #[test]
+    fn c2_callee_anotado_explicito_visible() {
+        let (ctx, e) = analizar_ctx(
+            "funcion g() -> entero { retornar 1 }\nfuncion f(x: logico) { si x { retornar g() } sino { retornar g() } }\nf(verdadero)",
+        );
+        assert!(e.is_empty(), "errores: {:?}", e);
+        assert_eq!(c2(&ctx, "f"), Some(TipoSem::Entero));
+    }
+
+    #[test]
+    fn c2_prioridad_anotacion_explicita() {
+        let (ctx, e) = analizar_ctx("funcion f() -> entero { retornar 1 }\nf()");
+        assert!(e.is_empty(), "errores: {:?}", e);
+        assert!(
+            c2_entradas(&ctx, "f").is_empty(),
+            "función anotada no debe producir resultado C.2 separado"
+        );
+        let sig = ctx.funciones.get("f").expect("firma");
+        assert!(sig.retorno_anotado);
+        assert_eq!(sig.retorno, Some(TipoSem::Entero));
+    }
+
+    #[test]
+    fn c2_caida_implicita_desconocido() {
+        let (ctx, e) = analizar_ctx("funcion f() { sea x = 1 }");
+        assert!(e.is_empty(), "errores: {:?}", e);
+        assert_eq!(c2(&ctx, "f"), None);
+    }
+
+    #[test]
+    fn c2_retorno_vacio_desconocido() {
+        let (ctx, e) = analizar_ctx("funcion f() { retornar }");
+        // Se preserva semántica/diagnóstico legado: sin anotación, el retorno
+        // vacío no debe generar diagnóstico estático nuevo aquí.
+        assert!(e.is_empty(), "errores: {:?}", e);
+        assert_eq!(c2(&ctx, "f"), None);
+    }
+
+    #[test]
+    fn c2_retorno_vacio_mezclado_desconocido() {
+        let (ctx, e) =
+            analizar_ctx("funcion f(x: logico) { si x { retornar } sino { retornar 1 } }");
+        // Se preserva comportamiento/diagnóstico legado preexistente (D0/D4).
+        let _ = e;
+        assert_eq!(c2(&ctx, "f"), None);
+    }
+
+    #[test]
+    fn c2_retornos_incompatibles_desconocido() {
+        let (ctx, e) =
+            analizar_ctx("funcion f(x: logico) { si x { retornar 1 } sino { retornar \"a\" } }");
+        // Diagnóstico legado por tipos de retorno incompatibles puede existir;
+        // C.2 debe ser conservador.
+        let _ = e;
+        assert_eq!(c2(&ctx, "f"), None);
+    }
+
+    #[test]
+    fn c2_expresion_opaca_desconocido() {
+        let (ctx, _e) = analizar_ctx("funcion f() { retornar longitud([1, 2]) }\nf()");
+        assert_eq!(c2(&ctx, "f"), None);
+    }
+
+    #[test]
+    fn c2_callee_sin_anotacion_desconocido_d5() {
+        let (ctx, e) = analizar_ctx(
+            "funcion g() { retornar 1 }\nfuncion f(x: logico) { si x { retornar g() } sino { retornar g() } }\nf(verdadero)",
+        );
+        assert!(e.is_empty(), "errores: {:?}", e);
+        // C.2 no consume retorno inferido del cuerpo de g (D5).
+        assert_eq!(c2(&ctx, "f"), None);
+        // Compatibilidad legada C.1 preservada: g puede tener retorno inferido en firma.
+        let sig_g = ctx.funciones.get("g").expect("firma g");
+        assert!(!sig_g.retorno_anotado);
+        assert_eq!(sig_g.retorno, Some(TipoSem::Entero));
+    }
+
+    #[test]
+    fn c2_recursion_sin_evidencia_independiente() {
+        let (ctx, _e) = analizar_ctx("funcion f(n: entero) { retornar f(n) }\nf(1)");
+        assert_eq!(c2(&ctx, "f"), None);
+    }
+
+    #[test]
+    fn c2_dependencia_circular_desconocido() {
+        let (ctx, e) = analizar_ctx(
+            "funcion a(x: logico) { si x { retornar b(x) } sino { retornar b(x) } }\nfuncion b(x: logico) { si x { retornar a(x) } sino { retornar a(x) } }\na(verdadero)",
+        );
+        assert!(e.is_empty(), "errores: {:?}", e);
+        assert_eq!(c2(&ctx, "a"), None);
+        assert_eq!(c2(&ctx, "b"), None);
+    }
+
+    #[test]
+    fn c2_camino_incompleto_si_sin_sino() {
+        let (ctx, e) = analizar_ctx("funcion f(x: logico) { si x { retornar 1 } }\nf(verdadero)");
+        assert!(e.is_empty(), "errores: {:?}", e);
+        assert_eq!(c2(&ctx, "f"), None);
+    }
+
+    #[test]
+    fn c2_ambiguedad_tipo_coleccion_heterogenea() {
+        let (ctx, _e) = analizar_ctx("funcion f() { retornar [1, \"a\"] }\nf()");
+        assert_eq!(c2(&ctx, "f"), None);
+    }
+
+    #[test]
+    fn c2_preserva_propagacion_y_fallback_legado_c1() {
+        // Legado: retorno inferido de g (no anotada) se propaga a FuncionSig y
+        // puede usarse como fallback en resolución de llamadas.
+        let (ctx, e) =
+            analizar_ctx("funcion g() { retornar 1 }\nfuncion h() -> entero { retornar g() }\nh()");
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let sig_g = ctx.funciones.get("g").expect("firma g");
+        assert!(!sig_g.retorno_anotado);
+        assert_eq!(sig_g.retorno, Some(TipoSem::Entero));
+        // h anotada: sin resultado C.2; su análisis debe seguir siendo válido.
+        assert!(c2_entradas(&ctx, "h").is_empty());
+    }
+
+    #[test]
+    fn c2_funcion_anidada_no_fuga_resultado() {
+        let (ctx, e) = analizar_ctx(
+            "funcion externa() {\n  funcion interna() { retornar 1 }\n  interna()\n}\nexterna()",
+        );
+        assert!(e.is_empty(), "errores: {:?}", e);
+        // interna analizada: C.2 puede registrarla; externa sin retornos explícitos.
+        assert_eq!(c2(&ctx, "interna"), Some(TipoSem::Entero));
+        assert_eq!(c2(&ctx, "externa"), None);
+        // Firma global de interna restaurada/eliminada tras salir del ámbito contenedor.
+        assert!(!ctx.funciones.contains_key("interna"));
+    }
+
+    fn tipos_por_nombre(ctx: &ContextoSemantico, nombre: &str) -> Vec<Option<TipoSem>> {
+        c2_entradas(ctx, nombre)
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect()
+    }
+
+    fn ids_por_nombre(ctx: &ContextoSemantico, nombre: &str) -> Vec<SimbodoId> {
+        c2_entradas(ctx, nombre)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    #[test]
+    fn c2_identidad_homonimas_anidadas_independientes() {
+        // Caso 1 — Funciones anidadas homónimas
+        let src = r#"
+funcion externa_a() {
+  funcion calcular() { retornar 100 }
+  calcular()
+}
+funcion externa_b() {
+  funcion calcular() { retornar "texto" }
+  calcular()
+}
+externa_a()
+externa_b()
+"#;
+        let (ctx, e) = analizar_ctx(src);
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let ids = ids_por_nombre(&ctx, "calcular");
+        assert_eq!(ids.len(), 2, "deben existir 2 declaraciones 'calcular'");
+        assert_ne!(
+            ids[0], ids[1],
+            "identidades de declaración deben ser distintas"
+        );
+        let mut tipos = tipos_por_nombre(&ctx, "calcular");
+        tipos.sort_by_key(|t| format!("{:?}", t));
+        assert_eq!(
+            tipos,
+            vec![Some(TipoSem::Entero), Some(TipoSem::Texto)],
+            "resultados independientes por declaración"
+        );
+        assert_eq!(c2(&ctx, "externa_a"), None);
+        assert_eq!(c2(&ctx, "externa_b"), None);
+    }
+
+    #[test]
+    fn c2_identidad_homonimas_orden_inverso() {
+        // Caso 2 — Orden inverso
+        let src = r#"
+funcion externa_b() {
+  funcion calcular() { retornar "texto" }
+  calcular()
+}
+funcion externa_a() {
+  funcion calcular() { retornar 100 }
+  calcular()
+}
+externa_b()
+externa_a()
+"#;
+        let (ctx, e) = analizar_ctx(src);
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let ids = ids_por_nombre(&ctx, "calcular");
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        let mut tipos = tipos_por_nombre(&ctx, "calcular");
+        tipos.sort_by_key(|t| format!("{:?}", t));
+        assert_eq!(tipos, vec![Some(TipoSem::Entero), Some(TipoSem::Texto)]);
+    }
+
+    #[test]
+    fn c2_identidad_tres_homonimas_distintas() {
+        // Caso 3 — Tres declaraciones homónimas
+        let src = "funcion a() {\n  funcion x() { retornar 1 }\n  x()\n}\nfuncion b() {\n  funcion x() { retornar 2 }\n  x()\n}\nfuncion c() {\n  funcion x() { retornar 3 }\n  x()\n}\na()\nb()\nc()\n";
+        let (ctx, e) = analizar_ctx(src);
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let ids = ids_por_nombre(&ctx, "x");
+        assert_eq!(ids.len(), 3, "deben existir 3 identidades distintas");
+        let uniq: std::collections::HashSet<_> = ids.iter().copied().collect();
+        assert_eq!(uniq.len(), 3, "ninguna identidad debe colisionar");
+        let mut tipos = tipos_por_nombre(&ctx, "x");
+        tipos.sort_by_key(|t| format!("{:?}", t));
+        assert_eq!(
+            tipos,
+            vec![
+                Some(TipoSem::Entero),
+                Some(TipoSem::Entero),
+                Some(TipoSem::Entero)
+            ]
+        );
+    }
+
+    #[test]
+    fn c2_identidad_anidacion_multinivel_sin_colisiones() {
+        // Caso 4 — Anidación de varios niveles
+        let src = "funcion externa1() {\n  funcion f() {\n    funcion g() { retornar 1 }\n    g()\n    retornar 1\n  }\n  retornar f()\n}\nfuncion externa2() {\n  funcion g() { retornar \"ok\" }\n  g()\n}\nexterna1()\nexterna2()\n";
+        let (ctx, e) = analizar_ctx(src);
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let g_ids = ids_por_nombre(&ctx, "g");
+        assert_eq!(g_ids.len(), 2, "dos declaraciones 'g' en ámbitos distintos");
+        assert_ne!(g_ids[0], g_ids[1]);
+        let mut g_tipos = tipos_por_nombre(&ctx, "g");
+        g_tipos.sort_by_key(|t| format!("{:?}", t));
+        assert_eq!(g_tipos, vec![Some(TipoSem::Entero), Some(TipoSem::Texto)]);
+        assert_eq!(c2(&ctx, "f"), Some(TipoSem::Entero));
+    }
+
+    #[test]
+    fn c2_identidad_desconocido_independiente_no_sobrescribe() {
+        // Caso 5 — Resultado desconocido independiente
+        let src = r#"
+funcion externa_a() {
+  funcion h() { retornar 10 }
+  h()
+}
+funcion externa_b() {
+  funcion h() { sea x = 1 }
+  h()
+}
+externa_a()
+externa_b()
+"#;
+        let (ctx, e) = analizar_ctx(src);
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let h_ids = ids_por_nombre(&ctx, "h");
+        assert_eq!(h_ids.len(), 2);
+        assert_ne!(h_ids[0], h_ids[1]);
+        let mut h_tipos = tipos_por_nombre(&ctx, "h");
+        h_tipos.sort_by_key(|t| format!("{:?}", t));
+        assert_eq!(h_tipos, vec![None, Some(TipoSem::Entero)]);
+    }
+
+    #[test]
+    fn c2_identidad_independiente_de_restauracion_firma() {
+        // Caso 6 — Restauración de ámbito
+        let src = r#"
+funcion externa() {
+  funcion interna() { retornar 7 }
+  interna()
+}
+externa()
+"#;
+        let (ctx, e) = analizar_ctx(src);
+        assert!(e.is_empty(), "errores: {:?}", e);
+        // La firma de la anidada se restaura/elimina del mapa global por nombre.
+        assert!(!ctx.funciones.contains_key("interna"));
+        // El resultado C.2 de esa declaración persiste por identidad propia.
+        let interna = c2_entradas(&ctx, "interna");
+        assert_eq!(interna.len(), 1);
+        assert_eq!(interna[0].1, Some(TipoSem::Entero));
+        // Identidad no es la firma global (ya ausente) sino la declaración registrada.
+        // Consumidor semántico recupera por identidad de declaración.
+        assert_eq!(
+            ctx.consultar_c2_retorno(interna[0].0),
+            Some(Some(TipoSem::Entero))
+        );
+    }
+
+    #[test]
+    fn c2_regresion_c1_propagacion_y_fallback_intactos() {
+        // Caso 7 — Regresión de C.1 (preserva propagación/fallback legado)
+        let (ctx, e) = analizar_ctx(
+            "funcion g() { retornar 1 }\nfuncion h() -> entero { retornar g() }\nh()\n",
+        );
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let sig_g = ctx.funciones.get("g").expect("firma g");
+        assert!(!sig_g.retorno_anotado);
+        assert_eq!(
+            sig_g.retorno,
+            Some(TipoSem::Entero),
+            "propagación C.1 preservada"
+        );
+        // Fallback legado: h anotada consume g (con retorno inferido propagado) sin error.
+        let sig_h = ctx.funciones.get("h").expect("firma h");
+        assert!(sig_h.retorno_anotado);
+        assert_eq!(sig_h.retorno, Some(TipoSem::Entero));
+        assert!(c2_entradas(&ctx, "h").is_empty());
+
+        // Anidada: restauración de firma previa preservada.
+        let (ctx2, e2) = analizar_ctx(
+            "funcion interna() { retornar 9 }\nfuncion externa() {\n  funcion interna() { retornar 1 }\n  interna()\n}\nexterna()\ninterna()\n",
+        );
+        assert!(e2.is_empty(), "errores: {:?}", e2);
+        let sig_interna_global = ctx2.funciones.get("interna").expect("firma global interna");
+        assert_eq!(sig_interna_global.retorno, Some(TipoSem::Entero));
+    }
+
+    #[test]
+    fn c2_regresion_casos_positivos_y_negativos_mision_0618() {
+        // Caso 8 — Regresión de C.2 (positivos y negativos de 06.18)
+        // Positivos
+        let (ctx, e) = analizar_ctx(
+            "funcion a() { retornar 1 }\nfuncion b(x: logico) { si x { retornar 1 } sino { retornar 2 } }\nfuncion c(x: logico) { si x { retornar 1 } sino { retornar 1.5 } }\nfuncion g() -> entero { retornar 1 }\nfuncion d(x: logico) { si x { retornar g() } sino { retornar g() } }\na()\nb(verdadero)\nc(verdadero)\nd(verdadero)",
+        );
+        let _ = e; // D0: c() puede emitir diagnóstico legado; C.2 separado
+        assert_eq!(c2(&ctx, "a"), Some(TipoSem::Entero));
+        assert_eq!(c2(&ctx, "b"), Some(TipoSem::Entero));
+        assert_eq!(c2(&ctx, "c"), Some(TipoSem::Decimal));
+        assert_eq!(c2(&ctx, "d"), Some(TipoSem::Entero));
+
+        // Negativos
+        let (ctxn, _en) = analizar_ctx(
+            "funcion n1() { sea x = 1 }\nfuncion n2() { retornar }\nfuncion n3(x: logico) { si x { retornar } sino { retornar 1 } }\nfuncion n4(x: logico) { si x { retornar 1 } sino { retornar \"a\" } }\nfuncion n5() { retornar longitud([1, 2]) }\nfuncion g2() { retornar 1 }\nfuncion n6(x: logico) { si x { retornar g2() } sino { retornar g2() } }\nfuncion n7(n: entero) { retornar n7(n) }\nfuncion n8(x: logico) { si x { retornar 1 } }\nfuncion n9() { retornar [1, \"a\"] }\nn5()\nn6(verdadero)\nn7(1)\nn8(verdadero)\nn9()",
+        );
+        assert_eq!(c2(&ctxn, "n1"), None);
+        assert_eq!(c2(&ctxn, "n2"), None);
+        assert_eq!(c2(&ctxn, "n3"), None);
+        assert_eq!(c2(&ctxn, "n4"), None);
+        assert_eq!(c2(&ctxn, "n5"), None);
+        assert_eq!(c2(&ctxn, "n6"), None);
+        assert_eq!(c2(&ctxn, "n7"), None);
+        assert_eq!(c2(&ctxn, "n8"), None);
+        assert_eq!(c2(&ctxn, "n9"), None);
+        // D5 preservado en regresión: g2 tiene C.1 inferido pero no es evidencia C.2.
+        let sig_g2 = ctxn.funciones.get("g2").expect("firma g2");
+        assert!(!sig_g2.retorno_anotado);
+        assert_eq!(sig_g2.retorno, Some(TipoSem::Entero));
+    }
+
+    #[test]
+    fn c2_identidad_ambito_actual_mismo_nombre_no_colisiona() {
+        // Redefinición/homónimo en distinto ámbito secuencial (no anidado): cada
+        // declaración analizada recibe identidad propia y resultados independientes.
+        let src = "funcion cont1() {\n  funcion k() { retornar 1 }\n  k()\n}\ncont1()\nfuncion cont2() {\n  funcion k() { retornar \"z\" }\n  k()\n}\ncont2()\n";
+        let (ctx, e) = analizar_ctx(src);
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let k = tipos_por_nombre(&ctx, "k");
+        assert_eq!(k.len(), 2);
+        let mut k = k;
+        k.sort_by_key(|t| format!("{:?}", t));
+        assert_eq!(k, vec![Some(TipoSem::Entero), Some(TipoSem::Texto)]);
+    }
+
+    // ===== MISIÓN 06.20: consumidor semántico C.2 (integración/consulta) =====
+
+    fn c2_ids_unicos(ctx: &ContextoSemantico, nombre: &str) -> Vec<SimbodoId> {
+        ids_por_nombre(ctx, nombre)
+    }
+
+    #[test]
+    fn consumidor_c2_retorno_conocido_por_identidad() {
+        let (ctx, e) = analizar_ctx("funcion f() { retornar 42 }\nf()");
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let ids = c2_ids_unicos(&ctx, "f");
+        assert_eq!(ids.len(), 1);
+        // Consumo real por identidad de declaración.
+        assert_eq!(
+            ctx.consultar_c2_retorno(ids[0]),
+            Some(Some(TipoSem::Entero))
+        );
+    }
+
+    #[test]
+    fn consumidor_c2_retorno_desconocido_preservado() {
+        let (ctx, e) = analizar_ctx("funcion f() { sea x = 1 }");
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let ids = c2_ids_unicos(&ctx, "f");
+        assert_eq!(ids.len(), 1);
+        // Presente pero conservadoramente Desconocido para C.2.
+        assert_eq!(ctx.consultar_c2_retorno(ids[0]), Some(None));
+    }
+
+    #[test]
+    fn consumidor_c2_ausente_para_declaracion_no_registrada() {
+        let (ctx, e) = analizar_ctx("funcion f() { retornar 1 }\nf()");
+        assert!(e.is_empty(), "errores: {:?}", e);
+        // SimbodoId inexistente/no registrado como resultado C.2.
+        assert_eq!(ctx.consultar_c2_retorno(SimbodoId(9_999_999)), None);
+        // Declaración no candidata (anotada) no produce resultado C.2.
+        let (ctx2, e2) = analizar_ctx("funcion g() -> entero { retornar 1 }\ng()");
+        assert!(e2.is_empty(), "errores: {:?}", e2);
+        assert!(c2_ids_unicos(&ctx2, "g").is_empty());
+    }
+
+    #[test]
+    fn consumidor_c2_recuperacion_correcta_por_identidad_homonimas() {
+        let src = "funcion externa_a() {\n  funcion calc() { retornar 1 }\n  calc()\n}\nfuncion externa_b() {\n  funcion calc() { retornar \"t\" }\n  calc()\n}\nexterna_a()\nexterna_b()\n";
+        let (ctx, e) = analizar_ctx(src);
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let ids = c2_ids_unicos(&ctx, "calc");
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        let r0 = ctx.consultar_c2_retorno(ids[0]);
+        let r1 = ctx.consultar_c2_retorno(ids[1]);
+        assert!(matches!(r0, Some(Some(_)) | Some(None)));
+        assert!(matches!(r1, Some(Some(_)) | Some(None)));
+        let mut tipos = vec![r0.unwrap(), r1.unwrap()];
+        tipos.sort_by_key(|t| format!("{:?}", t));
+        assert_eq!(tipos, vec![Some(TipoSem::Entero), Some(TipoSem::Texto)]);
+    }
+
+    #[test]
+    fn consumidor_c2_sin_contaminacion_entre_ambitos_y_resultados_ausentes() {
+        let src = "funcion a() {\n  funcion z() { retornar 7 }\n  z()\n}\nfuncion b() {\n  funcion z() { retornar }\n  z()\n}\na()\nb()\n";
+        let (ctx, e) = analizar_ctx(src);
+        let _ = e; // D0: preservar comportamiento legado
+        let ids = c2_ids_unicos(&ctx, "z");
+        assert_eq!(ids.len(), 2);
+        let mut res: Vec<_> = ids.iter().map(|id| ctx.consultar_c2_retorno(*id)).collect();
+        res.sort_by_key(|r| format!("{:?}", r));
+        assert_eq!(res, vec![Some(None), Some(Some(TipoSem::Entero))]);
+        // Ausente sigue ausente para id no relacionado.
+        assert_eq!(ctx.consultar_c2_retorno(SimbodoId(u32::MAX)), None);
+    }
+
+    #[test]
+    fn consumidor_c2_preserva_c1_y_llamadas_anotadas() {
+        let (ctx, e) = analizar_ctx(
+            "funcion g() { retornar 1 }\nfuncion h() -> entero { retornar g() }\nh()\n",
+        );
+        assert!(e.is_empty(), "errores: {:?}", e);
+        // C.1 preservado: propagación/fallback legado intactos.
+        let sig_g = ctx.funciones.get("g").expect("firma g");
+        assert!(!sig_g.retorno_anotado);
+        assert_eq!(sig_g.retorno, Some(TipoSem::Entero));
+        let sig_h = ctx.funciones.get("h").expect("firma h");
+        assert!(sig_h.retorno_anotado);
+        assert_eq!(sig_h.retorno, Some(TipoSem::Entero));
+        // Consumo C.2: g candidata conocida, h anotada sin resultado C.2.
+        let gid = c2_ids_unicos(&ctx, "g");
+        assert_eq!(gid.len(), 1);
+        assert_eq!(
+            ctx.consultar_c2_retorno(gid[0]),
+            Some(Some(TipoSem::Entero))
+        );
+        assert!(c2_ids_unicos(&ctx, "h").is_empty());
+    }
+
+    #[test]
+    fn consumidor_c2_sin_interprocedimental_no_autorizada_y_d5() {
+        // f llama a g sin anotación: C.2 no consume retorno inferido de cuerpo ajeno.
+        let src = "funcion g() { retornar 1 }\nfuncion f(x: logico) {\n  si x { retornar g() } sino { retornar g() }\n}\nf(verdadero)\n";
+        let (ctx, e) = analizar_ctx(src);
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let fid = c2_ids_unicos(&ctx, "f");
+        assert_eq!(fid.len(), 1);
+        assert_eq!(ctx.consultar_c2_retorno(fid[0]), Some(None));
+        // Pero C.1 legado de g se preserva.
+        let sig_g = ctx.funciones.get("g").expect("firma g");
+        assert_eq!(sig_g.retorno, Some(TipoSem::Entero));
+        assert!(!sig_g.retorno_anotado);
+    }
+
+    #[test]
+    fn consumidor_c2_excluye_lambdas_y_closures() {
+        // Lambdas/closures siguen excluidas de C.2: no generan resultados C.2.
+        let src = "sea f = funcion (x) { retornar x }\n";
+        let (ctx, e) = analizar_ctx(src);
+        assert!(e.is_empty(), "errores: {:?}", e);
+        assert!(
+            ctx.c2_resultados.is_empty(),
+            "sin resultados C.2 para lambdas/closures"
+        );
+    }
+
+    #[test]
+    fn consumidor_c2_sin_cambios_en_diagnosticos_ni_ejecucion_observable() {
+        // Casos con comportamiento/diagnóstico legado relevante: C.2 consulta no altera errores.
+        let (ctx, e) = analizar_ctx("funcion f() { retornar }");
+        assert!(e.is_empty(), "errores: {:?}", e);
+        let id = c2_ids_unicos(&ctx, "f")[0];
+        assert_eq!(ctx.consultar_c2_retorno(id), Some(None));
+
+        let (ctx2, e2) =
+            analizar_ctx("funcion f(x: logico) { si x { retornar 1 } sino { retornar \"a\" } }");
+        // Se preserva diagnóstico/resultado legado preexistente (D0).
+        let _ = e2;
+        let id2 = c2_ids_unicos(&ctx2, "f")[0];
+        assert_eq!(ctx2.consultar_c2_retorno(id2), Some(None));
     }
 }
