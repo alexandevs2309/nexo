@@ -1,8 +1,9 @@
 # ADR-0018 — Evolución del sistema de inferencia de tipos de BASILISCO
 
-**Estado:** Propuesto  
+**Estado:** Propuesto (alineación implementada en alcance C.0/C.1/C.2 aprobado; C.2/Etapa C cerrados formalmente con autorización humana 2026-11-16, Fase 06 IN PROGRESS)
 **Fecha:** 2026-11-01  
 **Relacionado con:** ADR-0011 (tipos graduales), ADR-0017 (análisis semántico), ADR-0008 (funciones).
+**Alineación:** C.0 (MISIÓN 06.6) — Opción A conservadora aprobada; resolución normativa documental aplicada (MISIÓN 06.16) con D0/D3–D6. **C.1 CLOSED** (commit `229feb6`, aprobado posterior a MISIÓN 06.8). **C.2 IMPLEMENTED/VERIFIED y CLOSED** con aprobación humana formal (2026-11-16, MISIÓN 06.18–06.21): inferencia local conservadora de retornos por identidad de declaración (`SimbodoId`), canal separado de C.1, consulta interna por declaración, sin inferencia interprocedimental ni ampliación a lambdas/closures, sin cambios en C.1/diagnósticos/E1010/`run`/runtime/VM/backends/HIR/MIR. **Etapa C = CLOSED**; **Etapa D = NOT STARTED**.
 
 ## 1. Contexto
 
@@ -18,25 +19,23 @@ Diseñar una evolución incremental que:
 
 1. Formalice la semántica de parámetros sin anotación (inferencia por primera llamada como comportamiento de runtime, documentado y preservado).
 2. Introduzca inferencia estática local para funciones con anotaciones parciales, sin reemplazar el runtime.
-3. Defina cómo se infieren retornos (primera llamada exitosa, como hoy).
+3. Incorpore, de forma acotada y conservadora, inferencia estática local de tipos de retorno en **C.2 (Etapa C)** conforme a la **Opción A** aprobada en C.0 y a las decisiones vinculantes D0/D3–D6, sin modificar el runtime ni la inferencia por primera llamada.
 4. Unifique progresivamente el análisis de funciones nombradas, lambdas y closures.
-5. Mejore la coherencia entre `analizar` y `run` sin hacerlos idénticos.
-6. Preserve compatibilidad con programas existentes y la batería de regresión.
+5. Mejore la coherencia del análisis estático con las reglas de tipos sin hacer `analizar` y `run` idénticos y sin alterar la ejecución.
+6. Preserve compatibilidad con programas existentes y las baterías de regresión.
 
-Decisión clave: **no eliminar la inferencia por primera llamada**. Introducir una alternativa estática que conviva durante una transición documentada.
+Decisión clave: **no eliminar la inferencia por primera llamada**. La inferencia estática local convive con el runtime sin modificar `tipos_parametros_inferidos` y sin compartir estado inferido con el evaluador.
 
 ### 3.1 Inferencia estática local (definición)
 
-Inferencia local significa inferir tipos únicamente dentro del ámbito léxico de una función o bloque, sin interprocedimental avanzado:
+Inferencia local significa inferir tipos únicamente dentro del ámbito léxico de una función o bloque, sin inferencia interprocedimental avanzada:
 
 - Inferencia de expresiones: determinar el tipo de una expresión a partir de sus operandos y literales.
-- Inferencia de parámetros parcialmente anotados: si un parámetro tiene anotación, validar argumentos; si no, mantener `Desconocido`.
+- Inferencia de parámetros parcialmente anotados: si un parámetro tiene anotación, validar argumentos; si no, mantener `TipoSem::Desconocido`.
 - Inferencia de variables locales: `sea`/`dato` con inicializador tipado infiere el tipo de la variable.
-- Inferencia de retornos: si el tipo de retorno no está anotado, inferirlo a partir de las expresiones `retornar` dentro del cuerpo (cuando sea inequívoco).
+- Inferencia de retornos (**C.2, Etapa C, Opción A conservadora, D0/D3–D6 — implementada, verificada y cerrada formalmente con aprobación humana 2026-11-16, MISIÓN 06.18–06.21, en alcance local conservador**): si el tipo de retorno no está anotado, inferirlo **solo** cuando sea conocido, demostrable y consistente a partir de evidencia local inequívoca. Los múltiples retornos solo permiten inferencia cuando sus tipos sean demostrablemente compatibles. Ante incertidumbre, incompatibilidad o evidencia insuficiente, conservar `TipoSem::Desconocido`. **D3:** no inferir automáticamente `Nulo` por alcanzar el final de una función sin `retornar` explícito; cuando no exista evidencia inequívoca de un tipo de retorno conocido, conservar `TipoSem::Desconocido`; no introducir excepciones implícitas para funciones anotadas `-> nulo` sin una regla normativa inequívoca. **D4:** `retornar` sin expresión no equivale a `retornar nulo` ni a una caída implícita al final de la función; se considera evidencia insuficiente para inferir un tipo de retorno conocido y se debe conservar `TipoSem::Desconocido` cuando ese camino intervenga en la inferencia, sin alterar el comportamiento vigente de ejecución ni E1010. **D5:** permitir exclusivamente el uso de retornos anotados explícitamente y visibles en el contexto semántico local; no propagar retornos inferidos desde cuerpos de otras funciones ni introducir inferencia interprocedimental avanzada.
 
-La Etapa B tendrá alcance limitado: inferencia de variables locales y expresiones, sin inferencia interprocedimental avanzada ni propagación entre funciones.
-
-La Etapa B excluye expresamente la inferencia estática de retornos. El comportamiento actual de inferencia de retorno en runtime se mantiene. Su análisis estático se reserva para una etapa posterior, con diseño y pruebas específicas.
+Alcance por etapas: la **Etapa B (completada/CLOSED)** incorporó inferencia local de variables y expresiones, **sin inferencia estática de retornos**. La **Etapa C** comprende C.0 (CLOSED), C.1 (CLOSED) y **C.2 (CLOSED, implementado/verificado con aprobación humana 2026-11-16)**, donde C.2 queda acotado a la inferencia local conservadora descrita (D0/D3–D6). **D6:** la inferencia estática de C.2 pertenece al análisis semántico y no debe modificar la ejecución, el evaluador ni el estado de inferencia dinámica. **D0:** no introducir diagnósticos nuevos, no modificar diagnósticos existentes/códigos/comportamiento, no alterar `run`, no modificar runtime ni `tipos_parametros_inferidos` (ni VM/backends/HIR/MIR por esta capacidad). La **Etapa D (NOT STARTED)** es investigación avanzada más allá de C.2, sin implementación obligatoria y **no iniciada automáticamente**.
 
 ### 3.2 Reglas de evidencia
 
@@ -49,18 +48,19 @@ La Etapa B excluye expresamente la inferencia estática de retornos. El comporta
 ### 3.3 Convivencia estática y dinámica
 
 - El análisis estático no modifica `tipos_parametros_inferidos`.
-- El evaluador conserva inicialmente la inferencia por primera llamada.
-- Una inferencia estática no altera silenciosamente el comportamiento del runtime.
+- El evaluador conserva la inferencia por primera llamada y el comportamiento dinámico vigente.
+- Una inferencia estática no altera silenciosamente el comportamiento del runtime ni la semántica de ejecución de `run`.
 - Las reglas de conversión existentes (implícitas sin pérdida) se preservan.
-- La convivencia es determinista y documentada.
+- La convivencia es determinista y documentada (D0, D6).
 
 ### 3.5 Relación entre `analizar` y `run`
 
 - No se comparte estado inferido entre el análisis semántico y el evaluador.
 - El análisis estático y el runtime conservan responsabilidades independientes.
 - Ambos respetan las mismas reglas de tipos, anotaciones y conversiones cuando son aplicables.
-- `analizar` puede detectar incompatibilidades demostrables, pero no inventa tipos ni altera el comportamiento de ejecución.
-- `run` conserva inicialmente la inferencia por primera llamada.
+- **D6:** la inferencia estática de retornos de C.2 pertenece al análisis semántico; no debe modificar la ejecución, el evaluador ni el estado de inferencia dinámica.
+- `analizar` puede disponer de información estática de retorno demostrable (C.2) sin inventar tipos, sin alterar la ejecución de `run` y sin introducir ni modificar diagnósticos existentes, sus códigos o su comportamiento vigente (**D0**).
+- `run` conserva la inferencia por primera llamada y la semántica de ejecución vigente.
 
 ### 3.4 Política de diagnósticos
 
@@ -70,7 +70,7 @@ Se distinguen:
 - Incompatibilidad de anotación explícita.
 - Incompatibilidad descubierta durante ejecución.
 
-Se preservan los códigos E1xxx existentes y E1010. No se introducen nuevos códigos sin una decisión documentada.
+Se preservan los códigos E1xxx existentes y E1010. **D0 (política conservadora aprobada para C.2):** no introducir diagnósticos nuevos; no modificar diagnósticos existentes, sus códigos ni su comportamiento vigente; no alterar `run`; no modificar runtime ni `tipos_parametros_inferidos`. No se introducen nuevos códigos sin una decisión documentada.
 
 ## 4. Alternativas consideradas
 
@@ -83,13 +83,13 @@ Se preservan los códigos E1xxx existentes y E1010. No se introducen nuevos cód
 ### 5.1 Representación interna de lambdas y closures
 
 - Se mantienen inicialmente las representaciones internas actuales (`FuncionClausura`).
-- La Etapa C unifica progresivamente las reglas semánticas y la validación de tipos.
+- La Etapa C unifica progresivamente las reglas semánticas y la validación de tipos (incluida C.2, sin representación interna compartida obligatoria).
 - No se impone una representación interna compartida hasta que exista una justificación técnica y una evaluación de compatibilidad.
 
-- Mantener `tipos_parametros_inferidos` en runtime (sin cambios).
-- En `semantico.rs`, añadir un pase opcional de inferencia local para funciones con anotaciones parciales (fase posterior).
-- Lambdas/clausuras: analizar tipos de parámetros anotados estáticamente; inferir el resto en runtime (como hoy).
-- `analizar`: reportar diagnósticos estáticos adicionales sin bloquear `run` por inferencias no comprobables.
+- Mantener `tipos_parametros_inferidos` en runtime (sin cambios) y preservar la inferencia por primera llamada.
+- En `semantico.rs`, evolucionar la inferencia local por etapas: variables/expresiones (**Etapa B, completada**), unificación semántica conservadora de valores-función (**C.1, CLOSED**) e inferencia local acotada de retornos (**C.2, CLOSED**, implementada/verificada en alcance conservador) conforme a Opción A y D0/D3–D6, sin inferencia interprocedimental avanzada.
+- Lambdas/clausuras: analizar tipos anotados o inferibles localmente cuando sean demostrables; conservar `TipoSem::Desconocido` ante incertidumbre; runtime sin cambios.
+- `analizar`: no introduce nuevos diagnósticos ni altera los existentes (D0); la inferencia de C.2 es conservadora, pertenece al análisis semántico y no modifica la ejecución ni el estado dinámico (D6).
 
 ## 6. Consecuencias
 
@@ -97,27 +97,36 @@ Positivas: mejor DX, mayor coherencia, evolución gradual. Negativas: complejida
 
 ## 7. Plan de implementación (etapas)
 
-Etapa B — Inferencia estática local para funciones anotadas (alcance limitado, verificable, sin interprocedimental avanzado). Criterios: inferencia de variables locales y expresiones; anotaciones parciales validadas; pruebas de regresión y compatibilidad.
+**Etapa B (completada, CLOSED)** — Inferencia estática local de variables locales y expresiones (alcance limitado, verificable, sin interprocedimental avanzado), **sin inferencia estática de retornos**. Criterios: inferencia de variables locales y expresiones; anotaciones parciales validadas; pruebas de regresión y compatibilidad.
 
-Etapa C — Unificación semántica y progresiva de funciones nombradas, lambdas y closures. No implica compartir inmediatamente la misma representación interna en el runtime; la unificación es semántica, preservando el comportamiento existente. Criterios: coherencia de análisis entre los tres; pruebas de regresión; compatibilidad con closures y captura.
+**Etapa C (COMPLETADA / CLOSED)** — Unificación semántica progresiva de funciones nombradas, lambdas y closures (sin compartir inmediatamente la misma representación interna en runtime), preservando el comportamiento existente.
+- **C.0 (CLOSED):** cierre formal de diseño (Opción A conservadora), aprobado.
+- **C.1 (CLOSED):** unificación semántica conservadora de firmas de valores-función.
+- **C.2 (CLOSED, implementado/verificado y aprobado formalmente 2026-11-16, MISIÓN 06.18–06.21):** inferencia estática local y conservadora de retornos conocidos, demostrables y consistentes desde cuerpos/casos inequívocos. Múltiples retornos solo si demostrablemente compatibles. Incertidumbre/incompatibilidad/evidencia insuficiente → `TipoSem::Desconocido`. **D3:** no inferir automáticamente `Nulo` por caída sin `retornar` explícito; sin excepciones implícitas para `-> nulo` sin regla normativa inequívoca. **D4:** `retornar` sin expresión ≠ `retornar nulo` ≠ caída implícita; evidencia insuficiente para tipo conocido (conservar `TipoSem::Desconocido` cuando intervenga); sin alterar comportamiento vigente de ejecución ni E1010. **D5:** solo retornos anotados explícitamente y visibles en contexto semántico local; sin propagación desde cuerpos de otras funciones ni inferencia interprocedimental avanzada. **D6:** inferencia en análisis semántico; sin modificar ejecución/evaluador/estado de inferencia dinámica. **D0:** sin nuevos diagnósticos, sin cambios en diagnósticos/códigos/comportamiento existentes, sin alterar `run`, sin modificar runtime ni `tipos_parametros_inferidos` (ni VM/backends/HIR/MIR por esta capacidad). Capacidad implementada en alcance conservador aprobado (canal separado por identidad de declaración, consulta interna), sin consumidores productivos artificiales.
 
-Etapa D — Investigación de inferencia estática del cuerpo, sin implementación obligatoria. Criterios: documento de viabilidad y riesgos.
+**Etapa D (NOT STARTED, investigación avanzada, sin implementación obligatoria y no prerrequisito de C.2)** — Investigación de inferencia **avanzada** de cuerpo/retornos más allá del alcance acotado de C.2 (p. ej. interprocedimental avanzada, flujos complejos u otras técnicas). Criterios: documento de viabilidad/riesgos y, si corresponde, propuesta de decisión/ADR futura.
 
 ## 8. Criterios de aceptación
 
-- La batería de regresión (18 tests) sigue pasando.
-- No se rompen programas existentes.
-- `analizar` y `run` mantienen su comportamiento actual.
-- Documentación actualizada.
+- Las baterías de regresión vigentes siguen pasando; no se rompen programas existentes.
+- `run` conserva su semántica de ejecución y comportamiento vigente; runtime y `tipos_parametros_inferidos` sin cambios (D0, D6).
+- No se introducen nuevos diagnósticos ni se alteran diagnósticos/códigos/comportamiento existentes (D0).
+- `analizar` aplica inferencia conservadora sin inventar tipos y sin compartir estado con el evaluador (D6).
+- Documentación actualizada y alineada con C.0/Opción A y D0/D3–D6.
 
 Criterios específicos por etapa:
-- Etapa B: inferencia local y anotaciones parciales verificables; pruebas de regresión y compatibilidad.
-- Etapa C: funciones nombradas, lambdas y closures con análisis coherente; pruebas de regresión.
-- Etapa D: investigación documentada, sin implementación obligatoria.
+- **Etapa B (completada):** inferencia local de variables/expresiones y anotaciones parciales verificables; sin inferencia estática de retornos; pruebas de regresión y compatibilidad.
+- **Etapa C (C.1 cerrada):** funciones nombradas, lambdas y closures con análisis/firmas coherentes y conservadores; pruebas de regresión.
+- **Etapa C.2 (CLOSED, aprobada formalmente 2026-11-16):** inferencia local acotada de retornos (conocida/demostrable/consistente), con D3/D4/D5/D0/D6 aplicados; sin inferencia interprocedimental avanzada; sin cambios runtime/`tipos_parametros_inferidos`/ejecución/diagnósticos existentes; sin regresiones observadas en validación reportada (06.18–06.21).
+- **Etapa D (investigación):** investigación documentada avanzada más allá de C.2, sin implementación obligatoria y no prerrequisito de C.2.
 
 ## 9. Limitaciones fuera de alcance
 
 - Genéricos, uniones, tipos algebraicos.
 - Inferencia bidireccional completa.
-- Análisis de código inalcanzable.
+- Inferencia interprocedimental avanzada (fuera del alcance acotado de C.2).
+- Análisis de código inalcanzable como requisito adicional (salvo capacidades ya existentes y demostrables).
 - Eliminación de la inferencia por primera llamada.
+- Modificaciones de runtime, VM, backends, HIR/MIR o `tipos_parametros_inferidos` por C.2.
+- Introducción o modificación de diagnósticos, códigos o comportamiento diagnóstico por C.2.
+- Alteración de la semántica de ejecución de `run` o del estado de inferencia dinámica por C.2.
