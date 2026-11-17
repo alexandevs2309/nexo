@@ -71,7 +71,7 @@
 | GAP-048 | Iteradores definibles por usuario | ABIERTA | P2 | `para cada` solo funciona con colecciones integradas y rangos |
 | GAP-049 | Benchmarks del lenguaje | ABIERTA | P3 | No existen benchmarks de rendimiento del intérprete |
 | GAP-050 | Aplicaciones de ejemplo reales | ABIERTA | P3 | Solo ejemplos de tutorial; sin aplicaciones completas |
-| GAP-051 | Paridad TW←→VM en conversiones de asignación | CERRADA | P1 | `convertir_tipo` en `vm.rs` ahora es estricto (réplica de `convertir_a_tipo_anotado` del TW): solo `entero→decimal` y `entero→real` (ADR-0005 §1.4/spec §3.1); rechaza p. ej. `var r: real = 1.5` (decimal→real) con `AsignacionIncompatible` (mensaje E1004 espejo) y retornos anotados incompatibles con `RetornoIncompatible` (mensaje espejo). Aplicado en asignaciones locales/globales y retornos. 12 pruebas diferenciales GAP-051 (`diferencial_vm.rs`); suite 870 passed, 0 failed. Divergencia relacionada hallada (cond. 5): diagnóstico `obtenido` difiere en literales `[...]` por representación preexistente TW(`Lista`) vs VM(`Arreglo`) — sin impacto en la regla; queda como observación. |
+| GAP-051 | Paridad TW←→VM en conversiones de asignación (alcance cubierto) | CERRADA | P1 | Conversión/validación tipada alineada en contextos cubiertos (inicialización/reasignación de locales/globales tipadas, parámetros anotados/inferidos y retornos anotados; reglas ADR-0005/spec §3.1), con normalización de causas diagnósticas y pruebas diferenciales TW↔VM. Evidencia técnica (misión integral, validación local): +13 pruebas diferenciales GAP-051, `cargo test --test diferencial_vm` **130 passed, 0 failed, 0 ignored**; `cargo test -p basilisco --lib paridad` 12/0; `cargo fmt --check`/`clippy -D warnings` PASS; `cargo test --workspace --no-fail-fast` PASS (2 ignorados `registry_integration`, B-REG-001). **Observaciones técnicas (preservadas, no equivalencia total):** MIR no conserva nombres de parámetros (VM reporta índice 1-based), persisten diferencias diagnósticas acotadas de representación Lista/Arreglo, cobertura no exhaustiva de todas las rutas de ejecución, y whitelist diferencial mantenida con justificación y restricciones (no autoriza diferencias en `esperado`/`funcion`). |
 
 ---
 
@@ -86,7 +86,7 @@
 | GAP-012 | Runtime / VM | 782 tests pasando; VM motor por defecto |
 | GAP-016 (local) | Paquetes local | BPK + SHA-256 + Ed25519; 29+ tests |
 | GAP-027 | IR / VM | Completado; 55 tests diferenciales; verificadores funcionales |
-| GAP-051 | Paridad TW←→VM conversiones de asignación | `vm.rs` `convertir_tipo` estricto (ADR-0005/spec §3.1), espejo E1004/retorno; 12 tests diferenciales; 870 passed, 0 failed |
+| GAP-051 | Paridad TW←→VM conversiones de asignación (alcance cubierto) | Reglas normativas de conversión alineadas en contextos cubiertos; 130/0 diferenciales, whitelist acotada justificada/restringida; limitaciones preservadas (nombres de parámetro no disponibles en MIR/VM, diferencias diagnósticas Lista/Arreglo, cobertura no exhaustiva; sin afirmar equivalencia total) |
 
 ---
 

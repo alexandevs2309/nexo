@@ -1105,6 +1105,114 @@ fn diff_gap051_try_rescatar_invoke_ruta_expresable_equivalente() {
     );
 }
 
+// === GAP-051 (continuación): parámetros tipados y contextos adicionales ===
+
+#[test]
+fn diff_gap051_parametro_anotado_entero_acepta_entero() {
+    assert_parity(
+        "funcion f(x: entero) -> entero { retornar x }\nfuncion main() -> entero { retornar f(3) }",
+    );
+}
+
+#[test]
+fn diff_gap051_parametro_anotado_decimal_acepta_entero() {
+    assert_parity(
+        "funcion f(x: decimal) -> decimal { retornar x }\nfuncion main() -> decimal { retornar f(2) }",
+    );
+}
+
+#[test]
+fn diff_gap051_parametro_anotado_real_acepta_entero() {
+    assert_parity(
+        "funcion f(x: real) -> real { retornar x }\nfuncion main() -> real { retornar f(2) }",
+    );
+}
+
+#[test]
+fn diff_gap051_parametro_anotado_entero_rechaza_decimal() {
+    assert_parity(
+        "funcion f(x: entero) -> entero { retornar x }\nfuncion main() -> entero { retornar f(2.5) }",
+    );
+}
+
+#[test]
+fn diff_gap051_parametro_anotado_real_rechaza_decimal() {
+    assert_parity(
+        "funcion f(x: real) -> real { retornar x }\nfuncion main() -> real { retornar f(1.5) }",
+    );
+}
+
+#[test]
+fn diff_gap051_parametro_anotado_texto_rechaza_entero() {
+    assert_parity(
+        "funcion f(x: texto) -> texto { retornar x }\nfuncion main() -> texto { retornar f(5) }",
+    );
+}
+
+#[test]
+fn diff_gap051_parametro_anotado_lista_entero_rechaza_elemento_decimal() {
+    // Rechazo equivalente por conversión de elemento inválida; diagnóstico puede diferir
+    // en representación/identificador de parámetro (whitelist GAP-051 acotada).
+    let src = "funcion f(xs: lista<entero>) -> entero { retornar 0 }\nfuncion main() -> entero { retornar f([1, 2.5]) }";
+    let tw = tw_resultado(src);
+    let vmr = vm_resultado(src);
+    let cmp = comparar_semantica(&tw, &vmr);
+    assert!(
+        matches!(
+            cmp,
+            Comparacion::Equivalente | Comparacion::DiferenciaDiagnostico(_)
+        ),
+        "Se esperaba rechazo equivalente por parámetro tipado incompatible.\nTREE-WALK: {tw:?}\nVM: {vmr:?}\nCMP: {cmp:?}"
+    );
+}
+
+#[test]
+fn diff_gap051_parametro_anotado_arreglo_tamano_incorrecto_rechaza() {
+    let src = "funcion f(xs: arreglo<entero, 2>) -> entero { retornar 0 }\nfuncion main() -> entero { retornar f([1, 2, 3]) }";
+    let tw = tw_resultado(src);
+    let vmr = vm_resultado(src);
+    let cmp = comparar_semantica(&tw, &vmr);
+    assert!(
+        matches!(
+            cmp,
+            Comparacion::Equivalente | Comparacion::DiferenciaDiagnostico(_)
+        ),
+        "Se esperaba rechazo equivalente por parámetro tipado incompatible (tamaño).\nTREE-WALK: {tw:?}\nVM: {vmr:?}\nCMP: {cmp:?}"
+    );
+}
+
+#[test]
+fn diff_gap051_parametro_anotado_lista_decimal_convierte_enteros() {
+    assert_parity(
+        "funcion f(xs: lista<decimal>) -> decimal { retornar xs[0] }\nfuncion main() -> decimal { retornar f([1, 2]) }",
+    );
+}
+
+#[test]
+fn diff_gap051_reasignacion_decimal_acepta_entero() {
+    assert_parity("funcion main() -> decimal { var d: decimal = 1.5\n d = 2\n retornar d }");
+}
+
+#[test]
+fn diff_gap051_reasignacion_real_acepta_entero() {
+    assert_parity("funcion main() -> real { var r: real = 1.5\n r = 2\n retornar r }");
+}
+
+#[test]
+fn diff_gap051_local_lista_tipada_rechaza_elemento_incompatible() {
+    let src = "funcion main() -> entero { var xs: lista<entero> = [1, \"x\"]\n retornar 0 }";
+    let tw = tw_resultado(src);
+    let vmr = vm_resultado(src);
+    let cmp = comparar_semantica(&tw, &vmr);
+    assert!(
+        matches!(
+            cmp,
+            Comparacion::Equivalente | Comparacion::DiferenciaDiagnostico(_)
+        ),
+        "Se esperaba rechazo equivalente por asignación tipada incompatible.\nTREE-WALK: {tw:?}\nVM: {vmr:?}\nCMP: {cmp:?}"
+    );
+}
+
 // Nota de cobertura (MISIÓN 03): no se identificó sintaxis expresable estable para
 // asignación/mutación de campos de objeto (obj.campo = ...) ni módulo file-based TW↔VM
 // comparable en este harness (VM sin cargador de módulos importar/usar). Casos omitidos

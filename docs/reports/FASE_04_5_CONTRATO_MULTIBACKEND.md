@@ -47,11 +47,11 @@ Se extendió el contrato existente (`prototipo/src/paridad.rs`) con un modelo mu
 - `cargo test --test diferencial_multibackend` → **11 passed, 0 failed** (MISIÓN 03, ampliación): matriz declarada, equivalencias VM↔Nativo (aritmética, control/recursión, texto/colecciones básicas), equivalencias VM↔WASM (aritmética/loop entero, condicional/funciones), `UNSUPPORTED` texto y módulos en WASM, `UNSUPPORTED` try en Nativo por subconjunto, clasificaciones de divergencia/unverificable.
 - Suites específicas preservadas (MISIÓN 03): `diferencial_vm` 118/118, `mir` 3/3, `vm` 11/11, `backend_nativo` 45/45, `backend_wasm` 11/11, `optimizador` 12/12. Validación integral workspace **1024 passed, 0 failed, 2 ignored**.
 
-## 6. GAP-051 (decisión técnica fundamentada, sin cierre formal)
+## 6. GAP-051 (estado formalizado en alcance cubierto)
 
-- **Situación:** GAP-051 (conversiones/asignaciones tipadas estrictas, ADR-0005; divergencia diagnóstica `obtenido` Lista/Arreglo en casos tipados) permanece cubierto por whitelist acotada en `paridad.rs` y por corrección 04.4 (literales colección como `Lista` en VM). Los casos diferenciales dirigidos (`diff_gap051_*`, incluido colección tipada incompatible) resultan equivalentes/aceptados según contrato.
-- **Decisión:** **no eliminar la whitelist existente**. Motivo: la tolerancia sigue siendo necesaria como defensa acotada ante posibles diferencias residuales de representación diagnóstica entre motores/rutas, mientras no exista evidencia sistemática completa de identidad diagnóstica en todos los contextos tipados afectados. Se mantiene la regla estricta (misma categoría/esperado/contexto) y el estado **parcialmente resuelto, pendiente de decisión formal de cierre**.
-- **Acción futura (autorizada por separado):** ampliar evidencia sistemática (asignación/retorno/parámetro tipado en más formas) y, solo con demostración suficiente, retirar o reducir whitelist.
+- **Situación (histórica 04.5/MISIÓN 03):** GAP-051 (conversiones/asignaciones tipadas estrictas, ADR-0005) cubierto por correcciones y whitelist acotada en `paridad.rs`; casos diferenciales dirigidos equivalentes/aceptados según contrato.
+- **Formalización documental autorizada:** GAP-051 **CERRADO en el alcance cubierto por pruebas diferenciales**. Se mantienen reglas normativas de conversión/causa alineadas en contextos cubiertos y la whitelist diferencial **justificada y restringida** (diferencias diagnósticas acotadas: representación `obtenido` Lista/Arreglo y, cuando aplica, identificador de parámetro no disponible en MIR/VM con índice 1-based), sin autorizar diferencias en `esperado`/`funcion`.
+- **Observaciones técnicas preservadas:** cobertura no exhaustiva de todas las rutas de ejecución; no se afirma equivalencia total entre motores. Evidencia técnica adicional registrada en estado vivo/registro de brechas (validación local diferenciada de CI). La reejecución/fortalecimiento futuro, si aplica, requiere autorización y evidencia separadas.
 
 ## 7. Cobertura ampliada y viabilidad (04.5/alcance)
 
@@ -68,5 +68,5 @@ Se extendió el contrato existente (`prototipo/src/paridad.rs`) con un modelo mu
 - Stdout homogéneo TW↔VM in-process: **limitado** (TW imprime a proceso; VM captura `salida()`). MISIÓN 03 añadió validación determinista de stdout en VM y comparación por valor; comparación de efectos stdout TW↔VM requiere instrumentación/captura fuera del harness actual.
 - Mutación/asignación de campos de objeto: **no expresable** con sintaxis/soporte identificado; lectura JSON cubierta.
 - `Invoke` MIR: ejercitado indirectamente vía try/rescatar expresable (evidencia diferencial); ruta MIR directa aislada desde fuente no identificada como expresable.
-- GAP-051: mantener whitelist acotada, **sin cierre formal**; ampliar evidencia sistemática y evaluar alineación en parámetros tipados (divergencias exploradas fuera de whitelist).
+- GAP-051: **CERRADO en alcance cubierto por pruebas diferenciales** con whitelist acotada justificada/restringida y observaciones técnicas preservadas (MIR sin nombres de parámetros, diferencias diagnósticas Lista/Arreglo, cobertura no exhaustiva; sin equivalencia total). Cualquier ampliación futura requiere autorización/evidencia separada.
 - `DEVELOPMENT_STATE.md`: Fase 04 no marcada como cerrada.

@@ -488,6 +488,18 @@ pub fn normalizar_error_vm(e: &ErrorVm) -> ErrorNormalizado {
             datos.insert("obtenido".into(), obtenido.clone());
             (CategoriaError::AsignacionIncompatible, None)
         }
+        ErrorVm::TipoParametroIncompatible {
+            funcion,
+            parametro,
+            esperado,
+            obtenido,
+        } => {
+            datos.insert("funcion".into(), funcion.clone());
+            datos.insert("parametro".into(), parametro.clone());
+            datos.insert("esperado".into(), esperado.clone());
+            datos.insert("obtenido".into(), obtenido.clone());
+            (CategoriaError::TipoParametroIncompatible, None)
+        }
         ErrorVm::RetornoIncompatible {
             funcion,
             esperado,
@@ -538,17 +550,22 @@ fn diferencia_diagnostica_permitida(a: &CausaNormalizada, b: &CausaNormalizada) 
     }
     match a.categoria {
         // GAP-051 (diagnóstico): en asignación/retorno/parámetro tipado incompatible,
-        // la causa semántica se define por categoría + esperado (y contexto de función/parámetro
-        // cuando existe). El campo `obtenido` puede diferir por representación de colección
-        // (p.ej. literal como Lista vs Arreglo) sin cambiar la causa.
+        // la causa semántica normativa se define por categoría + tipo esperado (y, cuando
+        // aplica, contexto función/parámetro). Se toleran diferencias diagnósticas acotadas:
+        // - `obtenido`: representación de colección/contenedor (p.ej. Lista vs Arreglo).
+        // - `parametro`: identificador no disponible en VM/MIR (arquitectónico; no altera
+        //   la regla de conversión ni el tipo esperado/obtenido). Justificación técnica
+        //   demostrable y delimitada; no autoriza diferencias en `esperado` ni en `funcion`.
         CategoriaError::AsignacionIncompatible
         | CategoriaError::TipoParametroIncompatible
         | CategoriaError::RetornoIncompatibleConAnotacion => {
             let esperado_igual = a.datos.get("esperado") == b.datos.get("esperado");
-            let resto_igual = datos_iguales_excepto(&a.datos, &b.datos, &["obtenido"]);
-            if esperado_igual && resto_igual && a.datos.get("obtenido") != b.datos.get("obtenido") {
+            let resto_igual = datos_iguales_excepto(&a.datos, &b.datos, &["obtenido", "parametro"]);
+            let dif_obtenido = a.datos.get("obtenido") != b.datos.get("obtenido");
+            let dif_parametro = a.datos.get("parametro") != b.datos.get("parametro");
+            if esperado_igual && resto_igual && (dif_obtenido || dif_parametro) {
                 Some(
-                    "lista blanca GAP-051: diferencia de representación en `obtenido` con misma causa/esperado"
+                    "lista blanca GAP-051: diferencia diagnóstica acotada (obtenido/parametro) con misma causa/esperado"
                         .into(),
                 )
             } else {

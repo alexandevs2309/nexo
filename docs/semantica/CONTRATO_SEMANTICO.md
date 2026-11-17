@@ -63,7 +63,7 @@ La comparación produce una clasificación:
 
 - **Equivalente (valor)**: `2 + 3 * 4 - 1` → ambos retornan entero `13`.
 - **Equivalente (error por causa)**: división por cero → ambos reportan error aritmético con subcausa `division_por_cero` (mensajes literales pueden diferir).
-- **Equivalente con diferencia de diagnóstico**: `var xs: lista<entero> = [1, 2.5]` → ambos rechazan por asignación incompatible con esperado `lista<entero>`; el `obtenido` puede representarse distinto (Lista/Arreglo). Caso GAP-051 cubierto.
+- **Equivalente con diferencia de diagnóstico**: `var xs: lista<entero> = [1, 2.5]` → ambos rechazan por asignación incompatible con esperado `lista<entero>`; el `obtenido` puede representarse distinto (Lista/Arreglo). Caso GAP-051 cubierto (CERRADO en alcance cubierto por pruebas diferenciales, con observaciones técnicas preservadas).
 - **Divergencia semántica**: un motor retorna valor y el otro error, o categorías/subcausas de error incompatibles.
 
 ## 7. Relación con pruebas diferenciales
@@ -71,7 +71,7 @@ La comparación produce una clasificación:
 - Harness: `prototipo/tests/diferencial_vm.rs`.
 - Ejecución **directa** de TW y VM (sin CLI, sin fallback de producto VM→TW).
 - Se conserva la cobertura diferencial previa (81 pruebas) y se añaden pruebas dirigidas (primitivos, aritmética, conversiones/asignaciones tipadas compatibles e incompatibles, comparaciones, colecciones/indexación, funciones/recursión, errores equivalentes con mensajes/diagnósticos distintos, errores semánticamente diferentes cuando aplica, efectos deterministas, rechazos).
-- GAP-051: evaluado mediante casos concretos (conversiones/asignaciones/retornos y colecciones tipadas); permanece **parcialmente resuelto** hasta evidencia suficiente y decisión formal de cierre (no se fuerza cierre).
+- GAP-051: **CERRADO en el alcance cubierto por pruebas diferenciales** (conversión/validación tipada y causas equivalentes en contextos cubiertos). Observaciones técnicas preservadas: MIR no conserva nombres de parámetros (VM reporta índice 1-based), diferencias diagnósticas acotadas de representación Lista/Arreglo, cobertura no exhaustiva y whitelist diferencial mantenida con justificación/restricciones (no autoriza diferencias en `esperado`/`funcion`). No se afirma equivalencia total entre motores/rutas. Validación local diferenciada de CI (ver estado vivo).
 
 ## 8. Uso como referencia para backends
 
@@ -85,7 +85,7 @@ Extensión del contrato común (reutilizando `prototipo/src/paridad.rs`, sin arq
 - **Subconjuntos de capacidades declarados explícitamente:** matriz en `capacidades_backend(Backend)` (TW/VM referencia; Nativo: numéricos/lógicos, control, funciones/recursión, texto/colecciones básicas, módulos, JSON stdlib, stdout determinista — requiere rustc, sin try/invoke/closures/celdas/rangos ni concurrencia/FFI/IO archivos declarados; WASM: subconjunto entero/lógico + export `bsk_main`, sin texto/colecciones/try/módulos/closures/concurrencia/FFI/IO/JSON).
 - **Reglas:** no confundir ausencia de soporte con divergencia; no convertir errores de backend en éxitos; comparación determinista y normalizada (sin `Debug`); limitaciones estructurales documentadas.
 - **Harness/pruebas:** `prototipo/tests/diferencial_multibackend.rs` (positivas, negativas/clasificación, fixtures reproducibles por ejecución real cuando hay dependencias).
-- **Estado:** GAP-051 mantiene whitelist acotada y queda **parcialmente resuelto, sin cierre formal** (decisión técnica: no eliminar whitelist sin evidencia sistemática suficiente). Ver `docs/reports/FASE_04_5_CONTRATO_MULTIBACKEND.md`.
+- **Estado:** GAP-051 **CERRADO en alcance cubierto por pruebas diferenciales** (formalización documental autorizada), manteniendo whitelist acotada, justificada y restringida por diferencias diagnósticas demostrables (p. ej. representación `obtenido` y, cuando aplica, identificador de parámetro no disponible en MIR/VM) sin autorizar diferencias en `esperado`/`funcion`. Cobertura no exhaustiva; no se afirma equivalencia total entre motores. Ver `docs/reports/FASE_04_5_CONTRATO_MULTIBACKEND.md`.
 
 ---
 
@@ -102,17 +102,17 @@ Actualización del contrato para evitar falsos positivos. Se preserva el conteni
 6. **`DiferenciaDiagnostico`** solo se emite en casos declarados y justificados por lista blanca; el harness diferencial solo la acepta como tal resultado del contrato.
 
 ### 9.2 Listas blancas de diferencias diagnósticas (declaradas)
-- **GAP-051 (asignación/retorno/parámetro tipado incompatible)** — categorías: `AsignacionIncompatible`, `TipoParametroIncompatible`, `RetornoIncompatibleConAnotacion`.
-  - **Campos que deben coincidir:** `esperado` y todo el resto de datos de contexto presentes (`funcion`, `parametro`, según aplique).
-  - **Campo tolerado como representación:** `obtenido` puede diferir **únicamente** cuando la causa semántica es la misma y el resto coincide (p. ej. representación de colección `Lista` vs `Arreglo` en diagnóstico de asignación tipada).
-  - **Justificación:** divergencia preexistente de representación diagnóstica; la regla de conversión/compatibilidad (GAP-051) es la misma. No implica cierre de GAP-051.
-  - **No autorizado:** diferencia en `esperado`, en contexto relevante o en cualquier otro campo/categoría.
+- **GAP-051 (asignación/retorno/parámetro tipado incompatible)** — categorías: `AsignacionIncompatible`, `TipoParametroIncompatible`, `RetornoIncompatibleConAnotacion`. **CERRADO en alcance cubierto por pruebas diferenciales** (con observaciones técnicas preservadas; sin afirmar equivalencia total).
+  - **Campos que deben coincidir:** `esperado` y el contexto normativo relevante (incl. `funcion` cuando aplica). No se autorizan diferencias en `esperado` ni en `funcion`.
+  - **Campos tolerados como diferencia diagnóstica acotada (lista blanca justificada/restringida):** `obtenido` (representación de colección/contenedor, p. ej. `Lista` vs `Arreglo`) y, cuando aplica, `parametro` (identificador no disponible en MIR/VM, que reporta índice 1-based), **solo** cuando la causa semántica/tipo esperado y el resto del contexto relevante coinciden.
+  - **Justificación:** divergencias diagnósticas demostrables y acotadas; la regla de conversión/compatibilidad normativa se mantiene equivalente en los contextos cubiertos. MIR no conserva nombres de parámetros y la cobertura no es exhaustiva.
+  - **No autorizado:** diferencia en `esperado`, en `funcion`, en categoría/subcausa, ni cualquier otra diferencia no contemplada.
 
 No existen otras listas blancas activas en 04.2.
 
 ### 9.3 Categorías y campos semánticos relevantes (resumen)
 - **Aritmético:** categoría + `subcausa` relevante (desbordamiento, división por cero, exceso de rango decimal, conversión ilegal, tipos incompatibles aritméticos); datos iguales o cubiertos por la subcausa.
-- **Asignación/Tipo parámetro/Retorno incompatible (anotado):** `esperado` y contexto (`funcion`, `parametro`) semánticamente relevantes; `obtenido` solo por lista blanca GAP-051.
+- **Asignación/Tipo parámetro/Retorno incompatible (anotado):** `esperado` y contexto normativo relevante (`funcion`) deben coincidir; diferencias diagnósticas acotadas solo por lista blanca GAP-051 (p. ej. `obtenido` por representación, `parametro` por ausencia de nombre en MIR/VM).
 - **Índices/rangos** (`IndiceFueraDeRango`, `IndiceTextoFueraDeRango`): datos completos relevantes (p. ej. índice/tamaño o longitud) deben coincidir.
 - **Nombre/identificador/ámbito:** `nombre` (y módulo/contexto cuando aplique) relevante.
 - **Tipos/lógicos/condición/operando/iteración/rango:** campos tipados u obtenidos según categoría relevantes y deben coincidir.
@@ -121,18 +121,18 @@ No existen otras listas blancas activas en 04.2.
 
 ### 9.4 Tratamiento de valores opacos y colecciones
 - **Opacos (archivo, celda, clausuras no identificables, etc.):** si no puede demostrarse equivalencia semántica, se clasifican como **No verificable** (no equivalentes por nombre/representación textual). Solo opacos con identidad comprobable y coincidente (p. ej. función por nombre, módulo por ruta canónica coincidente) pueden considerarse equivalentes.
-- **Secuencias (`Arreglo`/`Lista`):** la comparación de valores exige misma clase y mismo contenido/orden; clases distintas no se asumen equivalentes a nivel de valor. La tolerancia de representación `Lista`/`Arreglo` se limita al diagnóstico whitelisted (GAP-051) cuando la causa semántica es demostrable.
+- **Secuencias (`Arreglo`/`Lista`):** la comparación de valores exige misma clase y mismo contenido/orden; clases distintas no se asumen equivalentes a nivel de valor. La tolerancia de representación `Lista`/`Arreglo` se limita al diagnóstico whitelisted (GAP-051, acotada y justificada) cuando la causa semántica es demostrable.
 - **No se implementa identidad completa de clausuras en 04.2.**
 
 ### 9.5 Pruebas negativas incorporadas (contrato)
-Pruebas unitarias en `prototipo/src/paridad.rs` (`mod tests`) verifican: aritmético vs asignación (diferentes), tipos incompatibles vs condición no lógica (diferentes), misma categoría con subcausa diferente (diferentes), misma categoría/subcausa con datos críticos diferentes (diferentes), diferencia de representación permitida por lista blanca GAP-051 (diagnóstico), diferencia de representación no autorizada (divergencia), resultado correcto vs error (divergencia), error vs capacidad no soportada (no equivalentes/no verificable), y casos de normalización/comparación de valores (opaco no demostrable → no verificable, secuencia de clase distinta → divergente, NaN canónico → equivalente).
+Pruebas unitarias en `prototipo/src/paridad.rs` (`mod tests`) verifican: aritmético vs asignación (diferentes), tipos incompatibles vs condición no lógica (diferentes), misma categoría con subcausa diferente (diferentes), misma categoría/subcausa con datos críticos diferentes (diferentes), diferencia de representación permitida por lista blanca GAP-051 (diagnóstico acotado), diferencia de representación no autorizada (divergencia), resultado correcto vs error (divergencia), error vs capacidad no soportada (no equivalentes/no verificable), y casos de normalización/comparación de valores (opaco no demostrable → no verificable, secuencia de clase distinta → divergente, NaN canónico → equivalente). La whitelist GAP-051 permanece justificada/restringida.
 
 ### 9.6 Limitaciones conocidas (vigentes)
 - Stdout/efectos heterogéneos no comparados homogéneamente por el harness (modelo definido).
 - Mapeo dependiente de variantes actuales de `CausaError`/`ErrorVm`; categorías no contempladas o datos no modelados pueden requerir regla explícita.
 - Opacos y clausuras sin identidad completa → frecuentemente no verificables.
 - Divergencias reales preexistentes de motores no corregidas en este lote.
-- GAP-051 permanece **parcialmente resuelto** (sin cierre).
+- GAP-051 **CERRADO en alcance cubierto por pruebas diferenciales**; observaciones técnicas preservadas (MIR sin nombres de parámetros/índice 1-based en VM, diferencias diagnósticas Lista/Arreglo, cobertura no exhaustiva, whitelist acotada justificada/restringida). No se afirma equivalencia total. Validación local diferenciada de CI cuando aplique.
 
 ### 9.7 Mapeos de equivalencia semántica explícitos (04.4, TW↔VM)
 Aplican **solo** cuando la causa subyacente y los datos relevantes coinciden; en caso contrario sigue la regla estricta:

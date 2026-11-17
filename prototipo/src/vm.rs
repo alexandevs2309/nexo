@@ -68,6 +68,13 @@ pub enum ErrorVm {
     /// Asignación/conversión a tipo anotado incompatible (GAP-051, ADR-0005).
     /// Mensaje espejo de E1004 del Tree-Walk para paridad diferencial.
     AsignacionIncompatible { esperado: String, obtenido: String },
+    /// Tipo de parámetro incompatible con anotación/inferencia (GAP-051, paridad TW).
+    TipoParametroIncompatible {
+        funcion: String,
+        parametro: String,
+        esperado: String,
+        obtenido: String,
+    },
     /// Retorno incompatible con la anotación de la función (paridad TW).
     RetornoIncompatible {
         funcion: String,
@@ -117,6 +124,15 @@ impl std::fmt::Display for ErrorVm {
             ErrorVm::AsignacionIncompatible { esperado, obtenido } => write!(
                 f,
                 "asignación incompatible: se esperaba {esperado} y se obtuvo {obtenido}"
+            ),
+            ErrorVm::TipoParametroIncompatible {
+                funcion,
+                parametro,
+                esperado,
+                obtenido,
+            } => write!(
+                f,
+                "parámetro '{parametro}' de '{funcion}': se esperaba {esperado} y se obtuvo {obtenido}"
             ),
             ErrorVm::RetornoIncompatible {
                 funcion,
@@ -1767,8 +1783,7 @@ impl MaquinaVirtual {
                 .params
                 .iter()
                 .any(|(_, t)| *t != crate::semantico::TipoSem::Desconocido);
-            // Si un argumento necesita conversión numérica, se recolecta la
-            // llamada con los valores convertidos (paridad con Tree-Walk).
+            // Conversión/validación de parámetros tipados o inferidos (paridad TW, GAP-051).
             let convertidos: Option<Vec<Valor>> = if anotados {
                 let mut convertidos: Option<Vec<Valor>> = None;
                 for (i, (_, tipo)) in func.params.iter().enumerate() {
@@ -1776,19 +1791,24 @@ impl MaquinaVirtual {
                         continue;
                     }
                     if let Some(arg) = args.get(i) {
-                        match convertir_a_tipo_anotado_escalar(arg, tipo) {
-                            Some(nuevo) => {
-                                if !tipo_compat_valor(arg, tipo) {
+                        let obtenido_original = arg.nombre_tipo().to_string();
+                        match convertir_tipo(arg.clone(), tipo) {
+                            Ok(nuevo) => {
+                                if nuevo != *arg {
                                     let conv = convertidos.get_or_insert_with(|| args.to_vec());
                                     conv[i] = nuevo;
                                 }
                             }
-                            None => {
-                                return Err(ErrorVm::TipoEsperado {
-                                    esperado: "tipo anotado",
-                                    encontrado: arg.nombre_tipo(),
+                            Err(ErrorVm::AsignacionIncompatible { esperado, .. }) => {
+                                return Err(ErrorVm::TipoParametroIncompatible {
+                                    funcion: callee.to_string(),
+                                    // MIR no conserva nombres de parámetros; se usa índice 1-based.
+                                    parametro: (i + 1).to_string(),
+                                    esperado,
+                                    obtenido: obtenido_original,
                                 });
                             }
+                            Err(e) => return Err(e),
                         }
                     }
                 }
@@ -1800,17 +1820,20 @@ impl MaquinaVirtual {
                     let mut convertidos: Option<Vec<Valor>> = None;
                     for (i, t) in inferidos.iter().enumerate() {
                         if let Some(arg) = args.get(i) {
+                            let obtenido_original = arg.nombre_tipo().to_string();
                             match convertir_para_tipo(t, arg) {
                                 Some(nuevo) => {
-                                    if !valor_compat_valor(arg, t) {
+                                    if nuevo != *arg {
                                         let conv = convertidos.get_or_insert_with(|| args.to_vec());
                                         conv[i] = nuevo;
                                     }
                                 }
                                 None => {
-                                    return Err(ErrorVm::TipoEsperado {
-                                        esperado: t.nombre_tipo(),
-                                        encontrado: arg.nombre_tipo(),
+                                    return Err(ErrorVm::TipoParametroIncompatible {
+                                        funcion: callee.to_string(),
+                                        parametro: (i + 1).to_string(),
+                                        esperado: t.nombre_tipo().to_string(),
+                                        obtenido: obtenido_original,
                                     });
                                 }
                             }
@@ -2572,28 +2595,9 @@ fn ordenar_valor(a: &Valor, b: &Valor) -> std::cmp::Ordering {
     }
 }
 
-/// Compatibilidad entre un `TipoSem` anotado y un `Valor` (paridad con
-/// `convertir_a_tipo_anotado` del evaluador).
-fn tipo_compat_valor(valor: &Valor, tipo: &crate::semantico::TipoSem) -> bool {
-    use crate::semantico::TipoSem;
-    match tipo {
-        TipoSem::Entero => matches!(valor, Valor::Entero(_)),
-        TipoSem::Decimal => matches!(valor, Valor::Decimal(_)),
-        TipoSem::Real => matches!(valor, Valor::Real(_) | Valor::Entero(_)),
-        TipoSem::Logico => matches!(valor, Valor::Logico(_)),
-        TipoSem::Texto => matches!(valor, Valor::Texto(_)),
-        TipoSem::Nulo => matches!(valor, Valor::Nulo),
-        TipoSem::Arreglo(_, _) | TipoSem::Lista(_) | TipoSem::Coleccion(_) => {
-            matches!(valor, Valor::Arreglo(_) | Valor::Lista(_))
-        }
-        _ => true,
-    }
-}
-
 /// Compatibilidad entre dos valores para la inferencia de parámetros
 /// (paridad con `convertir_para_tipo` del Tree-Walk): mismo discriminante
-/// o ambas secuencias (`Arreglo`/`Lista`, que el resto de la VM —y
-/// `tipo_compat_valor` en la ruta anotada— tratan como un solo tipo).
+/// o ambas secuencias (`Arreglo`/`Lista`, tratadas como familia compatible).
 fn valor_compat_valor(a: &Valor, b: &Valor) -> bool {
     if matches!(a, Valor::Arreglo(_) | Valor::Lista(_))
         && matches!(b, Valor::Arreglo(_) | Valor::Lista(_))
@@ -2610,31 +2614,6 @@ fn convertir_para_tipo(viejo: &Valor, nuevo: &Valor) -> Option<Valor> {
         (Valor::Decimal(_), Valor::Entero(n)) => Some(Valor::decimal_desde_entero(*n)),
         (Valor::Real(_), Valor::Entero(n)) => Some(Valor::Real(*n as f64)),
         _ if valor_compat_valor(viejo, nuevo) => Some(nuevo.clone()),
-        _ => None,
-    }
-}
-
-/// Convierte un argumento escalar según su anotación (paridad con la parte
-/// escalar de `convertir_a_tipo_anotado` del evaluador Tree-Walk). Las
-/// secuencias anotadas se aceptan tal cual vía `tipo_compat_valor`; la
-/// conversión elemento a elemento de secuencias queda fuera de alcance.
-fn convertir_a_tipo_anotado_escalar(
-    valor: &Valor,
-    tipo: &crate::semantico::TipoSem,
-) -> Option<Valor> {
-    use crate::semantico::TipoSem;
-    match tipo {
-        TipoSem::Decimal => match valor {
-            Valor::Decimal(_) => Some(valor.clone()),
-            Valor::Entero(n) => Some(Valor::decimal_desde_entero(*n)),
-            _ => None,
-        },
-        TipoSem::Real => match valor {
-            Valor::Real(_) => Some(valor.clone()),
-            Valor::Entero(n) => Some(Valor::Real(*n as f64)),
-            _ => None,
-        },
-        _ if tipo_compat_valor(valor, tipo) => Some(valor.clone()),
         _ => None,
     }
 }
