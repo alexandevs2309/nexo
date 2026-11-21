@@ -418,6 +418,166 @@ pub fn normalizar_error_tw(e: &ErrorEjecucion) -> ErrorNormalizado {
             datos.insert("detalle".into(), detalle.clone());
             (CategoriaError::FfiInvalido, None)
         }
+        CausaError::InferenciaArgumentosTipoNoDisponible { funcion } => {
+            datos.insert("funcion".into(), funcion.clone());
+            (
+                CategoriaError::NoSoportado,
+                Some("inferencia_argumentos_tipo_no_disponible".into()),
+            )
+        }
+        CausaError::ArgumentosTipoEnFuncionNoGenerica { funcion } => {
+            datos.insert("funcion".into(), funcion.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("argumentos_tipo_en_funcion_no_generica".into()),
+            )
+        }
+        CausaError::AridadArgumentosTipoInvalida {
+            funcion,
+            esperado,
+            obtenido,
+        } => {
+            datos.insert("funcion".into(), funcion.clone());
+            datos.insert("esperado".into(), esperado.to_string());
+            datos.insert("obtenido".into(), obtenido.to_string());
+            (
+                CategoriaError::FirmaInvalida,
+                Some("aridad_argumentos_tipo_invalida".into()),
+            )
+        }
+        CausaError::ArgumentoTipoInvalido { funcion, argumento } => {
+            datos.insert("funcion".into(), funcion.clone());
+            datos.insert("argumento".into(), argumento.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("argumento_tipo_invalido".into()),
+            )
+        }
+        CausaError::InferenciaArgumentosTipoIncompleta { funcion } => {
+            datos.insert("funcion".into(), funcion.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("inferencia_argumentos_tipo_incompleta".into()),
+            )
+        }
+        CausaError::InferenciaArgumentosTipoAmbigua { funcion } => {
+            datos.insert("funcion".into(), funcion.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("inferencia_argumentos_tipo_ambigua".into()),
+            )
+        }
+        CausaError::ConflictoTiposInferencia { funcion } => {
+            datos.insert("funcion".into(), funcion.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("conflicto_tipos_inferencia".into()),
+            )
+        }
+        CausaError::OperacionProhibidaPorOpacidad { detalle } => {
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("operacion_prohibida_por_opacidad".into()),
+            )
+        }
+        CausaError::IncompatibilidadConcretaGenericos { detalle } => {
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("incompatibilidad_concreta_genericos".into()),
+            )
+        }
+        CausaError::SustitucionIncompleta { funcion } => {
+            datos.insert("funcion".into(), funcion.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("sustitucion_incompleta".into()),
+            )
+        }
+        CausaError::ForwardingGenericoInvalido { funcion, detalle } => {
+            datos.insert("funcion".into(), funcion.clone());
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("forwarding_generico_invalido".into()),
+            )
+        }
+        CausaError::DependenciaGenericaNoResoluble { funcion, detalle } => {
+            datos.insert("funcion".into(), funcion.clone());
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("dependencia_generica_no_resoluble".into()),
+            )
+        }
+        CausaError::RecursionPolimorficaCreciente {
+            funcion,
+            instancia,
+            tipos,
+            cadena,
+            detalle,
+        } => {
+            datos.insert("funcion".into(), funcion.clone());
+            datos.insert("instancia".into(), instancia.clone());
+            datos.insert("tipos".into(), tipos.join(","));
+            if !cadena.is_empty() {
+                datos.insert("cadena".into(), cadena.join("->"));
+            }
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("recursion_polimorfica_creciente".into()),
+            )
+        }
+        CausaError::ProfundidadInstanciacionExcedida {
+            funcion,
+            instancia,
+            tipos,
+            limite,
+            cadena,
+            detalle,
+        } => {
+            datos.insert("funcion".into(), funcion.clone());
+            datos.insert("instancia".into(), instancia.clone());
+            datos.insert("tipos".into(), tipos.join(","));
+            datos.insert("limite".into(), limite.to_string());
+            if !cadena.is_empty() {
+                datos.insert("cadena".into(), cadena.join("->"));
+            }
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("profundidad_instanciacion_excedida".into()),
+            )
+        }
+        CausaError::ReferenciaGenericaResidualIr { detalle, ubicacion } => {
+            datos.insert("detalle".into(), detalle.clone());
+            datos.insert("ubicacion".into(), ubicacion.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("referencia_generica_residual_ir".into()),
+            )
+        }
+        CausaError::LimiteInstanciasExcedido {
+            limite,
+            solicitada,
+            tipos,
+            cadena,
+            detalle,
+        } => {
+            datos.insert("limite".into(), limite.to_string());
+            datos.insert("solicitada".into(), solicitada.clone());
+            datos.insert("tipos".into(), tipos.join(","));
+            if !cadena.is_empty() {
+                datos.insert("cadena".into(), cadena.join("->"));
+            }
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::TiposIncompatibles,
+                Some("limite_instancias_excedido".into()),
+            )
+        }
     };
     ErrorNormalizado {
         causa: CausaNormalizada {

@@ -49,6 +49,8 @@ pub enum Expresion {
     Llamada {
         nombre: String,
         argumentos: Vec<Expresion>,
+        /// Argumentos de tipo explícitos (turbofish, G2). Vacío si no se especifican.
+        argumentos_tipo: Vec<TipoAnotacion>,
         linea: usize,
         columna: usize,
     },
@@ -153,6 +155,8 @@ pub enum Sentencia {
     /// Definición de función (ADR-0008, ampliada ADR-0011).
     Funcion {
         nombre: String,
+        /// Parámetros de tipo genéricos sintácticos (G2). Vacío si no se declaran.
+        parametros_tipo: Vec<String>,
         /// Parámetros con tipo anotado opcional. Todos tipados o ninguno (ADR-0011 §3.2).
         parametros: Vec<(String, Option<TipoAnotacion>)>,
         /// Tipo de retorno anotado (ADR-0011 §3.4).
@@ -236,6 +240,9 @@ pub enum TipoAnotacion {
     Lista(Box<TipoAnotacion>),
     /// Tipo nulo (ADR-0011 §3.5). Válido en tipo de retorno `-> nulo`.
     Nulo,
+    /// Referencia sintáctica a un parámetro de tipo (G2, Fase 07).
+    /// No implica validación semántica en G2.
+    Parametro(String),
 }
 
 impl TipoAnotacion {
@@ -249,6 +256,7 @@ impl TipoAnotacion {
             TipoAnotacion::Arreglo(t, n) => format!("arreglo<{}, {}>", t.nombre(), n),
             TipoAnotacion::Lista(t) => format!("lista<{}>", t.nombre()),
             TipoAnotacion::Nulo => "nulo".to_string(),
+            TipoAnotacion::Parametro(n) => n.clone(),
         }
     }
 }
@@ -328,6 +336,8 @@ pub struct Parser {
     en_ciclo: usize,
     /// Profundidad de bloques anidados (0 = nivel superior). Para validar `publico`.
     profundidad_bloque: usize,
+    /// Parámetros de tipo en alcance sintáctico (G2.1). Pila por función genérica.
+    parametros_tipo_alcance: Vec<std::collections::HashSet<String>>,
     /// Archivo de origen, si está disponible (ADR-0017 D5).
     archivo: Option<String>,
 }
@@ -345,6 +355,7 @@ impl Parser {
             en_funcion: false,
             en_ciclo: 0,
             profundidad_bloque: 0,
+            parametros_tipo_alcance: Vec::new(),
             archivo,
         }
     }
@@ -576,6 +587,12 @@ impl Parser {
         self.parsear_tipo_anotacion_cuerpo()
     }
 
+    fn tipo_param_en_alcance(&self, nombre: &str) -> bool {
+        self.parametros_tipo_alcance
+            .last()
+            .is_some_and(|scope| scope.contains(nombre))
+    }
+
     fn parsear_tipo_anotacion_simple(&mut self) -> Result<TipoAnotacion, ErrorSintactico> {
         match self.actual() {
             Some(TipoToken::Identificador(t)) if t == "entero" => {
@@ -598,11 +615,24 @@ impl Parser {
                 self.pos += 1;
                 Ok(TipoAnotacion::Texto)
             }
+            Some(TipoToken::Identificador(t)) => {
+                let nombre = t.clone();
+                if self.tipo_param_en_alcance(&nombre) {
+                    self.pos += 1;
+                    Ok(TipoAnotacion::Parametro(nombre))
+                } else {
+                    Err(self.error(
+                        "tipo desconocido; se esperaba: entero, decimal, real, logico, texto, nulo, arreglo<T, N>, lista<T>",
+                    ))
+                }
+            }
             Some(TipoToken::Nulo) => {
                 self.pos += 1;
                 Ok(TipoAnotacion::Nulo)
             }
-            _ => Err(self.error("tipo desconocido; se esperaba: entero, decimal, real, logico, texto, nulo, arreglo<T, N>, lista<T>")),
+            _ => Err(self.error(
+                "tipo desconocido; se esperaba: entero, decimal, real, logico, texto, nulo, arreglo<T, N>, lista<T>",
+            )),
         }
     }
 
@@ -614,7 +644,7 @@ impl Parser {
                 return Err(self.error("se esperaba '<' después de 'arreglo'"));
             }
             self.pos += 1;
-            let tipo_elem = self.parsear_tipo_anotacion_simple()?;
+            let tipo_elem = self.parsear_tipo_anotacion_cuerpo()?; // permite anidados (G2)
             self.omitir_finales_de_linea();
             if !matches!(self.actual(), Some(TipoToken::Coma)) {
                 return Err(self.error("se esperaba ',' después del tipo de elemento en arreglo"));
@@ -649,7 +679,7 @@ impl Parser {
                 return Err(self.error("se esperaba '<' después de 'lista'"));
             }
             self.pos += 1;
-            let tipo_elem = self.parsear_tipo_anotacion_simple()?;
+            let tipo_elem = self.parsear_tipo_anotacion_cuerpo()?; // permite anidados (G2)
             self.omitir_finales_de_linea();
             if !matches!(self.actual(), Some(TipoToken::Mayor)) {
                 return Err(self.error("se esperaba '>' para cerrar el tipo de lista"));
@@ -658,6 +688,145 @@ impl Parser {
             return Ok(TipoAnotacion::Lista(Box::new(tipo_elem)));
         }
         self.parsear_tipo_anotacion_simple()
+    }
+
+    fn es_nombre_tipo_param_prohibido(nombre: &str) -> bool {
+        matches!(nombre, "entero" | "decimal" | "real" | "logico" | "texto")
+    }
+
+    /// Parsea la lista de parámetros de tipo de una declaración: `<T, U>`.
+    /// Requiere que el token actual sea `<`.
+    fn parsear_parametros_tipo_decl(&mut self) -> Result<Vec<String>, ErrorSintactico> {
+        if !matches!(self.actual(), Some(TipoToken::Menor)) {
+            return Ok(Vec::new());
+        }
+        self.pos += 1; // '<'
+        self.omitir_finales_de_linea();
+        let mut params: Vec<String> = Vec::new();
+        let mut vistos: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if matches!(self.actual(), Some(TipoToken::Mayor)) {
+            return Err(self.error("se esperaba al menos un parámetro de tipo"));
+        }
+        loop {
+            self.omitir_finales_de_linea();
+            let nombre = match self.actual() {
+                Some(TipoToken::Identificador(n)) => n.clone(),
+                Some(
+                    TipoToken::Sea
+                    | TipoToken::Var
+                    | TipoToken::Dato
+                    | TipoToken::Const
+                    | TipoToken::Arreglo
+                    | TipoToken::Lista
+                    | TipoToken::Funcion
+                    | TipoToken::Retornar
+                    | TipoToken::Mostrar
+                    | TipoToken::MostrarSinSalto
+                    | TipoToken::Si
+                    | TipoToken::Sino
+                    | TipoToken::Mientras
+                    | TipoToken::Para
+                    | TipoToken::Cada
+                    | TipoToken::En
+                    | TipoToken::Romper
+                    | TipoToken::Continuar
+                    | TipoToken::Intentar
+                    | TipoToken::Rescatar
+                    | TipoToken::Importar
+                    | TipoToken::Exportar
+                    | TipoToken::Usar
+                    | TipoToken::Como
+                    | TipoToken::Publico
+                    | TipoToken::Y
+                    | TipoToken::O
+                    | TipoToken::No
+                    | TipoToken::Verdadero
+                    | TipoToken::Falso
+                    | TipoToken::Nulo,
+                ) => {
+                    let lex = self.tokens[self.pos].lexema.clone();
+                    return Err(self.error(format!(
+                        "el nombre '{lex}' no puede usarse como parámetro de tipo"
+                    )));
+                }
+                _ => {
+                    return Err(self.error("se esperaba un parámetro de tipo"));
+                }
+            };
+            self.pos += 1;
+            if Self::es_nombre_tipo_param_prohibido(&nombre) {
+                return Err(self.error(format!(
+                    "el nombre '{nombre}' no puede usarse como parámetro de tipo"
+                )));
+            }
+            if !vistos.insert(nombre.clone()) {
+                return Err(self.error(format!("el parámetro de tipo '{nombre}' está duplicado")));
+            }
+            params.push(nombre);
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                self.pos += 1;
+                self.omitir_finales_de_linea();
+                if matches!(self.actual(), Some(TipoToken::Mayor)) {
+                    self.pos += 1; // coma final
+                    return Ok(params);
+                }
+                continue;
+            }
+            if matches!(self.actual(), Some(TipoToken::Mayor)) {
+                self.pos += 1;
+                return Ok(params);
+            }
+            return Err(self.error("se esperaba ',' o '>' en la lista de parámetros de tipo"));
+        }
+    }
+
+    /// Si hay `:: < ... >` en posición de turbofish (dos DosPuntos seguidos de `<`), lo parsea.
+    /// Retorna argumentos de tipo y consume tokens; si no hay turbofish, retorna Vec vacío sin consumir.
+    fn intentar_parsear_argumentos_tipo_turbofish(
+        &mut self,
+    ) -> Result<Option<Vec<TipoAnotacion>>, ErrorSintactico> {
+        let es_turbofish = matches!(self.actual(), Some(TipoToken::DosPuntos))
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|t| &t.tipo),
+                Some(TipoToken::DosPuntos)
+            )
+            && matches!(
+                self.tokens.get(self.pos + 2).map(|t| &t.tipo),
+                Some(TipoToken::Menor)
+            );
+        if !es_turbofish {
+            return Ok(None);
+        }
+        self.pos += 2; // '::'
+        self.pos += 1; // '<'
+        self.omitir_finales_de_linea();
+        if matches!(self.actual(), Some(TipoToken::Mayor)) {
+            return Err(self.error("se esperaba al menos un argumento de tipo"));
+        }
+        let mut args: Vec<TipoAnotacion> = Vec::new();
+        loop {
+            self.omitir_finales_de_linea();
+            let ty = self
+                .parsear_tipo_anotacion_cuerpo()
+                .map_err(|_| self.error("argumento de tipo mal formado"))?;
+            args.push(ty);
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                self.pos += 1;
+                self.omitir_finales_de_linea();
+                if matches!(self.actual(), Some(TipoToken::Mayor)) {
+                    self.pos += 1; // coma final
+                    return Ok(Some(args));
+                }
+                continue;
+            }
+            if matches!(self.actual(), Some(TipoToken::Mayor)) {
+                self.pos += 1;
+                return Ok(Some(args));
+            }
+            return Err(self.error("se esperaba ',' o '>' en la lista de argumentos de tipo"));
+        }
     }
 
     fn bloque(&mut self) -> Result<Vec<Sentencia>, ErrorSintactico> {
@@ -696,75 +865,90 @@ impl Parser {
             }
             _ => return Err(self.error("se esperaba el nombre de la función")),
         };
-        if !matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
-            return Err(self.error("se esperaba '(' tras el nombre de la función"));
-        }
-        self.pos += 1; // '('
-        let mut parametros: Vec<(String, Option<TipoAnotacion>)> = Vec::new();
-        // Primer parámetro determina si se usan tipos (todo-o-nada, ADR-0011 §3.2).
-        let mut primer_tiene_tipo: Option<bool> = None;
-        loop {
-            self.omitir_finales_de_linea();
-            if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
-                self.pos += 1;
-                break;
+        let parametros_tipo = if matches!(self.actual(), Some(TipoToken::Menor)) {
+            self.parsear_parametros_tipo_decl()?
+        } else {
+            Vec::new()
+        };
+        // G2.2 (3.3): cada declaración de función tiene su propio conjunto de
+        // parámetros de tipo (sin herencia implícita de funciones exteriores).
+        let set: std::collections::HashSet<String> = parametros_tipo.iter().cloned().collect();
+        self.parametros_tipo_alcance.push(set);
+        let resultado = (|| {
+            if !matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
+                return Err(self.error("se esperaba '(' tras el nombre de la función"));
             }
-            let param_nombre = match self.actual() {
-                Some(TipoToken::Identificador(n)) => {
+            self.pos += 1; // '('
+            let mut parametros: Vec<(String, Option<TipoAnotacion>)> = Vec::new();
+            // Primer parámetro determina si se usan tipos (todo-o-nada, ADR-0011 §3.2).
+            let mut primer_tiene_tipo: Option<bool> = None;
+            loop {
+                self.omitir_finales_de_linea();
+                if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
                     self.pos += 1;
-                    n
+                    break;
                 }
-                _ => return Err(self.error("se esperaba un parámetro")),
-            };
-            // Tipo anotado opcional
-            let tipo_param = if matches!(self.actual(), Some(TipoToken::DosPuntos)) {
-                let tipo = self.parsear_tipo_anotacion()?;
-                Some(tipo)
+                let param_nombre = match self.actual() {
+                    Some(TipoToken::Identificador(n)) => {
+                        self.pos += 1;
+                        n
+                    }
+                    _ => return Err(self.error("se esperaba un parámetro")),
+                };
+                // Tipo anotado opcional
+                let tipo_param = if matches!(self.actual(), Some(TipoToken::DosPuntos)) {
+                    let tipo = self.parsear_tipo_anotacion()?;
+                    Some(tipo)
+                } else {
+                    None
+                };
+                // Verificar consistencia todo-o-nada
+                let este_tiene_tipo = tipo_param.is_some();
+                match primer_tiene_tipo {
+                    None => primer_tiene_tipo = Some(este_tiene_tipo),
+                    Some(pt) if pt != este_tiene_tipo => {
+                        return Err(self.error(format!(
+                            "la firma de '{}' mezcla parámetros con y sin tipo; anota todos o ninguno",
+                            nombre
+                        )));
+                    }
+                    _ => {}
+                }
+                parametros.push((param_nombre, tipo_param));
+                self.omitir_finales_de_linea();
+                if matches!(self.actual(), Some(TipoToken::Coma)) {
+                    self.pos += 1;
+                    continue;
+                }
+                if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                    self.pos += 1;
+                    break;
+                }
+                return Err(self.error("se esperaba ',' o ')'"));
+            }
+            // Tipo de retorno opcional `-> tipo` (ADR-0011 §3.4)
+            let tipo_retorno = if matches!(self.actual(), Some(TipoToken::Flecha)) {
+                self.pos += 1; // '->'
+                Some(self.parsear_tipo_anotacion_cuerpo()?)
             } else {
                 None
             };
-            // Verificar consistencia todo-o-nada
-            let este_tiene_tipo = tipo_param.is_some();
-            match primer_tiene_tipo {
-                None => primer_tiene_tipo = Some(este_tiene_tipo),
-                Some(pt) if pt != este_tiene_tipo => {
-                    return Err(self.error(format!(
-                        "la firma de '{}' mezcla parámetros con y sin tipo; anota todos o ninguno",
-                        nombre
-                    )));
-                }
-                _ => {}
+            if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+                return Err(self.error("se esperaba '{' en la misma línea que la función"));
             }
-            parametros.push((param_nombre, tipo_param));
-            self.omitir_finales_de_linea();
-            if matches!(self.actual(), Some(TipoToken::Coma)) {
-                self.pos += 1;
-                continue;
+            let llave = &self.tokens[self.pos];
+            if llave.linea != linea {
+                return Err(self.error("el '{' debe estar en la misma línea que 'funcion'"));
             }
-            if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
-                self.pos += 1;
-                break;
-            }
-            return Err(self.error("se esperaba ',' o ')'"));
-        }
-        // Tipo de retorno opcional `-> tipo` (ADR-0011 §3.4)
-        let tipo_retorno = if matches!(self.actual(), Some(TipoToken::Flecha)) {
-            self.pos += 1; // '->'
-            Some(self.parsear_tipo_anotacion_cuerpo()?)
-        } else {
-            None
-        };
-        if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
-            return Err(self.error("se esperaba '{' en la misma línea que la función"));
-        }
-        let llave = &self.tokens[self.pos];
-        if llave.linea != linea {
-            return Err(self.error("el '{' debe estar en la misma línea que 'funcion'"));
-        }
-        let cuerpo = self.bloque()?;
+            let cuerpo = self.bloque()?;
+            Ok((parametros, tipo_retorno, cuerpo))
+        })();
+        self.parametros_tipo_alcance.pop();
+        let (parametros, tipo_retorno, cuerpo) = resultado?;
         self.en_funcion = prev_en_funcion;
         Ok(Sentencia::Funcion {
             nombre,
+            parametros_tipo,
             parametros,
             tipo_retorno,
             cuerpo,
@@ -1447,6 +1631,54 @@ impl Parser {
                 let (linea, columna) = (t.linea, t.columna);
                 let nombre = nombre.clone();
                 self.pos += 1;
+                // Turbofish en llamada directa por identificador (G2): `id::<T>(...)`
+                if let Some(argumentos_tipo) = self.intentar_parsear_argumentos_tipo_turbofish()? {
+                    if !matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
+                        return Err(self.error(
+                            "los argumentos de tipo solo se permiten en llamadas directas por identificador",
+                        ));
+                    }
+                    self.pos += 1; // '('
+                    let mut args = Vec::new();
+                    self.omitir_finales_de_linea();
+                    if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                        self.pos += 1;
+                    } else {
+                        loop {
+                            let a = self.expresion()?;
+                            args.push(a);
+                            self.omitir_finales_de_linea();
+                            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                                self.pos += 1;
+                                self.omitir_finales_de_linea();
+                                continue;
+                            }
+                            if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                                self.pos += 1;
+                                break;
+                            }
+                            return Err(self.error("se esperaba ',' o ')'"));
+                        }
+                    }
+                    return Ok(Expresion::Llamada {
+                        nombre,
+                        argumentos: args,
+                        argumentos_tipo,
+                        linea,
+                        columna,
+                    });
+                }
+                // Detectar `:: <` fuera de contexto admitido en G2
+                if matches!(self.actual(), Some(TipoToken::DosPuntos))
+                    && matches!(
+                        self.tokens.get(self.pos + 1).map(|t| &t.tipo),
+                        Some(TipoToken::DosPuntos)
+                    )
+                {
+                    return Err(self.error(
+                        "los argumentos de tipo solo se permiten en llamadas directas por identificador",
+                    ));
+                }
                 // Llamada a función: identificador seguido de '('
                 if matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
                     self.pos += 1;
@@ -1474,6 +1706,7 @@ impl Parser {
                     return Ok(Expresion::Llamada {
                         nombre,
                         argumentos: args,
+                        argumentos_tipo: Vec::new(),
                         linea,
                         columna,
                     });

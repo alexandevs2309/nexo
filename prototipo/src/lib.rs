@@ -45,3 +45,5 @@ pub use semantico::ContextoSemantico;
 pub use simbodo::{AmbitoId, CategoriaSimbodo, GestorAmbitos, Simbodo, SimbodoId, TablaSimbodo};
 pub use token::{ErrorLexico, TipoToken, Token};
 pub use valor::{ESCALA_DECIMAL, MotivoAritmetico, PRECISION_DECIMAL, Valor};
+
+pub mod monomorfizacion;

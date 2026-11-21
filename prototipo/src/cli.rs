@@ -43,16 +43,20 @@ pub fn gate_hir(hir: &crate::hir::HirPrograma) -> Result<(), String> {
         ));
     }
     let resultado = crate::hir::VerificadorHir::verificar_detallado(hir);
-    if resultado.es_ok() {
-        Ok(())
-    } else {
-        Err(resultado
+    if !resultado.es_ok() {
+        return Err(resultado
             .errores
             .into_iter()
             .map(|e| format!("{PREFIJO_VERIFICACION} {}", e))
             .collect::<Vec<_>>()
-            .join("\\n"))
+            .join("\\n"));
     }
+    if let Err(e) = crate::hir::verificar_sin_residuos_genericos(hir) {
+        return Err(format!(
+            "{PREFIJO_VERIFICACION} [HIR_G4] gate_residuos_genericos: {e}"
+        ));
+    }
+    Ok(())
 }
 
 /// Gate MIR: usa el contrato detallado de 3A/3B sin modificar invariantes.
@@ -64,16 +68,20 @@ pub fn gate_mir(mir: &crate::mir::MirPrograma) -> Result<(), String> {
         ));
     }
     let resultado = crate::mir::VerificadorMir::verificar_detallado(mir);
-    if resultado.es_ok() {
-        Ok(())
-    } else {
-        Err(resultado
+    if !resultado.es_ok() {
+        return Err(resultado
             .errores
             .into_iter()
             .map(|e| format!("{PREFIJO_VERIFICACION} {}", e))
             .collect::<Vec<_>>()
-            .join("\\n"))
+            .join("\\n"));
     }
+    if let Err(e) = crate::mir::verificar_sin_residuos_genericos(mir) {
+        return Err(format!(
+            "{PREFIJO_VERIFICACION} [MIR_G4] gate_residuos_genericos: {e}"
+        ));
+    }
+    Ok(())
 }
 
 /// Punto de entrada común de `basilisco` y `bsk`.
@@ -213,6 +221,13 @@ pub fn main() -> ExitCode {
             let errs = ctx.analizar_programa(&sentencias);
             if !errs.is_empty() {
                 for e in errs {
+                    eprintln!("{}", e);
+                }
+                return ExitCode::from(1);
+            }
+            let (sentencias, errs_g4) = ctx.monomorfizar_programa(&sentencias);
+            if !errs_g4.is_empty() {
+                for e in errs_g4 {
                     eprintln!("{}", e);
                 }
                 return ExitCode::from(1);
@@ -961,6 +976,13 @@ fn analizar_archivo(ruta: &Path) -> ExitCode {
         }
         return ExitCode::from(1);
     }
+    let (sentencias, errs_g4) = ctx.monomorfizar_programa(&sentencias);
+    if !errs_g4.is_empty() {
+        for e in errs_g4 {
+            eprintln!("{}", e);
+        }
+        return ExitCode::from(1);
+    }
     *crate::hir::MODULO_ERROR.lock().unwrap() = None;
     let hir = match hir::lower_programa(&sentencias, &ctx) {
         Ok(h) => h,
@@ -1171,6 +1193,37 @@ fn ejecutar_fuente(
     let sentencias = Parser::con_archivo(tokens, archivo.clone())
         .parsear_programa()
         .map_err(|e| e.to_string())?;
+    // G4: análisis semántico + monomorfización para fuente canónica Tree-Walk/VM.
+    use crate::ContextoSemantico;
+    use std::path::PathBuf;
+    let mut ctx = match cargador.clone() {
+        Some(c) => ContextoSemantico::con_cargador(c, archivo.clone()),
+        None => {
+            let mut c = ContextoSemantico::nuevo();
+            c.archivo = archivo.clone();
+            c
+        }
+    };
+    if let Some(a) = &archivo {
+        ctx.set_archivo_actual(Some(PathBuf::from(a)));
+    }
+    let errs_sem = ctx.analizar_programa(&sentencias);
+    if !errs_sem.is_empty() {
+        return Err(errs_sem
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\\n"));
+    }
+    let (sentencias, errs_g4) = ctx.monomorfizar_programa(&sentencias);
+    if !errs_g4.is_empty() {
+        return Err(errs_g4
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\\n"));
+    }
+
     let mut entorno = match cargador {
         Some(c) => Entorno::con_cargador(c, archivo.clone()),
         None => {
@@ -1181,6 +1234,41 @@ fn ejecutar_fuente(
     };
     let resultado = entorno.ejecutar_programa(&sentencias);
     match resultado {
+        Ok(None) => {
+            // Paridad CLI TW↔VM: si el programa define `main` y no contiene
+            // sentencias ejecutables de nivel superior (estilo script), ejecutar
+            // `main` como punto de entrada (mismo contrato que el motor VM).
+            let solo_declaraciones = sentencias.iter().all(|s| {
+                matches!(
+                    s,
+                    crate::Sentencia::Funcion { .. }
+                        | crate::Sentencia::Importar { .. }
+                        | crate::Sentencia::Exportar { .. }
+                        | crate::Sentencia::Usar { .. }
+                )
+            });
+            if solo_declaraciones {
+                match entorno.llamar_funcion_por_nombre_resultado("main", &[], 1, 1) {
+                    Ok(v) => Ok(v),
+                    Err(e)
+                        if matches!(
+                            e.causa.as_ref(),
+                            crate::evaluador::CausaError::VariableNoDefinida(_)
+                        ) =>
+                    {
+                        Ok(None)
+                    }
+                    Err(mut e) => {
+                        if e.archivo.is_none() {
+                            e.archivo = archivo;
+                        }
+                        Err(e.to_string())
+                    }
+                }
+            } else {
+                Ok(None)
+            }
+        }
         Ok(v) => Ok(v),
         Err(mut e) => {
             if e.archivo.is_none() {
@@ -1224,6 +1312,14 @@ fn ejecutar_fuente_vm(
     let errs_sem = ctx.analizar_programa(&sentencias);
     if !errs_sem.is_empty() {
         return Err(errs_sem
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\\n"));
+    }
+    let (sentencias, errs_g4) = ctx.monomorfizar_programa(&sentencias);
+    if !errs_g4.is_empty() {
+        return Err(errs_g4
             .iter()
             .map(|e| e.to_string())
             .collect::<Vec<_>>()

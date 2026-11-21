@@ -796,13 +796,16 @@ fn tipos_compatibles_retorno(esperado: &TipoSem, obtenido: &TipoSem) -> bool {
             TipoSem::Funcion {
                 params: p1,
                 retorno: r1,
+                genericos: g1,
             },
             TipoSem::Funcion {
                 params: p2,
                 retorno: r2,
+                genericos: g2,
             },
         ) => {
-            p1.len() == p2.len()
+            g1 == g2
+                && p1.len() == p2.len()
                 && p1
                     .iter()
                     .zip(p2)
@@ -1965,6 +1968,7 @@ fn lower_sentencia(
                 tipo: TipoSem::Funcion {
                     params: params.iter().map(|(_, t)| t.clone()).collect(),
                     retorno: Box::new(ret.clone()),
+                    genericos: Vec::new(),
                 },
                 valor: HirExpresion::Lambda {
                     nombre: nombre_clausura,
@@ -2332,6 +2336,7 @@ fn cargar_modulo_items(
                     TipoSem::Funcion {
                         params: vec![],
                         retorno: Box::new(TipoSem::Nulo),
+                        genericos: Vec::new(),
                     }
                 } else {
                     tipo.clone()
@@ -2414,6 +2419,7 @@ fn cargar_modulo_items(
             tipo: TipoSem::Funcion {
                 params: vec![],
                 retorno: Box::new(TipoSem::Nulo),
+                genericos: Vec::new(),
             },
             valor: HirExpresion::ModuloObjeto {
                 prefijo: alias.to_string(),
@@ -2725,6 +2731,254 @@ pub fn lower_programa_con_resolutor(
     Ok((HirPrograma { items }, cuerpo_principal))
 }
 
+/// Gate G4: detecta parámetros genéricos residuales en HIR concreto (BAS-7020/E1055).
+pub fn verificar_sin_residuos_genericos(programa: &HirPrograma) -> Result<(), String> {
+    let mut errs = Vec::new();
+    for item in &programa.items {
+        scan_item_hir(item, &mut errs);
+    }
+    if errs.is_empty() {
+        return Ok(());
+    }
+    let detalle = errs.join("; ");
+    let ubicacion = programa
+        .items
+        .iter()
+        .find_map(|it| match it {
+            HirItem::Funcion { nombre, .. } => Some(nombre.clone()),
+            HirItem::Declaracion { .. } => Some("declaracion".to_string()),
+            HirItem::Expresion(_) => Some("expresion".to_string()),
+            HirItem::IntentarRescatar { .. } => Some("intentar/rescatar".to_string()),
+            HirItem::Importar { .. } | HirItem::Exportar { .. } | HirItem::Usar { .. } => None,
+        })
+        .unwrap_or_else(|| "hir".to_string());
+    let err = crate::evaluador::ErrorEjecucion {
+        mensaje: format!("referencia genérica residual en IR concreta ({ubicacion}): {detalle}"),
+        causa: Box::new(crate::evaluador::CausaError::ReferenciaGenericaResidualIr {
+            detalle,
+            ubicacion,
+        }),
+        linea: 1,
+        columna: 1,
+        archivo: None,
+    };
+    Err(err.to_string())
+}
+
+fn scan_tipo_hir(t: &TipoSem, ctx: &str, errs: &mut Vec<String>) {
+    if crate::semantico::contiene_param_generico(t) {
+        errs.push(format!("residuo genérico en tipo ({ctx}): {}", t.nombre()));
+    }
+}
+fn scan_expr_hir(e: &HirExpresion, ctx: &str, errs: &mut Vec<String>) {
+    match e {
+        HirExpresion::Literal(_, t) => scan_tipo_hir(t, ctx, errs),
+        HirExpresion::Variable(_, t) => scan_tipo_hir(t, ctx, errs),
+        HirExpresion::Suma(a, b, t)
+        | HirExpresion::Resta(a, b, t)
+        | HirExpresion::Multiplicacion(a, b, t)
+        | HirExpresion::Division(a, b, t)
+        | HirExpresion::Modulo(a, b, t)
+        | HirExpresion::IgualIgual(a, b, t)
+        | HirExpresion::Distinto(a, b, t)
+        | HirExpresion::Menor(a, b, t)
+        | HirExpresion::MenorIgual(a, b, t)
+        | HirExpresion::Mayor(a, b, t)
+        | HirExpresion::MayorIgual(a, b, t)
+        | HirExpresion::Y(a, b, t)
+        | HirExpresion::O(a, b, t) => {
+            scan_expr_hir(a, ctx, errs);
+            scan_expr_hir(b, ctx, errs);
+            scan_tipo_hir(t, ctx, errs);
+        }
+        HirExpresion::No(a, t) => {
+            scan_expr_hir(a, ctx, errs);
+            scan_tipo_hir(t, ctx, errs);
+        }
+        HirExpresion::Rango {
+            inicio, fin, tipo, ..
+        } => {
+            scan_expr_hir(inicio, ctx, errs);
+            scan_expr_hir(fin, ctx, errs);
+            scan_tipo_hir(tipo, ctx, errs);
+        }
+        HirExpresion::ArregloLiteral { elementos, tipo } => {
+            for el in elementos {
+                scan_expr_hir(el, ctx, errs);
+            }
+            scan_tipo_hir(tipo, ctx, errs);
+        }
+        HirExpresion::Indice {
+            objeto,
+            indice,
+            tipo,
+        } => {
+            scan_expr_hir(objeto, ctx, errs);
+            scan_expr_hir(indice, ctx, errs);
+            scan_tipo_hir(tipo, ctx, errs);
+        }
+        HirExpresion::Acceso { objeto, tipo, .. } => {
+            scan_expr_hir(objeto, ctx, errs);
+            scan_tipo_hir(tipo, ctx, errs);
+        }
+        HirExpresion::Llamada {
+            argumentos, tipo, ..
+        } => {
+            for a in argumentos {
+                scan_expr_hir(a, ctx, errs);
+            }
+            scan_tipo_hir(tipo, ctx, errs);
+        }
+        HirExpresion::LlamadaIndirecta {
+            callee,
+            argumentos,
+            tipo,
+        } => {
+            scan_expr_hir(callee, ctx, errs);
+            for a in argumentos {
+                scan_expr_hir(a, ctx, errs);
+            }
+            scan_tipo_hir(tipo, ctx, errs);
+        }
+        HirExpresion::FuncionRef(_) => {}
+        HirExpresion::Lambda { params, tipo, .. } => {
+            for (_, t) in params {
+                scan_tipo_hir(t, ctx, errs);
+            }
+            scan_tipo_hir(tipo, ctx, errs);
+        }
+        HirExpresion::Si {
+            condicion,
+            entonces,
+            sino,
+        } => {
+            scan_expr_hir(condicion, ctx, errs);
+            for s in entonces {
+                scan_stmt_hir(s, ctx, errs);
+            }
+            if let Some(v) = sino {
+                for s in v {
+                    scan_stmt_hir(s, ctx, errs);
+                }
+            }
+        }
+        HirExpresion::Otro(t) => scan_tipo_hir(t, ctx, errs),
+        HirExpresion::ModuloObjeto { tipo, .. } => scan_tipo_hir(tipo, ctx, errs),
+    }
+}
+fn scan_stmt_hir(s: &HirSentencia, ctx: &str, errs: &mut Vec<String>) {
+    match s {
+        HirSentencia::Declaracion { tipo, valor, .. } => {
+            scan_tipo_hir(tipo, ctx, errs);
+            scan_expr_hir(valor, ctx, errs);
+        }
+        HirSentencia::Asignacion { valor, .. } => scan_expr_hir(valor, ctx, errs),
+        HirSentencia::Expresion(e) => scan_expr_hir(e, ctx, errs),
+        HirSentencia::Retornar(v) => {
+            if let Some(e) = v {
+                scan_expr_hir(e, ctx, errs);
+            }
+        }
+        HirSentencia::Bloque(stmts) => {
+            for st in stmts {
+                scan_stmt_hir(st, ctx, errs);
+            }
+        }
+        HirSentencia::Si {
+            condicion,
+            entonces,
+            sino,
+        } => {
+            scan_expr_hir(condicion, ctx, errs);
+            for st in entonces {
+                scan_stmt_hir(st, ctx, errs);
+            }
+            if let Some(v) = sino {
+                for st in v {
+                    scan_stmt_hir(st, ctx, errs);
+                }
+            }
+        }
+        HirSentencia::Mientras { condicion, cuerpo } => {
+            scan_expr_hir(condicion, ctx, errs);
+            for st in cuerpo {
+                scan_stmt_hir(st, ctx, errs);
+            }
+        }
+        HirSentencia::AsignacionIndice {
+            objeto,
+            indice,
+            valor,
+        } => {
+            scan_expr_hir(objeto, ctx, errs);
+            scan_expr_hir(indice, ctx, errs);
+            scan_expr_hir(valor, ctx, errs);
+        }
+        HirSentencia::ParaCada {
+            iterable, cuerpo, ..
+        } => {
+            scan_expr_hir(iterable, ctx, errs);
+            for st in cuerpo {
+                scan_stmt_hir(st, ctx, errs);
+            }
+        }
+        HirSentencia::Romper | HirSentencia::Continuar => {}
+        HirSentencia::IntentarRescatar {
+            cuerpo_intentar,
+            cuerpo_rescatar,
+            ..
+        } => {
+            for st in cuerpo_intentar {
+                scan_stmt_hir(st, ctx, errs);
+            }
+            for st in cuerpo_rescatar {
+                scan_stmt_hir(st, ctx, errs);
+            }
+        }
+        HirSentencia::Importar { .. }
+        | HirSentencia::Exportar { .. }
+        | HirSentencia::Usar { .. } => {}
+    }
+}
+fn scan_item_hir(item: &HirItem, errs: &mut Vec<String>) {
+    match item {
+        HirItem::Funcion {
+            nombre,
+            params,
+            retorno,
+            cuerpo,
+            ..
+        } => {
+            let ctx = format!("funcion {nombre}");
+            for (_, t) in params {
+                scan_tipo_hir(t, &ctx, errs);
+            }
+            scan_tipo_hir(retorno, &ctx, errs);
+            for st in cuerpo {
+                scan_stmt_hir(st, &ctx, errs);
+            }
+        }
+        HirItem::Declaracion { tipo, valor, .. } => {
+            scan_tipo_hir(tipo, "declaracion", errs);
+            scan_expr_hir(valor, "declaracion", errs);
+        }
+        HirItem::Expresion(e) => scan_expr_hir(e, "expresion", errs),
+        HirItem::IntentarRescatar {
+            cuerpo_intentar,
+            cuerpo_rescatar,
+            ..
+        } => {
+            for st in cuerpo_intentar {
+                scan_stmt_hir(st, "intentar", errs);
+            }
+            for st in cuerpo_rescatar {
+                scan_stmt_hir(st, "rescatar", errs);
+            }
+        }
+        HirItem::Importar { .. } | HirItem::Exportar { .. } | HirItem::Usar { .. } => {}
+    }
+}
+
 #[cfg(test)]
 mod verificacion_3b_tests {
     use super::*;
@@ -2872,11 +3126,13 @@ mod verificacion_3b_tests {
         let e = HirExpresion::Otro(TipoSem::Funcion {
             params: vec![TipoSem::Entero],
             retorno: Box::new(TipoSem::Entero),
+            genericos: Vec::new(),
         });
         let p = prog_funcion(
             TipoSem::Funcion {
                 params: vec![TipoSem::Entero],
                 retorno: Box::new(TipoSem::Entero),
+                genericos: Vec::new(),
             },
             vec![HirSentencia::Retornar(Some(e))],
         );

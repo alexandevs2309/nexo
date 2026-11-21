@@ -125,6 +125,66 @@ pub enum CausaError {
     SentenciaNoPermitidaEnModulo { sentencia: String },
     /// Error al cargar una biblioteca dinámica (FFI básico).
     FFIInvalido { detalle: String },
+
+    // ===== G2.2/G3: semántica de genéricos =====
+    /// Llamada a función genérica sin argumentos de tipo explícitos (inferencia no disponible).
+    /// (G2.2 legado; en G3 la ausencia de inferencia resoluble se reporta con diagnósticos específicos.)
+    InferenciaArgumentosTipoNoDisponible { funcion: String },
+    /// Argumentos de tipo aplicados a una función/callee no genérico.
+    ArgumentosTipoEnFuncionNoGenerica { funcion: String },
+    /// Cantidad incorrecta de argumentos de tipo en llamada genérica explícita.
+    AridadArgumentosTipoInvalida {
+        funcion: String,
+        esperado: usize,
+        obtenido: usize,
+    },
+    /// Argumento de tipo no resoluble o con identidad de parámetro fuera de contexto válido.
+    ArgumentoTipoInvalido { funcion: String, argumento: String },
+    /// Inferencia de argumentos de tipo incompleta (información insuficiente).
+    InferenciaArgumentosTipoIncompleta { funcion: String },
+    /// Inferencia de argumentos de tipo ambigua (múltiples soluciones).
+    InferenciaArgumentosTipoAmbigua { funcion: String },
+    /// Conflicto de tipos durante inferencia/unificación de argumentos de tipo.
+    ConflictoTiposInferencia { funcion: String },
+    /// Operación prohibida por opacidad de parámetro de tipo (V2).
+    OperacionProhibidaPorOpacidad { detalle: String },
+    /// Incompatibilidad concreta tras sustitución/resolución (V3).
+    IncompatibilidadConcretaGenericos { detalle: String },
+    /// Sustitución de tipos incompleta (parámetros libres restantes).
+    SustitucionIncompleta { funcion: String },
+    /// Forwarding genérico inválido.
+    ForwardingGenericoInvalido { funcion: String, detalle: String },
+    /// Dependencia genérica no resoluble.
+    DependenciaGenericaNoResoluble { funcion: String, detalle: String },
+
+    // ===== G4: monomorfización =====
+    /// Recursión polimórfica creciente detectada en instanciación (BAS-7018).
+    RecursionPolimorficaCreciente {
+        funcion: String,
+        instancia: String,
+        tipos: Vec<String>,
+        cadena: Vec<String>,
+        detalle: String,
+    },
+    /// Profundidad de instanciación excedida (BAS-7019).
+    ProfundidadInstanciacionExcedida {
+        funcion: String,
+        instancia: String,
+        tipos: Vec<String>,
+        limite: usize,
+        cadena: Vec<String>,
+        detalle: String,
+    },
+    /// Referencia genérica residual en IR (BAS-7020, gate HIR/MIR).
+    ReferenciaGenericaResidualIr { detalle: String, ubicacion: String },
+    /// Límite de instancias únicas excedido (BAS-7021).
+    LimiteInstanciasExcedido {
+        limite: usize,
+        solicitada: String,
+        tipos: Vec<String>,
+        cadena: Vec<String>,
+        detalle: String,
+    },
 }
 
 /// Límite de iteraciones por ciclo `mientras` (protección frente a bucles infinitos).
@@ -546,6 +606,22 @@ impl CausaError {
             CausaError::SentenciaNoPermitidaEnModulo { .. } => "E1037",
             CausaError::ImportacionesNoDisponibles => "E1038",
             CausaError::FFIInvalido { .. } => "E1040",
+            CausaError::InferenciaArgumentosTipoNoDisponible { .. } => "E1041",
+            CausaError::ArgumentosTipoEnFuncionNoGenerica { .. } => "E1042",
+            CausaError::AridadArgumentosTipoInvalida { .. } => "E1043",
+            CausaError::ArgumentoTipoInvalido { .. } => "E1044",
+            CausaError::InferenciaArgumentosTipoIncompleta { .. } => "E1045",
+            CausaError::InferenciaArgumentosTipoAmbigua { .. } => "E1046",
+            CausaError::ConflictoTiposInferencia { .. } => "E1047",
+            CausaError::OperacionProhibidaPorOpacidad { .. } => "E1048",
+            CausaError::IncompatibilidadConcretaGenericos { .. } => "E1049",
+            CausaError::SustitucionIncompleta { .. } => "E1050",
+            CausaError::ForwardingGenericoInvalido { .. } => "E1051",
+            CausaError::DependenciaGenericaNoResoluble { .. } => "E1052",
+            CausaError::RecursionPolimorficaCreciente { .. } => "E1053",
+            CausaError::ProfundidadInstanciacionExcedida { .. } => "E1054",
+            CausaError::ReferenciaGenericaResidualIr { .. } => "E1055",
+            CausaError::LimiteInstanciasExcedido { .. } => "E1056",
         }
     }
 }
@@ -681,6 +757,118 @@ impl std::fmt::Display for CausaError {
                 )
             }
             CausaError::FFIInvalido { detalle } => write!(f, "error de FFI: {detalle}"),
+            CausaError::InferenciaArgumentosTipoNoDisponible { funcion } => write!(
+                f,
+                "la inferencia de argumentos de tipo para la función '{funcion}' no está disponible en esta etapa; especifique los argumentos de tipo explícitamente"
+            ),
+            CausaError::ArgumentosTipoEnFuncionNoGenerica { funcion } => write!(
+                f,
+                "la función '{funcion}' no es genérica; no acepta argumentos de tipo"
+            ),
+            CausaError::AridadArgumentosTipoInvalida {
+                funcion,
+                esperado,
+                obtenido,
+            } => write!(
+                f,
+                "la función '{funcion}' espera {esperado} argumentos de tipo y se proporcionaron {obtenido}"
+            ),
+            CausaError::ArgumentoTipoInvalido { funcion, argumento } => write!(
+                f,
+                "argumento de tipo '{argumento}' no resoluble o inválido en el contexto de la función '{funcion}'"
+            ),
+            CausaError::InferenciaArgumentosTipoIncompleta { funcion } => write!(
+                f,
+                "no se pueden inferir completamente los argumentos de tipo para la función '{funcion}'"
+            ),
+            CausaError::InferenciaArgumentosTipoAmbigua { funcion } => write!(
+                f,
+                "la inferencia de argumentos de tipo para la función '{funcion}' es ambigua"
+            ),
+            CausaError::ConflictoTiposInferencia { funcion } => write!(
+                f,
+                "conflicto de tipos al inferir los argumentos de tipo para la función '{funcion}'"
+            ),
+            CausaError::OperacionProhibidaPorOpacidad { detalle } => {
+                write!(
+                    f,
+                    "operación no permitida por opacidad de tipo genérico: {detalle}"
+                )
+            }
+            CausaError::IncompatibilidadConcretaGenericos { detalle } => {
+                write!(
+                    f,
+                    "incompatibilidad concreta en aplicación genérica: {detalle}"
+                )
+            }
+            CausaError::SustitucionIncompleta { funcion } => write!(
+                f,
+                "sustitución de tipos incompleta en la aplicación de la función genérica '{funcion}'"
+            ),
+            CausaError::ForwardingGenericoInvalido { funcion, detalle } => write!(
+                f,
+                "forwarding genérico inválido en la función '{funcion}': {detalle}"
+            ),
+            CausaError::DependenciaGenericaNoResoluble { funcion, detalle } => write!(
+                f,
+                "dependencia genérica no resoluble en la función '{funcion}': {detalle}"
+            ),
+            CausaError::RecursionPolimorficaCreciente {
+                funcion,
+                instancia,
+                tipos,
+                cadena,
+                detalle,
+            } => {
+                write!(
+                    f,
+                    "recursión polimórfica creciente en la instanciación de '{funcion}' (instancia '{instancia}', tipos [{}]): {detalle}",
+                    tipos.join(", ")
+                )?;
+                if !cadena.is_empty() {
+                    write!(f, " [cadena: {}]", cadena.join(" -> "))?;
+                }
+                Ok(())
+            }
+            CausaError::ProfundidadInstanciacionExcedida {
+                funcion,
+                instancia,
+                tipos,
+                limite,
+                cadena,
+                detalle,
+            } => {
+                write!(
+                    f,
+                    "profundidad de instanciación excedida para '{funcion}' (instancia '{instancia}', tipos [{}], límite {limite}): {detalle}",
+                    tipos.join(", ")
+                )?;
+                if !cadena.is_empty() {
+                    write!(f, " [cadena: {}]", cadena.join(" -> "))?;
+                }
+                Ok(())
+            }
+            CausaError::ReferenciaGenericaResidualIr { detalle, ubicacion } => write!(
+                f,
+                "referencia genérica residual en IR concreta ({ubicacion}): {detalle}"
+            ),
+            CausaError::LimiteInstanciasExcedido {
+                limite,
+                solicitada,
+                tipos,
+                cadena,
+                detalle,
+            } => {
+                write!(
+                    f,
+                    "límite de instancias únicas excedido (límite {limite}) al solicitar '{solicitada}' con tipos [{}]: {detalle}",
+                    tipos.join(", ")
+                )?;
+                if !cadena.is_empty() {
+                    write!(f, " [cadena: {}]", cadena.join(" -> "))?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -840,7 +1028,7 @@ impl Entorno {
             })
     }
 
-    fn llamar_funcion_por_nombre_resultado(
+    pub fn llamar_funcion_por_nombre_resultado(
         &mut self,
         nombre: &str,
         args: &[Valor],
@@ -1551,7 +1739,7 @@ impl Entorno {
                     cuerpo,
                     linea,
                     columna,
-                    publico: _,
+                    ..
                 } => {
                     if self.existe_en_ambito_actual(&nombre) {
                         return Err(error(
@@ -1889,7 +2077,7 @@ impl Entorno {
                     cuerpo,
                     linea,
                     columna,
-                    publico: _,
+                    ..
                 } => {
                     // Verificar nombre reservado de builtin (ADR-0013 §3.1)
                     if NOMBRES_RESERVADOS.contains(&nombre.as_str()) {
@@ -2572,6 +2760,8 @@ fn convertir_a_tipo_anotado(valor: Valor, tipo: &TipoAnotacion) -> Option<Valor>
             Valor::Nulo => Some(valor),
             _ => None,
         },
+        // G2: referencia sintáctica a parámetro de tipo (sin semántica de genéricos).
+        TipoAnotacion::Parametro(_) => Some(valor),
     }
 }
 
@@ -2612,8 +2802,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             parametros,
             tipo_retorno: _,
             cuerpo,
-            linea: _,
-            columna: _,
+            ..
         } => {
             let capturado = Arc::new(Mutex::new(env.clone()));
             Ok(Valor::FuncionClausura {
@@ -2752,6 +2941,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
         Expresion::Llamada {
             nombre,
             argumentos,
+            argumentos_tipo: _,
             linea,
             columna,
         } => evaluar_llamada_directa(nombre, argumentos, *linea, *columna, env)?.ok_or_else(|| {
@@ -3319,6 +3509,7 @@ fn evaluar_expresion_sentencia(
         Expresion::Llamada {
             nombre,
             argumentos,
+            argumentos_tipo: _,
             linea,
             columna,
         } => evaluar_llamada_directa(nombre, argumentos, *linea, *columna, env),
@@ -5277,6 +5468,7 @@ fn evaluar_builtin(
                 let expr = Expresion::Llamada {
                     nombre: func_name.clone(),
                     argumentos: Vec::new(),
+                    argumentos_tipo: Vec::new(),
                     linea: 0,
                     columna: 0,
                 };

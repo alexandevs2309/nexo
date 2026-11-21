@@ -35,7 +35,7 @@ pub struct Simbodo {
 }
 
 /// Tabla de símbodos de un programa.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TablaSimbodo {
     simbodos: HashMap<SimbodoId, Simbodo>,
     por_nombre: HashMap<(AmbitoId, String), SimbodoId>,
@@ -82,7 +82,7 @@ impl TablaSimbodo {
 }
 
 /// Gestor de ámbitos como pila.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GestorAmbitos {
     ámbitos: Vec<AmbitoId>,
     siguiente_ambito: u32,

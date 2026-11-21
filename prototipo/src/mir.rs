@@ -1449,13 +1449,16 @@ fn tipos_compatibles_mir(esperado: &TipoSem, obtenido: &TipoSem) -> bool {
             TipoSem::Funcion {
                 params: p1,
                 retorno: r1,
+                genericos: g1,
             },
             TipoSem::Funcion {
                 params: p2,
                 retorno: r2,
+                genericos: g2,
             },
         ) => {
-            p1.len() == p2.len()
+            g1 == g2
+                && p1.len() == p2.len()
                 && p1.iter().zip(p2).all(|(a, b)| tipos_compatibles_mir(a, b))
                 && tipos_compatibles_mir(r1, r2)
         }
@@ -1572,6 +1575,56 @@ fn tipo_rvalue(rv: &MirRvalue, f: &MirFunction, prog: &MirPrograma) -> Option<Ti
         MirRvalue::Longitud { .. } => Some(TipoSem::Entero),
         MirRvalue::ObjetoModulo { .. } => None,
     }
+}
+
+/// Gate G4: detecta parámetros genéricos residuales en MIR concreto (BAS-7020/E1055).
+pub fn verificar_sin_residuos_genericos(programa: &MirPrograma) -> Result<(), String> {
+    let mut errs = Vec::new();
+    for (i, t) in programa.globals.iter().enumerate() {
+        if crate::semantico::contiene_param_generico(t) {
+            errs.push(format!("global g{i}: {}", t.nombre()));
+        }
+    }
+    for f in &programa.funciones {
+        if crate::semantico::contiene_param_generico(&f.retorno) {
+            errs.push(format!("retorno de '{}': {}", f.nombre, f.retorno.nombre()));
+        }
+        for (lid, t) in f.params.iter() {
+            if crate::semantico::contiene_param_generico(t) {
+                errs.push(format!(
+                    "parámetro local {} de '{}': {}",
+                    lid.0,
+                    f.nombre,
+                    t.nombre()
+                ));
+            }
+        }
+        for (i, t) in f.locals.iter().enumerate() {
+            if crate::semantico::contiene_param_generico(t) {
+                errs.push(format!("local _{i} de '{}': {}", f.nombre, t.nombre()));
+            }
+        }
+    }
+    if errs.is_empty() {
+        return Ok(());
+    }
+    let detalle = errs.join("; ");
+    let ubicacion = programa
+        .funciones
+        .first()
+        .map(|f| f.nombre.clone())
+        .unwrap_or_else(|| "mir".to_string());
+    let err = crate::evaluador::ErrorEjecucion {
+        mensaje: format!("referencia genérica residual en IR concreta ({ubicacion}): {detalle}"),
+        causa: Box::new(crate::evaluador::CausaError::ReferenciaGenericaResidualIr {
+            detalle,
+            ubicacion,
+        }),
+        linea: 1,
+        columna: 1,
+        archivo: None,
+    };
+    Err(err.to_string())
 }
 
 impl VerificadorMir {

@@ -2721,7 +2721,7 @@ fn convertir_tipo(v: Valor, t: &crate::semantico::TipoSem) -> Result<Valor, Erro
             }
             _ => Err(incompatible()),
         },
-        TipoSem::Funcion { .. } | TipoSem::Desconocido => Ok(v),
+        TipoSem::Funcion { .. } | TipoSem::Param(_) | TipoSem::Desconocido => Ok(v),
     }
 }
 

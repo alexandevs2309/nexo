@@ -19,6 +19,26 @@ fn parsear(src: &str) -> Vec<basilisco::Sentencia> {
 fn tw_resultado(src: &str) -> ResultadoNormalizado {
     // Misma convención histórica del harness: definir fuente y luego invocar main().
     let ss = parsear(&format!("{}\nmain()", src));
+    let mut ctx = ContextoSemantico::nuevo();
+    let errores_sem = ctx.analizar_programa(&ss);
+    if let Some(e) = errores_sem.first() {
+        use basilisco::CausaError;
+        let relevante = matches!(
+            e.causa.as_ref(),
+            CausaError::ReasignacionInmutable { .. }
+                | CausaError::CondicionNoLogica { .. }
+                | CausaError::VariableNoDefinida(_)
+        );
+        if relevante {
+            return ResultadoNormalizado::Err(normalizar_error_tw(e));
+        }
+        // Para otros errores semánticos, preservar comportamiento histórico:
+        // continuar hacia ejecución para comparar resultados runtime.
+    }
+    let (ss, errs_g4) = ctx.monomorfizar_programa(&ss);
+    if let Some(e) = errs_g4.first() {
+        return ResultadoNormalizado::Err(normalizar_error_tw(e));
+    }
     let mut env = Entorno::nueva();
     match env.ejecutar_programa(&ss) {
         Ok(v) => ResultadoNormalizado::Ok {
@@ -46,6 +66,10 @@ fn vm_resultado(src: &str) -> ResultadoNormalizado {
         if relevante {
             return ResultadoNormalizado::Err(normalizar_error_tw(e));
         }
+    }
+    let (ss, errs_g4) = ctx.monomorfizar_programa(&ss);
+    if let Some(e) = errs_g4.first() {
+        return ResultadoNormalizado::Err(normalizar_error_tw(e));
     }
     let hir = match hir::lower_programa(&ss, &ctx) {
         Ok(h) => h,
@@ -1217,3 +1241,168 @@ fn diff_gap051_local_lista_tipada_rechaza_elemento_incompatible() {
 // asignación/mutación de campos de objeto (obj.campo = ...) ni módulo file-based TW↔VM
 // comparable en este harness (VM sin cargador de módulos importar/usar). Casos omitidos
 // se documentan como limitaciones con evidencia, sin inventar equivalencias.
+
+// ---------------------------------------------------------------------------
+// G5 — Integración de motores y paridad (genéricos monomorfizados)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn diff_g5_generica_simple_identidad() {
+    assert_parity(
+        "funcion id<T>(x: T) -> T { retornar x }\nfuncion main() -> entero { retornar id::<entero>(42) }",
+    );
+}
+
+#[test]
+fn diff_g5_generica_inferencia() {
+    assert_parity(
+        "funcion id<T>(x: T) -> T { retornar x }\nfuncion main() -> entero { retornar id(7) }",
+    );
+}
+
+#[test]
+fn diff_g5_multiples_parametros_tipo() {
+    assert_parity(
+        "funcion par<A, B>(a: A, b: B) -> A { retornar a }\nfuncion main() -> entero { retornar par::<entero, texto>(10, \"x\") }",
+    );
+}
+
+#[test]
+fn diff_g5_especializaciones_tipos_diferentes() {
+    assert_parity(
+        "funcion id<T>(x: T) -> T { retornar x }\nfuncion main() -> entero {\n  var a: entero = id::<entero>(1)\n  var b: texto = id::<texto>(\"ok\")\n  si b == \"ok\" { retornar a }\n  retornar 0\n}",
+    );
+}
+
+#[test]
+fn diff_g5_deduplicacion_instancias_compartidas() {
+    assert_parity(
+        "funcion id<T>(x: T) -> T { retornar x }\nfuncion main() -> entero { retornar id::<entero>(1) + id::<entero>(2) }",
+    );
+}
+
+#[test]
+fn diff_g5_llamadas_genericas_transitivas() {
+    assert_parity(
+        "funcion id<T>(x: T) -> T { retornar x }\nfuncion envolver<T>(x: T) -> T { retornar id::<T>(x) }\nfuncion main() -> entero { retornar envolver::<entero>(9) }",
+    );
+}
+
+#[test]
+fn diff_g5_forwarding_generico() {
+    assert_parity(
+        "funcion id<T>(x: T) -> T { retornar x }\nfuncion reenviar<T>(x: T) -> T { retornar id(x) }\nfuncion main() -> entero { retornar reenviar::<entero>(3) }",
+    );
+}
+
+#[test]
+fn diff_g5_recursion_monomorfica() {
+    assert_parity(
+        "funcion cuenta<T>(n: entero, v: T) -> entero {\n  si n <= 0 { retornar 0 }\n  retornar 1 + cuenta::<T>(n - 1, v)\n}\nfuncion main() -> entero { retornar cuenta::<entero>(4, 1) }",
+    );
+}
+
+#[test]
+fn diff_g5_coleccion_lista_generica() {
+    assert_parity(
+        "funcion primero<T>(xs: lista<T>) -> T { retornar xs[0] }\nfuncion main() -> entero { retornar primero::<entero>([10, 20, 30]) }",
+    );
+}
+
+#[test]
+fn diff_g5_coleccion_arreglo_generico() {
+    assert_parity(
+        "funcion cabeza<T>(xs: arreglo<T, 3>) -> T { retornar xs[0] }\nfuncion main() -> entero { var a: arreglo<entero, 3> = [7, 8, 9]\n retornar cabeza::<entero>(a) }",
+    );
+}
+
+#[test]
+fn diff_g5_error_recursion_polimorfica_creciente_equivalente() {
+    let src = "funcion f<T>(x: T) -> entero { retornar f::<lista<T>>(x) }\nfuncion main() -> entero { retornar f::<entero>(1) }";
+    let tw = tw_resultado(src);
+    let vmr = vm_resultado(src);
+    let cmp = comparar_semantica(&tw, &vmr);
+    assert!(
+        matches!(
+            cmp,
+            Comparacion::Equivalente | Comparacion::DiferenciaDiagnostico(_)
+        ),
+        "Se esperaba rechazo equivalente por recursión polimórfica creciente.\nTREE-WALK: {tw:?}\nVM: {vmr:?}\nCMP: {cmp:?}"
+    );
+    assert!(
+        matches!(tw, ResultadoNormalizado::Err(_)),
+        "TW debe fallar: {tw:?}"
+    );
+    assert!(
+        matches!(vmr, ResultadoNormalizado::Err(_)),
+        "VM debe fallar: {vmr:?}"
+    );
+}
+
+#[test]
+fn diff_g5_error_semantico_generico_equivalente() {
+    let src = "funcion id<T>(x: T) -> T { retornar x }\nfuncion main() -> entero { retornar id::<entero, entero>(1) }";
+    let tw = tw_resultado(src);
+    let vmr = vm_resultado(src);
+    let cmp = comparar_semantica(&tw, &vmr);
+    assert!(
+        matches!(
+            cmp,
+            Comparacion::Equivalente | Comparacion::DiferenciaDiagnostico(_)
+        ),
+        "Se esperaba error semántico genérico equivalente.\nTREE-WALK: {tw:?}\nVM: {vmr:?}\nCMP: {cmp:?}"
+    );
+}
+
+#[test]
+fn diff_g5_error_residual_generico_como_valor_equivalente() {
+    let src = "funcion id<T>(x: T) -> T { retornar x }\nfuncion aplicar(f, x) { retornar f(x) }\nfuncion main() -> entero { retornar aplicar(id, 5) }";
+    let tw = tw_resultado(src);
+    let vmr = vm_resultado(src);
+    let cmp = comparar_semantica(&tw, &vmr);
+    assert!(
+        matches!(
+            cmp,
+            Comparacion::Equivalente | Comparacion::DiferenciaDiagnostico(_)
+        ),
+        "Se esperaba rechazo equivalente por referencia genérica residual/usada como valor.\nTREE-WALK: {tw:?}\nVM: {vmr:?}\nCMP: {cmp:?}"
+    );
+    assert!(
+        matches!(tw, ResultadoNormalizado::Err(_)),
+        "TW debe fallar: {tw:?}"
+    );
+    assert!(
+        matches!(vmr, ResultadoNormalizado::Err(_)),
+        "VM debe fallar: {vmr:?}"
+    );
+}
+
+#[test]
+fn diff_g5_error_runtime_en_especializacion_equivalente() {
+    let src = "funcion dividir<T>(a: entero, b: entero, x: T) -> entero { retornar a / b }\nfuncion main() -> entero { retornar dividir::<texto>(1, 0, \"x\") }";
+    let tw = tw_resultado(src);
+    let vmr = vm_resultado(src);
+    let cmp = comparar_semantica(&tw, &vmr);
+    assert!(
+        matches!(
+            cmp,
+            Comparacion::Equivalente | Comparacion::DiferenciaDiagnostico(_)
+        ),
+        "Se esperaba error runtime equivalente dentro de especialización genérica.\nTREE-WALK: {tw:?}\nVM: {vmr:?}\nCMP: {cmp:?}"
+    );
+    assert!(
+        matches!(tw, ResultadoNormalizado::Err(_)),
+        "TW debe fallar: {tw:?}"
+    );
+    assert!(
+        matches!(vmr, ResultadoNormalizado::Err(_)),
+        "VM debe fallar: {vmr:?}"
+    );
+}
+
+#[test]
+fn diff_g5_no_regresion_no_generico() {
+    assert_parity(
+        "funcion suma(a: entero, b: entero) -> entero { retornar a + b }\nfuncion main() -> entero { retornar suma(2, 3) }",
+    );
+}

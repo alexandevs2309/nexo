@@ -35,6 +35,7 @@ fn tipo_str(t: &TipoAnotacion) -> String {
         TipoAnotacion::Lista(elemento) => {
             format!("lista<{}>", tipo_str(elemento))
         }
+        TipoAnotacion::Parametro(n) => n.clone(),
     }
 }
 
@@ -107,10 +108,18 @@ fn expr_str(e: &Expresion) -> String {
             }
         }
         Expresion::Llamada {
-            nombre, argumentos, ..
+            nombre,
+            argumentos,
+            argumentos_tipo,
+            ..
         } => {
             let args: Vec<String> = argumentos.iter().map(expr_str).collect();
-            format!("{}({})", nombre, args.join(", "))
+            if argumentos_tipo.is_empty() {
+                format!("{}({})", nombre, args.join(", "))
+            } else {
+                let targs: Vec<String> = argumentos_tipo.iter().map(tipo_str).collect();
+                format!("{}::<{}>({})", nombre, targs.join(", "), args.join(", "))
+            }
         }
         Expresion::ArregloLiteral { elementos, .. } => {
             let inner: Vec<String> = elementos.iter().map(expr_str).collect();
@@ -280,6 +289,7 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
         }
         Sentencia::Funcion {
             nombre,
+            parametros_tipo,
             parametros,
             tipo_retorno,
             cuerpo,
@@ -292,6 +302,11 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
             }
             out.push_str("funcion ");
             out.push_str(nombre);
+            if !parametros_tipo.is_empty() {
+                out.push('<');
+                out.push_str(&parametros_tipo.join(", "));
+                out.push('>');
+            }
             out.push('(');
             let params: Vec<String> = parametros
                 .iter()
