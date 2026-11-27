@@ -25,6 +25,17 @@ pub enum Valor {
     Celda(Arc<Mutex<Valor>>),
     /// Clausura: nombre de función + valores capturados (celdas/valores).
     Clausura(String, Vec<Valor>),
+    /// Estructura nominal (Fase 09 B).
+    EstructuraNominal {
+        tipo_id: u32,
+        campos: Vec<Valor>,
+    },
+    /// Enumeración nominal (Fase 09 B).
+    EnumNominal {
+        tipo_id: u32,
+        variante: u32,
+        payload: Vec<Valor>,
+    },
 }
 
 impl PartialEq for Valor {
@@ -42,6 +53,28 @@ impl PartialEq for Valor {
             (Valor::Funcion(a), Valor::Funcion(b)) => a == b,
             (Valor::Celda(a), Valor::Celda(b)) => Arc::ptr_eq(a, b),
             (Valor::Clausura(na, ca), Valor::Clausura(nb, cb)) => na == nb && ca == cb,
+            (
+                Valor::EstructuraNominal {
+                    tipo_id: a,
+                    campos: ca,
+                },
+                Valor::EstructuraNominal {
+                    tipo_id: b,
+                    campos: cb,
+                },
+            ) => a == b && ca == cb,
+            (
+                Valor::EnumNominal {
+                    tipo_id: ta,
+                    variante: va,
+                    payload: pa,
+                },
+                Valor::EnumNominal {
+                    tipo_id: tb,
+                    variante: vb,
+                    payload: pb,
+                },
+            ) => ta == tb && va == vb && pa == pb,
             _ => false,
         }
     }
@@ -103,6 +136,34 @@ impl fmt::Display for Valor {
             Valor::Funcion(s) => write!(f, "<función: {}>", s),
             Valor::Celda(_) => write!(f, "<celda>"),
             Valor::Clausura(nombre, _) => write!(f, "<clausura {}>", nombre),
+            Valor::EstructuraNominal { tipo_id, campos } => {
+                write!(f, "<estructura#{} {{", tipo_id)?;
+                for (i, c) in campos.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", c)?;
+                }
+                write!(f, "}}>")
+            }
+            Valor::EnumNominal {
+                tipo_id,
+                variante,
+                payload,
+            } => {
+                write!(f, "<enum#{}::{}", tipo_id, variante)?;
+                if !payload.is_empty() {
+                    write!(f, "(")?;
+                    for (i, c) in payload.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", c)?;
+                    }
+                    write!(f, ")")?;
+                }
+                write!(f, ">")
+            }
         }
     }
 }
@@ -120,7 +181,7 @@ pub enum TipoConv {
     Lista(Box<TipoConv>),
     /// (tipo_elemento, longitud) — la VM solo convierte si `len == n`.
     Arreglo(Box<TipoConv>, usize),
-    Coleccion(Box<TipoConv>),
+    Coleccion(Box<TipoConv>, usize),
 }
 
 impl Valor {
@@ -150,8 +211,8 @@ impl Valor {
                 }
                 otro => otro,
             },
-            TipoConv::Coleccion(elem) => match self {
-                Valor::Arreglo(elems) | Valor::Lista(elems) => {
+            TipoConv::Coleccion(elem, n) => match self {
+                Valor::Lista(elems) | Valor::Arreglo(elems) if elems.len() == *n => {
                     Valor::Lista(elems.into_iter().map(|e| e.convertir_a(elem)).collect())
                 }
                 otro => otro,
@@ -452,6 +513,33 @@ impl Valor {
             (Valor::Funcion(a), Valor::Funcion(b)) => a == b,
             (Valor::Celda(a), Valor::Celda(b)) => std::sync::Arc::ptr_eq(a, b),
             (Valor::Clausura(na, ca), Valor::Clausura(nb, cb)) => na == nb && ca == cb,
+            (
+                Valor::EstructuraNominal {
+                    tipo_id: a,
+                    campos: ca,
+                },
+                Valor::EstructuraNominal {
+                    tipo_id: b,
+                    campos: cb,
+                },
+            ) => a == b && ca.iter().zip(cb).all(|(x, y)| x.igual(y)),
+            (
+                Valor::EnumNominal {
+                    tipo_id: ta,
+                    variante: va,
+                    payload: pa,
+                },
+                Valor::EnumNominal {
+                    tipo_id: tb,
+                    variante: vb,
+                    payload: pb,
+                },
+            ) => {
+                ta == tb
+                    && va == vb
+                    && pa.len() == pb.len()
+                    && pa.iter().zip(pb).all(|(x, y)| x.igual(y))
+            }
             _ => false,
         }
     }
@@ -489,6 +577,8 @@ impl Valor {
             Valor::Funcion(_) => "función",
             Valor::Celda(_) => "celda",
             Valor::Clausura(_, _) => "función",
+            Valor::EstructuraNominal { .. } => "estructura",
+            Valor::EnumNominal { .. } => "enum",
         }
     }
 
@@ -514,6 +604,71 @@ impl Valor {
             }
             otro => Err(RuntimeError(format!(
                 "se esperaba «celda», se encontró «{}»",
+                otro.nombre()
+            ))),
+        }
+    }
+
+    // ---------- Nominales (Fase 09 B) ----------
+
+    pub fn campo_nominal(&self, idx: usize) -> Result<Valor, RuntimeError> {
+        match self {
+            Valor::EstructuraNominal { campos, .. } => campos.get(idx).cloned().ok_or_else(|| {
+                RuntimeError(format!(
+                    "campo nominal {} fuera de rango (tamaño {})",
+                    idx,
+                    campos.len()
+                ))
+            }),
+            otro => Err(RuntimeError(format!(
+                "se esperaba «estructura nominal», se encontró «{}»",
+                otro.nombre()
+            ))),
+        }
+    }
+
+    pub fn asignar_campo_nominal(&mut self, idx: usize, v: Valor) -> Result<(), RuntimeError> {
+        match self {
+            Valor::EstructuraNominal { campos, .. } => {
+                if idx < campos.len() {
+                    campos[idx] = v;
+                    Ok(())
+                } else {
+                    Err(RuntimeError(format!(
+                        "campo nominal {} fuera de rango (tamaño {})",
+                        idx,
+                        campos.len()
+                    )))
+                }
+            }
+            otro => Err(RuntimeError(format!(
+                "se esperaba «estructura nominal», se encontró «{}»",
+                otro.nombre()
+            ))),
+        }
+    }
+
+    pub fn discriminante_enum(&self) -> Result<i64, RuntimeError> {
+        match self {
+            Valor::EnumNominal { variante, .. } => Ok(*variante as i64),
+            otro => Err(RuntimeError(format!(
+                "se esperaba «enum», se encontró «{}»",
+                otro.nombre()
+            ))),
+        }
+    }
+
+    pub fn payload_enum(&self, idx: usize) -> Result<Valor, RuntimeError> {
+        match self {
+            Valor::EnumNominal { payload, .. } => payload.get(idx).cloned().ok_or_else(|| {
+                RuntimeError(format!(
+                    "payload enum {} fuera de rango (tamaño {})",
+                    idx,
+                    payload.len()
+                ))
+            }),
+            otro => Err(RuntimeError(format!(
+                "se esperaba «enum», se encontró «{}»",
                 otro.nombre()
             ))),
         }
@@ -624,6 +779,7 @@ impl Valor {
             Valor::Logico(true) => 1,
             Valor::Logico(false) => 0,
             Valor::Nulo => 0,
+            Valor::EnumNominal { variante, .. } => *variante as i64,
             _ => 0,
         }
     }

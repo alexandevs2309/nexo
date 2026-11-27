@@ -1,0 +1,181 @@
+{
+  "name": "basilisco",
+  "displayName": "Basilisco",
+  "description": "Soporte de BASILISCO para Visual Studio Code: sintaxis, diagnósticos, LSP, DAP, navegación, formateo y comandos.",
+  "version": "0.4.0",
+  "publisher": "alexandevs",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters",
+    "Snippets",
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onLanguage:basilisco",
+    "onDebug:bas-dap"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "basilisco",
+        "aliases": [
+          "Basilisco",
+          "bsk"
+        ],
+        "extensions": [
+          ".bsk",
+          ".nexo"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "basilisco",
+        "scopeName": "source.basilisco",
+        "path": "./syntaxes/basilisco.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "basilisco",
+        "path": "./snippets/basilisco.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "basilisco.runFile",
+        "title": "BASILISCO: Ejecutar archivo"
+      },
+      {
+        "command": "basilisco.formatFile",
+        "title": "BASILISCO: Formatear archivo"
+      },
+      {
+        "command": "basilisco.checkFile",
+        "title": "BASILISCO: Analizar archivo actual"
+      },
+      {
+        "command": "basilisco.analyzeFile",
+        "title": "BASILISCO: Analizar archivo"
+      },
+      {
+        "command": "basilisco.testProject",
+        "title": "BASILISCO: Probar proyecto"
+      },
+      {
+        "command": "basilisco.initProject",
+        "title": "BASILISCO: Inicializar proyecto"
+      },
+      {
+        "command": "basilisco.listPackages",
+        "title": "BASILISCO: Ver paquetes"
+      },
+      {
+        "command": "basilisco.checkInstallation",
+        "title": "BASILISCO: Verificar instalación"
+      },
+      {
+        "command": "basilisco.restartDiagnostics",
+        "title": "BASILISCO: Reanalizar documento"
+      },
+      {
+        "command": "basilisco.showOutput",
+        "title": "BASILISCO: Mostrar salida"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "bas-dap",
+        "label": "Basilisco DAP",
+        "languages": [
+          "basilisco"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Archivo .bsk a depurar"
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "bas-dap",
+            "request": "launch",
+            "name": "Depurar Basilisco",
+            "program": "${file}"
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Basilisco",
+      "properties": {
+        "basilisco.executable": {
+          "type": "string",
+          "default": "bsk",
+          "description": "Ejecutable de BASILISCO (por ejemplo: bsk o ruta absoluta)."
+        },
+        "basilisco.path": {
+          "type": "string",
+          "default": "",
+          "description": "Alias de compatibilidad legado; se prefiere basilisco.executable.",
+          "deprecationMessage": "Usa basilisco.executable"
+        },
+        "basilisco.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Argumentos adicionales para el ejecutable BASILISCO."
+        },
+        "basilisco.diagnostics.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Habilitar diagnósticos BASILISCO."
+        },
+        "basilisco.diagnostics.delay": {
+          "type": "number",
+          "default": 450,
+          "minimum": 100,
+          "maximum": 3000,
+          "description": "Demora en milisegundos antes del análisis."
+        },
+        "basilisco.semanticHighlighting.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Habilitar resaltado semántico adicional."
+        },
+        "basilisco.formatter.indentSize": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Tamaño de indentación del formateador."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node ./test/runTest.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^2.4.1",
+    "mocha": "^10.7.3",
+    "glob": "^10.4.5"
+  }
+}

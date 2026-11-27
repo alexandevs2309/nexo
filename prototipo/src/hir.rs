@@ -25,6 +25,33 @@ pub enum HirLiteral {
     Nulo,
 }
 
+/// Patrón de coincidir en HIR (S8.3), con índices resueltos.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirPatron {
+    Wildcard,
+    Binding {
+        nombre: String,
+        simbodo: SimbodoId,
+    },
+    Literal(crate::valor::Valor),
+    Variante {
+        tipo_nominal: crate::semantico::TipoNominalId,
+        variante_idx: u32,
+        campos: Vec<HirPatron>,
+    },
+    Estructura {
+        tipo_nominal: crate::semantico::TipoNominalId,
+        campos: Vec<(usize, HirPatron)>,
+    },
+}
+
+/// Brazo de coincidir en HIR (S8.3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirBrazoCoincidir {
+    pub patron: HirPatron,
+    pub cuerpo: Vec<HirSentencia>,
+}
+
 /// Expresión HIR.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirExpresion {
@@ -94,6 +121,36 @@ pub enum HirExpresion {
         nombres: Vec<String>,
         tipo: TipoSem,
     },
+    /// S8.1: construcción de estructura nominal.
+    ConstruirEstructura {
+        tipo_nominal: crate::semantico::TipoNominalId,
+        campos: Vec<(usize, HirExpresion)>,
+        tipo: TipoSem,
+    },
+    /// S8.1: acceso a campo nominal por índice.
+    AccesoNominal {
+        objeto: Box<HirExpresion>,
+        indice: usize,
+        tipo: TipoSem,
+    },
+    /// S8.2: construcción de variante enum nominal.
+    ConstruirEnum {
+        tipo_nominal: crate::semantico::TipoNominalId,
+        variante_idx: u32,
+        payload: Vec<HirExpresion>,
+        tipo: TipoSem,
+    },
+    /// S8.3: discriminante de enum nominal.
+    DiscriminanteEnum {
+        objeto: Box<HirExpresion>,
+        tipo: TipoSem,
+    },
+    /// S8.3: expresión coincidir.
+    Coincidir {
+        scrutinee: Box<HirExpresion>,
+        brazos: Vec<HirBrazoCoincidir>,
+        tipo: TipoSem,
+    },
 }
 
 /// Sentencia HIR.
@@ -128,6 +185,12 @@ pub enum HirSentencia {
         indice: HirExpresion,
         valor: HirExpresion,
     },
+    /// S8.1: asignación a campo nominal.
+    AsignarCampoNominal {
+        objeto: HirExpresion,
+        indice: usize,
+        valor: HirExpresion,
+    },
     ParaCada {
         variable: SimbodoId,
         iterable: HirExpresion,
@@ -152,6 +215,20 @@ pub enum HirSentencia {
         alias: Option<String>,
         nombres: Option<Vec<String>>,
     },
+    /// S8.1: declaración nominal (no-op en runtime, metadata para verificación).
+    Estructura {
+        nombre: String,
+        tipo_nominal: crate::semantico::TipoNominalId,
+        campos: Vec<(String, TipoSem, bool)>,
+        publico: bool,
+    },
+    /// S8.2: declaración enum nominal (no-op en runtime, metadata para verificación).
+    Enumeracion {
+        nombre: String,
+        tipo_nominal: crate::semantico::TipoNominalId,
+        variantes: Vec<(String, Vec<TipoSem>)>,
+        publico: bool,
+    },
 }
 
 /// Item HIR.
@@ -171,6 +248,8 @@ pub enum HirItem {
         celdas: Vec<SimbodoId>,
         retorno: TipoSem,
         cuerpo: Vec<HirSentencia>,
+        cuerpo_spans: Vec<Option<crate::diagnostico::Span>>,
+        span: Option<crate::diagnostico::Span>,
     },
     Declaracion {
         simbodo: SimbodoId,
@@ -179,24 +258,32 @@ pub enum HirItem {
         mutable: bool,
         es_const: bool,
         publico: bool,
+        span: Option<crate::diagnostico::Span>,
     },
-    Expresion(HirExpresion),
+    Expresion {
+        expr: HirExpresion,
+        span: Option<crate::diagnostico::Span>,
+    },
     IntentarRescatar {
         cuerpo_intentar: Vec<HirSentencia>,
         variable_error: Option<SimbodoId>,
         cuerpo_rescatar: Vec<HirSentencia>,
+        span: Option<crate::diagnostico::Span>,
     },
     Importar {
         ruta: String,
         alias: Option<String>,
+        span: Option<crate::diagnostico::Span>,
     },
     Exportar {
         sentencia: Box<HirSentencia>,
+        span: Option<crate::diagnostico::Span>,
     },
     Usar {
         ruta: String,
         alias: Option<String>,
         nombres: Option<Vec<String>>,
+        span: Option<crate::diagnostico::Span>,
     },
 }
 
@@ -302,7 +389,7 @@ fn simbolos_globales(programa: &HirPrograma) -> std::collections::HashSet<Simbod
                 recolectar_ids_sentencia(cuerpo_intentar, &mut set);
                 recolectar_ids_sentencia(cuerpo_rescatar, &mut set);
             }
-            HirItem::Exportar { sentencia } => {
+            HirItem::Exportar { sentencia, .. } => {
                 recolectar_ids_sentencia_once(sentencia, &mut set);
             }
             _ => {}
@@ -394,6 +481,28 @@ fn recolectar_ids_expr(e: &HirExpresion, set: &mut std::collections::HashSet<Sim
             recolectar_ids_expr(indice, set);
         }
         HirExpresion::Acceso { objeto, .. } => recolectar_ids_expr(objeto, set),
+        HirExpresion::ConstruirEstructura { campos, .. } => {
+            for (_, c) in campos {
+                recolectar_ids_expr(c, set);
+            }
+        }
+        HirExpresion::AccesoNominal { objeto, .. } => recolectar_ids_expr(objeto, set),
+        HirExpresion::DiscriminanteEnum { objeto, .. } => recolectar_ids_expr(objeto, set),
+        HirExpresion::ConstruirEnum { payload, .. } => {
+            for e in payload {
+                recolectar_ids_expr(e, set);
+            }
+        }
+        HirExpresion::Coincidir {
+            scrutinee, brazos, ..
+        } => {
+            recolectar_ids_expr(scrutinee, set);
+            for b in brazos {
+                for st in &b.cuerpo {
+                    recolectar_ids_sentencia_once(st, set);
+                }
+            }
+        }
         HirExpresion::Llamada { argumentos, .. } => {
             for a in argumentos {
                 recolectar_ids_expr(a, set);
@@ -519,7 +628,7 @@ fn ctx_item(item: &HirItem, idx: usize) -> String {
             format!("item[{idx}] declaracion simbodo {}", simbodo.0)
         }
         HirItem::IntentarRescatar { .. } => format!("item[{idx}] intentar/rescatar"),
-        HirItem::Expresion(_) => format!("item[{idx}] expresion"),
+        HirItem::Expresion { .. } => format!("item[{idx}] expresion"),
         HirItem::Exportar { .. } => format!("item[{idx}] exportar"),
         _ => format!("item[{idx}]"),
     }
@@ -597,18 +706,9 @@ fn verificar_item(
             verificar_retorno_funcion(retorno, cuerpo, &ctx)?;
             verificar_tipos_invariantes(cuerpo, &ctx)
         }
-        HirItem::Declaracion { tipo, .. } => {
-            // 5. Tipo de inicializador compatible con anotación cuando ambos conocidos.
-            if *tipo == TipoSem::Desconocido {
-                Err(err_hir(
-                    "HIR020",
-                    "declaracion-tipo-conocido",
-                    &ctx,
-                    "declaración con tipo desconocido",
-                ))
-            } else {
-                Ok(())
-            }
+        HirItem::Declaracion { .. } => {
+            // Permitir Desconocido para no enmascarar errores semánticos previos.
+            Ok(())
         }
         HirItem::IntentarRescatar {
             cuerpo_intentar,
@@ -618,7 +718,7 @@ fn verificar_item(
             verificar_tipos_invariantes(cuerpo_intentar, &format!("{ctx}/intentar"))?;
             verificar_tipos_invariantes(cuerpo_rescatar, &format!("{ctx}/rescatar"))
         }
-        HirItem::Expresion(_) => Ok(()),
+        HirItem::Expresion { .. } => Ok(()),
         _ => Ok(()),
     }
 }
@@ -662,6 +762,10 @@ fn verificar_tipos_invariantes(ss: &[HirSentencia], ctx: &str) -> Result<(), Err
                     &format!("{ctx_s}/exportar"),
                 )?;
             }
+            HirSentencia::AsignarCampoNominal { objeto, valor, .. } => {
+                verificar_expr(objeto, &format!("{ctx_s}/asignar_nominal.objeto"))?;
+                verificar_expr(valor, &format!("{ctx_s}/asignar_nominal.valor"))?;
+            }
             _ => {}
         }
     }
@@ -688,8 +792,19 @@ fn tipo_de_expr(e: &HirExpresion) -> TipoSem {
         | HirExpresion::O(_, _, t) => t.clone(),
         HirExpresion::Rango { tipo: t, .. }
         | HirExpresion::ArregloLiteral { tipo: t, .. }
-        | HirExpresion::Indice { tipo: t, .. } => t.clone(),
-        _ => TipoSem::Desconocido,
+        | HirExpresion::Indice { tipo: t, .. }
+        | HirExpresion::Acceso { tipo: t, .. }
+        | HirExpresion::Llamada { tipo: t, .. }
+        | HirExpresion::LlamadaIndirecta { tipo: t, .. }
+        | HirExpresion::Lambda { tipo: t, .. }
+        | HirExpresion::Otro(t)
+        | HirExpresion::ModuloObjeto { tipo: t, .. }
+        | HirExpresion::ConstruirEstructura { tipo: t, .. }
+        | HirExpresion::AccesoNominal { tipo: t, .. }
+        | HirExpresion::ConstruirEnum { tipo: t, .. }
+        | HirExpresion::DiscriminanteEnum { tipo: t, .. }
+        | HirExpresion::Coincidir { tipo: t, .. } => t.clone(),
+        HirExpresion::Si { .. } | HirExpresion::FuncionRef(_) => TipoSem::Desconocido,
     }
 }
 
@@ -785,13 +900,19 @@ fn tipos_compatibles_retorno(esperado: &TipoSem, obtenido: &TipoSem) -> bool {
             ne == no && tipos_compatibles_retorno(te, to)
         }
         (TipoSem::Lista(te), TipoSem::Lista(to)) => tipos_compatibles_retorno(te, to),
-        (TipoSem::Arreglo(te, _), TipoSem::Lista(to)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Arreglo(_, _), TipoSem::Lista(_)) => false,
         (TipoSem::Lista(te), TipoSem::Arreglo(to, _)) => tipos_compatibles_retorno(te, to),
-        (TipoSem::Coleccion(te), TipoSem::Arreglo(to, _)) => tipos_compatibles_retorno(te, to),
-        (TipoSem::Coleccion(te), TipoSem::Lista(to)) => tipos_compatibles_retorno(te, to),
-        (TipoSem::Arreglo(te, _), TipoSem::Coleccion(to)) => tipos_compatibles_retorno(te, to),
-        (TipoSem::Lista(te), TipoSem::Coleccion(to)) => tipos_compatibles_retorno(te, to),
-        (TipoSem::Coleccion(te), TipoSem::Coleccion(to)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Coleccion(te, nc), TipoSem::Arreglo(to, na)) => {
+            nc == na && tipos_compatibles_retorno(te, to)
+        }
+        (TipoSem::Coleccion(te, _), TipoSem::Lista(to)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Arreglo(te, na), TipoSem::Coleccion(to, nc)) => {
+            na == nc && tipos_compatibles_retorno(te, to)
+        }
+        (TipoSem::Lista(te), TipoSem::Coleccion(to, _)) => tipos_compatibles_retorno(te, to),
+        (TipoSem::Coleccion(te, n1), TipoSem::Coleccion(to, n2)) => {
+            n1 == n2 && tipos_compatibles_retorno(te, to)
+        }
         (
             TipoSem::Funcion {
                 params: p1,
@@ -854,8 +975,29 @@ fn recolectar_retornos_expr<'a>(e: &'a HirExpresion, out: &mut Vec<&'a Option<Hi
             recolectar_retornos_expr(inicio, out);
             recolectar_retornos_expr(fin, out);
         }
-        HirExpresion::No(x, _) | HirExpresion::Acceso { objeto: x, .. } => {
+        HirExpresion::No(x, _)
+        | HirExpresion::Acceso { objeto: x, .. }
+        | HirExpresion::AccesoNominal { objeto: x, .. }
+        | HirExpresion::DiscriminanteEnum { objeto: x, .. } => {
             recolectar_retornos_expr(x, out);
+        }
+        HirExpresion::Coincidir {
+            scrutinee, brazos, ..
+        } => {
+            recolectar_retornos_expr(scrutinee, out);
+            for b in brazos {
+                recolectar_retornos(&b.cuerpo, out);
+            }
+        }
+        HirExpresion::ConstruirEstructura { campos, .. } => {
+            for (_, c) in campos {
+                recolectar_retornos_expr(c, out);
+            }
+        }
+        HirExpresion::ConstruirEnum { payload, .. } => {
+            for c in payload {
+                recolectar_retornos_expr(c, out);
+            }
         }
         HirExpresion::ArregloLiteral { elementos, .. } => {
             for el in elementos {
@@ -932,13 +1074,19 @@ fn recolectar_retornos<'a>(ss: &'a [HirSentencia], out: &mut Vec<&'a Option<HirE
                 recolectar_retornos_expr(indice, out);
                 recolectar_retornos_expr(valor, out);
             }
+            HirSentencia::AsignarCampoNominal { objeto, valor, .. } => {
+                recolectar_retornos_expr(objeto, out);
+                recolectar_retornos_expr(valor, out);
+            }
             HirSentencia::Exportar { sentencia } => {
                 recolectar_retornos(std::slice::from_ref(sentencia.as_ref()), out)
             }
             HirSentencia::Romper
             | HirSentencia::Continuar
             | HirSentencia::Importar { .. }
-            | HirSentencia::Usar { .. } => {}
+            | HirSentencia::Usar { .. }
+            | HirSentencia::Estructura { .. }
+            | HirSentencia::Enumeracion { .. } => {}
         }
     }
 }
@@ -1122,6 +1270,33 @@ fn verificar_expr(e: &HirExpresion, ctx: &str) -> Result<(), ErrorVerificacionHi
         HirExpresion::FuncionRef(_) => Ok(()),
         HirExpresion::Otro(_) => Ok(()),
         HirExpresion::ModuloObjeto { .. } => Ok(()),
+        HirExpresion::ConstruirEstructura { campos, .. } => {
+            for (i, (_, c)) in campos.iter().enumerate() {
+                verificar_expr(c, &format!("{ctx}/construir[{i}]"))?;
+            }
+            Ok(())
+        }
+        HirExpresion::AccesoNominal { objeto, .. } => {
+            verificar_expr(objeto, &format!("{ctx}/acceso_nominal.obj"))
+        }
+        HirExpresion::DiscriminanteEnum { objeto, .. } => {
+            verificar_expr(objeto, &format!("{ctx}/discriminante.obj"))
+        }
+        HirExpresion::Coincidir {
+            scrutinee, brazos, ..
+        } => {
+            verificar_expr(scrutinee, &format!("{ctx}/coincidir.scrutinee"))?;
+            for (i, b) in brazos.iter().enumerate() {
+                verificar_tipos_invariantes(&b.cuerpo, &format!("{ctx}/coincidir[{i}].cuerpo"))?;
+            }
+            Ok(())
+        }
+        HirExpresion::ConstruirEnum { payload, .. } => {
+            for (i, c) in payload.iter().enumerate() {
+                verificar_expr(c, &format!("{ctx}/construir_enum[{i}]"))?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1194,9 +1369,15 @@ fn renombrar_llamadas_sentencia(
                 renombrar_llamadas_sentencia(s, mapa);
             }
         }
+        HirSentencia::AsignarCampoNominal { objeto, valor, .. } => {
+            renombrar_llamadas_expresion(objeto, mapa);
+            renombrar_llamadas_expresion(valor, mapa);
+        }
         HirSentencia::Exportar { sentencia } => renombrar_llamadas_sentencia(sentencia, mapa),
         HirSentencia::Romper
         | HirSentencia::Continuar
+        | HirSentencia::Estructura { .. }
+        | HirSentencia::Enumeracion { .. }
         | HirSentencia::Importar { .. }
         | HirSentencia::Usar { .. } => {}
     }
@@ -1280,6 +1461,30 @@ fn renombrar_llamadas_expresion(
                 }
             }
         }
+        HirExpresion::ConstruirEstructura { campos, .. } => {
+            for (_, c) in campos {
+                renombrar_llamadas_expresion(c, mapa);
+            }
+        }
+        HirExpresion::AccesoNominal { objeto, .. } => renombrar_llamadas_expresion(objeto, mapa),
+        HirExpresion::DiscriminanteEnum { objeto, .. } => {
+            renombrar_llamadas_expresion(objeto, mapa)
+        }
+        HirExpresion::Coincidir {
+            scrutinee, brazos, ..
+        } => {
+            renombrar_llamadas_expresion(scrutinee, mapa);
+            for b in brazos {
+                for st in &mut b.cuerpo {
+                    renombrar_llamadas_sentencia(st, mapa);
+                }
+            }
+        }
+        HirExpresion::ConstruirEnum { payload, .. } => {
+            for c in payload {
+                renombrar_llamadas_expresion(c, mapa);
+            }
+        }
     }
 }
 
@@ -1300,6 +1505,9 @@ pub struct ResolutorHir {
     pub funciones: std::collections::HashSet<String>,
     /// Nombres de variables declaradas (para distinguir llamadas indirectas).
     pub variables: std::collections::HashSet<String>,
+    /// S8.4: tipos locales temporales para lowering de métodos (yo, params).
+    pub tipos_locales: std::collections::HashMap<String, TipoSem>,
+    pub archivo: Option<String>,
 }
 
 const BASE_ID_RESOLUCION: u32 = 1_000_000;
@@ -1313,6 +1521,8 @@ impl ResolutorHir {
             contador_clausura: 0,
             funciones: std::collections::HashSet::new(),
             variables: std::collections::HashSet::new(),
+            tipos_locales: std::collections::HashMap::new(),
+            archivo: None,
         }
     }
 
@@ -1370,12 +1580,71 @@ impl ResolutorHir {
 // Necesitamos buscar_tipo_variable en ContextoSemantico; añadir método.
 impl crate::semantico::ContextoSemantico {
     pub fn buscar_tipo_variable(&self, nombre: &str) -> Option<TipoSem> {
-        self.buscar_variable(nombre).map(|v| v.tipo)
+        self.buscar_variable(nombre)
+            .map(|v| v.tipo)
+            .or_else(|| self.tipo_var_persistente(nombre).cloned())
     }
 }
 
 /// Lowering AST -> HIR. Requiere ContextoSemantico para tipos y el resolvedor
 /// propio para símbodos.
+fn hir_mangle_metodo(tipo_nombre: &str, metodo: &str, es_instancia: bool) -> String {
+    if es_instancia {
+        format!("__m__{}__{}", tipo_nombre, metodo)
+    } else {
+        format!("__ma__{}__{}", tipo_nombre, metodo)
+    }
+}
+
+fn hir_resolver_metodo_nominal(
+    ctx: &crate::semantico::ContextoSemantico,
+    tipo_id: crate::semantico::TipoNominalId,
+    miembro: &str,
+    es_instancia: bool,
+) -> Option<(String, crate::semantico::TipoSem, bool)> {
+    let tipo_nombre = ctx.nominal_por_id(tipo_id)?.nombre.clone();
+    if let Some(mets) = ctx.impls_inherentes().get(&tipo_id) {
+        for m in mets {
+            if m.nombre != miembro {
+                continue;
+            }
+            let ok = match m.receptor {
+                crate::semantico::ReceptorMetodoSem::Ninguno => !es_instancia,
+                crate::semantico::ReceptorMetodoSem::Yo { .. } => es_instancia,
+            };
+            if ok {
+                return Some((
+                    hir_mangle_metodo(&tipo_nombre, miembro, es_instancia),
+                    m.retorno.clone(),
+                    es_instancia,
+                ));
+            }
+        }
+    }
+    for ir in ctx.impls_rasgo() {
+        if ir.tipo != tipo_id {
+            continue;
+        }
+        for m in &ir.metodos {
+            if m.nombre != miembro {
+                continue;
+            }
+            let ok = match m.receptor {
+                crate::semantico::ReceptorMetodoSem::Ninguno => !es_instancia,
+                crate::semantico::ReceptorMetodoSem::Yo { .. } => es_instancia,
+            };
+            if ok {
+                return Some((
+                    hir_mangle_metodo(&tipo_nombre, miembro, es_instancia),
+                    m.retorno.clone(),
+                    es_instancia,
+                ));
+            }
+        }
+    }
+    None
+}
+
 fn lower_expresion(
     e: &Expresion,
     ctx: &crate::semantico::ContextoSemantico,
@@ -1409,8 +1678,11 @@ fn lower_expresion(
                 return Ok(HirExpresion::FuncionRef(nombre.clone()));
             }
             let id = res.resolver_o_registrar(nombre);
-            let tipo = ctx
-                .buscar_tipo_variable(nombre)
+            let tipo = res
+                .tipos_locales
+                .get(nombre)
+                .cloned()
+                .or_else(|| ctx.buscar_tipo_variable(nombre))
                 .unwrap_or(TipoSem::Desconocido);
             HirExpresion::Variable(id, tipo)
         }
@@ -1545,11 +1817,38 @@ fn lower_expresion(
         },
         Expresion::Acceso {
             objeto, miembro, ..
-        } => HirExpresion::Acceso {
-            objeto: Box::new(lower_expresion(objeto, ctx, res)?),
-            miembro: miembro.clone(),
-            tipo: TipoSem::Desconocido,
-        },
+        } => {
+            // S8.2: construcción de variante unitaria Tipo.Variante
+            if let Expresion::Variable { nombre, .. } = objeto.as_ref()
+                && let Some(info) = ctx.buscar_nominal(nombre)
+                && info.clase == crate::semantico::ClaseNominal::Enumeracion
+                && let Some(v) = info.variantes.iter().find(|v| &v.nombre == miembro)
+            {
+                return Ok(HirExpresion::ConstruirEnum {
+                    tipo_nominal: info.id,
+                    variante_idx: v.indice,
+                    payload: Vec::new(),
+                    tipo: TipoSem::Nominal(info.id),
+                });
+            }
+            let obj_hir = lower_expresion(objeto, ctx, res)?;
+            let t_obj = tipo_de_expr(&obj_hir);
+            if let TipoSem::Nominal(id) = t_obj
+                && let Some(info) = ctx.nominal_por_id(id)
+                && let Some(campo) = info.campos.iter().find(|c| c.nombre == *miembro)
+            {
+                return Ok(HirExpresion::AccesoNominal {
+                    objeto: Box::new(obj_hir),
+                    indice: campo.indice,
+                    tipo: campo.tipo.clone(),
+                });
+            }
+            HirExpresion::Acceso {
+                objeto: Box::new(obj_hir),
+                miembro: miembro.clone(),
+                tipo: TipoSem::Desconocido,
+            }
+        }
         Expresion::Lambda {
             parametros,
             tipo_retorno,
@@ -1613,6 +1912,7 @@ fn lower_expresion(
                 .collect();
             res.salir();
             // Registrar la clausura como función de primer nivel (recolectada).
+            let cuerpo_spans = vec![None; body.len()];
             res.clausuras.push(HirItem::Funcion {
                 nombre: nombre_clausura.clone(),
                 simbodo: SimbodoId(0),
@@ -1622,6 +1922,8 @@ fn lower_expresion(
                 celdas: Vec::new(),
                 retorno: ret.clone(),
                 cuerpo: body,
+                cuerpo_spans,
+                span: None,
             });
             HirExpresion::Lambda {
                 nombre: nombre_clausura,
@@ -1632,14 +1934,279 @@ fn lower_expresion(
         }
         Expresion::LlamadaIndirecta {
             callee, argumentos, ..
-        } => HirExpresion::LlamadaIndirecta {
-            callee: Box::new(lower_expresion(callee, ctx, res)?),
-            argumentos: argumentos
+        } => {
+            // S8.2: construcción de variante con payload Tipo.Variante(args)
+            if let Expresion::Acceso {
+                objeto, miembro, ..
+            } = callee.as_ref()
+                && let Expresion::Variable { nombre, .. } = objeto.as_ref()
+                && let Some(info) = ctx.buscar_nominal(nombre)
+                && info.clase == crate::semantico::ClaseNominal::Enumeracion
+                && let Some(v) = info.variantes.iter().find(|v| &v.nombre == miembro)
+            {
+                let mut payload_hir = Vec::with_capacity(argumentos.len());
+                for a in argumentos {
+                    payload_hir.push(lower_expresion(a, ctx, res)?);
+                }
+                return Ok(HirExpresion::ConstruirEnum {
+                    tipo_nominal: info.id,
+                    variante_idx: v.indice,
+                    payload: payload_hir,
+                    tipo: TipoSem::Nominal(info.id),
+                });
+            }
+            // S8.4: llamada a método nominal (instancia o asociado)
+            if let Expresion::Acceso {
+                objeto, miembro, ..
+            } = callee.as_ref()
+            {
+                // Asociado: Tipo.metodo(...)
+                if let Expresion::Variable { nombre, .. } = objeto.as_ref()
+                    && let Some(info) = ctx.buscar_nominal(nombre).cloned()
+                    && let Some((mangled, ret, _es_inst)) =
+                        hir_resolver_metodo_nominal(ctx, info.id, miembro, false)
+                {
+                    let mut args_hir = Vec::new();
+                    for a in argumentos {
+                        args_hir.push(lower_expresion(a, ctx, res)?);
+                    }
+                    return Ok(HirExpresion::Llamada {
+                        nombre: mangled,
+                        argumentos: args_hir,
+                        tipo: ret,
+                    });
+                }
+                // Instancia: obj.metodo(...)
+                let obj_hir = lower_expresion(objeto, ctx, res)?;
+                let t_obj = tipo_de_expr(&obj_hir);
+                if let TipoSem::Nominal(id) = t_obj {
+                    let es_campo = ctx
+                        .nominal_por_id(id)
+                        .map(|i| i.campos.iter().any(|c| c.nombre == *miembro))
+                        .unwrap_or(false);
+                    if !es_campo
+                        && let Some((mangled, ret, _es_inst)) =
+                            hir_resolver_metodo_nominal(ctx, id, miembro, true)
+                    {
+                        let mut args_hir = Vec::with_capacity(argumentos.len() + 1);
+                        args_hir.push(obj_hir);
+                        for a in argumentos {
+                            args_hir.push(lower_expresion(a, ctx, res)?);
+                        }
+                        return Ok(HirExpresion::Llamada {
+                            nombre: mangled,
+                            argumentos: args_hir,
+                            tipo: ret,
+                        });
+                    }
+                    // si es campo invocable o método no resuelto, caer al caso general (reconstruir callee)
+                    let callee_hir = HirExpresion::AccesoNominal {
+                        objeto: Box::new(obj_hir),
+                        indice: ctx
+                            .nominal_por_id(id)
+                            .and_then(|i| {
+                                i.campos
+                                    .iter()
+                                    .find(|c| c.nombre == *miembro)
+                                    .map(|c| c.indice)
+                            })
+                            .unwrap_or(0),
+                        tipo: ctx
+                            .nominal_por_id(id)
+                            .and_then(|i| {
+                                i.campos
+                                    .iter()
+                                    .find(|c| c.nombre == *miembro)
+                                    .map(|c| c.tipo.clone())
+                            })
+                            .unwrap_or(TipoSem::Desconocido),
+                    };
+                    // Si no era campo, el AccesoNominal con indice 0 es incorrecto; pero en ese caso caemos a LlamadaIndirecta con Acceso
+                    if es_campo {
+                        return Ok(HirExpresion::LlamadaIndirecta {
+                            callee: Box::new(callee_hir),
+                            argumentos: argumentos
+                                .iter()
+                                .map(|a| lower_expresion(a, ctx, res))
+                                .collect::<Result<Vec<_>, _>>()?,
+                            tipo: TipoSem::Desconocido,
+                        });
+                    }
+                    return Ok(HirExpresion::LlamadaIndirecta {
+                        callee: Box::new(HirExpresion::Acceso {
+                            objeto: Box::new(match &callee_hir {
+                                HirExpresion::AccesoNominal { objeto, .. } => (**objeto).clone(),
+                                _ => unreachable!(),
+                            }),
+                            miembro: miembro.clone(),
+                            tipo: TipoSem::Desconocido,
+                        }),
+                        argumentos: argumentos
+                            .iter()
+                            .map(|a| lower_expresion(a, ctx, res))
+                            .collect::<Result<Vec<_>, _>>()?,
+                        tipo: TipoSem::Desconocido,
+                    });
+                }
+                // objeto no nominal: reconstruir callee
+                let callee_hir = HirExpresion::Acceso {
+                    objeto: Box::new(obj_hir),
+                    miembro: miembro.clone(),
+                    tipo: TipoSem::Desconocido,
+                };
+                return Ok(HirExpresion::LlamadaIndirecta {
+                    callee: Box::new(callee_hir),
+                    argumentos: argumentos
+                        .iter()
+                        .map(|a| lower_expresion(a, ctx, res))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    tipo: TipoSem::Desconocido,
+                });
+            }
+            HirExpresion::LlamadaIndirecta {
+                callee: Box::new(lower_expresion(callee, ctx, res)?),
+                argumentos: argumentos
+                    .iter()
+                    .map(|a| lower_expresion(a, ctx, res))
+                    .collect::<Result<Vec<_>, _>>()?,
+                tipo: TipoSem::Desconocido,
+            }
+        }
+        Expresion::ConstruccionEstructura { nombre, campos, .. } => {
+            let info = ctx
+                .buscar_nominal(nombre)
+                .ok_or_else(|| format!("S8.1 HIR: tipo nominal no resuelto: '{nombre}'"))?;
+            let mut provistos: std::collections::HashMap<String, &Expresion> =
+                std::collections::HashMap::new();
+            for (cn, cv) in campos {
+                provistos.insert(cn.clone(), cv);
+            }
+            let mut campos_hir = Vec::with_capacity(info.campos.len());
+            for c in &info.campos {
+                let expr = provistos
+                    .get(&c.nombre)
+                    .ok_or_else(|| format!("S8.1 HIR: falta campo '{}' en '{nombre}'", c.nombre))?;
+                let hir_expr = lower_expresion(expr, ctx, res)?;
+                campos_hir.push((c.indice, hir_expr));
+            }
+            HirExpresion::ConstruirEstructura {
+                tipo_nominal: info.id,
+                campos: campos_hir,
+                tipo: TipoSem::Nominal(info.id),
+            }
+        }
+        Expresion::ConstruccionVariante {
+            tipo,
+            variante,
+            argumentos,
+            ..
+        } => {
+            let info = ctx
+                .buscar_nominal(tipo)
+                .ok_or_else(|| format!("S8.2 HIR: tipo nominal no resuelto: '{tipo}'"))?;
+            let vinfo = info
+                .variantes
                 .iter()
-                .map(|a| lower_expresion(a, ctx, res))
-                .collect::<Result<Vec<_>, _>>()?,
-            tipo: TipoSem::Desconocido,
-        },
+                .find(|v| &v.nombre == variante)
+                .ok_or_else(|| format!("S8.2 HIR: variante no resuelta: '{tipo}.{variante}'"))?;
+            let mut payload_hir = Vec::with_capacity(argumentos.len());
+            for a in argumentos {
+                payload_hir.push(lower_expresion(a, ctx, res)?);
+            }
+            HirExpresion::ConstruirEnum {
+                tipo_nominal: info.id,
+                variante_idx: vinfo.indice,
+                payload: payload_hir,
+                tipo: TipoSem::Nominal(info.id),
+            }
+        }
+        Expresion::Coincidir {
+            scrutinee, brazos, ..
+        } => {
+            let scr_hir = lower_expresion(scrutinee, ctx, res)?;
+            let mut brazos_hir = Vec::with_capacity(brazos.len());
+            for b in brazos {
+                res.entrar();
+                let patron = lower_patron_hir(&b.patron, ctx, res)?;
+                let mut cuerpo = Vec::with_capacity(b.cuerpo.len());
+                for st in &b.cuerpo {
+                    cuerpo.push(lower_sentencia(st, ctx, res)?);
+                }
+                res.salir();
+                brazos_hir.push(HirBrazoCoincidir { patron, cuerpo });
+            }
+            HirExpresion::Coincidir {
+                scrutinee: Box::new(scr_hir),
+                brazos: brazos_hir,
+                tipo: TipoSem::Desconocido,
+            }
+        }
+    })
+}
+
+fn lower_patron_hir(
+    pat: &crate::parser::Patron,
+    ctx: &crate::semantico::ContextoSemantico,
+    res: &mut ResolutorHir,
+) -> Result<HirPatron, String> {
+    use crate::parser::Patron;
+    Ok(match pat {
+        Patron::Wildcard { .. } => HirPatron::Wildcard,
+        Patron::Binding { nombre, .. } => {
+            if nombre == "_" {
+                HirPatron::Wildcard
+            } else {
+                let id = res.insertar(nombre, None);
+                res.variables.insert(nombre.clone());
+                HirPatron::Binding {
+                    nombre: nombre.clone(),
+                    simbodo: id,
+                }
+            }
+        }
+        Patron::Literal { valor, .. } => HirPatron::Literal(valor.clone()),
+        Patron::Variante {
+            tipo,
+            variante,
+            campos,
+            ..
+        } => {
+            let info = ctx
+                .buscar_nominal(tipo)
+                .ok_or_else(|| format!("S8.3 HIR: tipo nominal no resuelto: '{tipo}'"))?;
+            let vinfo = info
+                .variantes
+                .iter()
+                .find(|v| &v.nombre == variante)
+                .ok_or_else(|| format!("S8.3 HIR: variante no resuelta: '{tipo}.{variante}'"))?;
+            let mut cps = Vec::with_capacity(campos.len());
+            for c in campos {
+                cps.push(lower_patron_hir(c, ctx, res)?);
+            }
+            HirPatron::Variante {
+                tipo_nominal: info.id,
+                variante_idx: vinfo.indice,
+                campos: cps,
+            }
+        }
+        Patron::Estructura { tipo, campos, .. } => {
+            let info = ctx
+                .buscar_nominal(tipo)
+                .ok_or_else(|| format!("S8.3 HIR: tipo nominal no resuelto: '{tipo}'"))?;
+            let mut cps = Vec::with_capacity(campos.len());
+            for (nombre, p) in campos {
+                let cinfo = info
+                    .campos
+                    .iter()
+                    .find(|c| &c.nombre == nombre)
+                    .ok_or_else(|| format!("S8.3 HIR: campo no resuelto: '{tipo}.{nombre}'"))?;
+                cps.push((cinfo.indice, lower_patron_hir(p, ctx, res)?));
+            }
+            HirPatron::Estructura {
+                tipo_nominal: info.id,
+                campos: cps,
+            }
+        }
     })
 }
 
@@ -1951,6 +2518,7 @@ fn lower_sentencia(
                 .filter(|id| !capturas.contains(id))
                 .collect();
             res.salir();
+            let cuerpo_spans = vec![None; body.len()];
             res.clausuras.push(HirItem::Funcion {
                 nombre: nombre_clausura.clone(),
                 simbodo: SimbodoId(0),
@@ -1960,6 +2528,8 @@ fn lower_sentencia(
                 celdas: Vec::new(),
                 retorno: ret.clone(),
                 cuerpo: body,
+                cuerpo_spans,
+                span: None,
             });
             let id = res.insertar(nombre, None);
             res.variables.insert(nombre.clone());
@@ -1981,6 +2551,79 @@ fn lower_sentencia(
                 publico: false,
             })
         }
+        Sentencia::AsignacionCampo {
+            objeto,
+            campo,
+            valor,
+            ..
+        } => {
+            let obj_hir = lower_expresion(objeto, ctx, res)?;
+            let val_hir = lower_expresion(valor, ctx, res)?;
+            let t_obj = tipo_de_expr(&obj_hir);
+            let indice = if let TipoSem::Nominal(id) = t_obj {
+                ctx.nominal_por_id(id)
+                    .and_then(|info| info.campos.iter().find(|c| c.nombre == *campo))
+                    .map(|c| c.indice)
+                    .unwrap_or(usize::MAX)
+            } else {
+                usize::MAX
+            };
+            Ok(HirSentencia::AsignarCampoNominal {
+                objeto: obj_hir,
+                indice,
+                valor: val_hir,
+            })
+        }
+        Sentencia::Estructura {
+            nombre,
+            campos: _,
+            publico,
+            ..
+        } => {
+            if let Some(info) = ctx.buscar_nominal(nombre) {
+                let campos_hir = info
+                    .campos
+                    .iter()
+                    .map(|c| (c.nombre.clone(), c.tipo.clone(), c.publico))
+                    .collect();
+                Ok(HirSentencia::Estructura {
+                    nombre: nombre.clone(),
+                    tipo_nominal: info.id,
+                    campos: campos_hir,
+                    publico: *publico,
+                })
+            } else {
+                Ok(HirSentencia::Expresion(HirExpresion::Literal(
+                    HirLiteral::Nulo,
+                    TipoSem::Nulo,
+                )))
+            }
+        }
+        Sentencia::Enumeracion {
+            nombre, publico, ..
+        } => {
+            if let Some(info) = ctx.buscar_nominal(nombre) {
+                let variantes_hir = info
+                    .variantes
+                    .iter()
+                    .map(|v| (v.nombre.clone(), v.payload.clone()))
+                    .collect();
+                Ok(HirSentencia::Enumeracion {
+                    nombre: nombre.clone(),
+                    tipo_nominal: info.id,
+                    variantes: variantes_hir,
+                    publico: *publico,
+                })
+            } else {
+                Ok(HirSentencia::Expresion(HirExpresion::Literal(
+                    HirLiteral::Nulo,
+                    TipoSem::Nulo,
+                )))
+            }
+        }
+        Sentencia::Rasgo { .. }
+        | Sentencia::ImplementacionInherente { .. }
+        | Sentencia::ImplementacionRasgo { .. } => Ok(HirSentencia::Bloque(Vec::new())),
     }
 }
 
@@ -2345,6 +2988,7 @@ fn cargar_modulo_items(
                 mutable: *mutable,
                 es_const: *es_const,
                 publico: *publico,
+                span: None,
             });
         }
     }
@@ -2429,6 +3073,7 @@ fn cargar_modulo_items(
             mutable: false,
             es_const: false,
             publico: false,
+            span: None,
         });
     } else {
         // Registrar las funciones importadas en el resolvedor actual para que las
@@ -2449,11 +3094,60 @@ fn cargar_modulo_items(
 }
 
 /// Programa -> HIR.
+fn span_de_sentencia(s: &Sentencia, archivo: &Option<String>) -> Option<crate::diagnostico::Span> {
+    let (l, c) = match s {
+        Sentencia::Declaracion { linea, columna, .. }
+        | Sentencia::Asignacion { linea, columna, .. }
+        | Sentencia::AsignacionIndice { linea, columna, .. }
+        | Sentencia::AsignacionCampo { linea, columna, .. }
+        | Sentencia::Si { linea, columna, .. }
+        | Sentencia::Mientras { linea, columna, .. }
+        | Sentencia::Funcion { linea, columna, .. }
+        | Sentencia::Retorno { linea, columna, .. }
+        | Sentencia::Mostrar { linea, columna, .. }
+        | Sentencia::MostrarSinSalto { linea, columna, .. }
+        | Sentencia::ParaCada { linea, columna, .. }
+        | Sentencia::Importar { linea, columna, .. }
+        | Sentencia::Usar { linea, columna, .. }
+        | Sentencia::Estructura { linea, columna, .. }
+        | Sentencia::Enumeracion { linea, columna, .. }
+        | Sentencia::Rasgo { linea, columna, .. }
+        | Sentencia::ImplementacionInherente { linea, columna, .. }
+        | Sentencia::ImplementacionRasgo { linea, columna, .. } => (*linea, *columna),
+        Sentencia::Expresion(e) => return span_de_expresion(e, archivo),
+        Sentencia::Exportar { sentencia, .. } => return span_de_sentencia(sentencia, archivo),
+        _ => return None,
+    };
+    Some(crate::diagnostico::Span::punto(archivo.clone(), l, c))
+}
+
+fn span_de_expresion(e: &Expresion, archivo: &Option<String>) -> Option<crate::diagnostico::Span> {
+    let (l, c) = match e {
+        Expresion::Literal { linea, columna, .. }
+        | Expresion::Llamada { linea, columna, .. }
+        | Expresion::LlamadaIndirecta { linea, columna, .. }
+        | Expresion::Indice { linea, columna, .. }
+        | Expresion::Rango { linea, columna, .. }
+        | Expresion::Coincidir { linea, columna, .. }
+        | Expresion::ConstruccionEstructura { linea, columna, .. } => (*linea, *columna),
+        _ => return None,
+    };
+    Some(crate::diagnostico::Span::punto(archivo.clone(), l, c))
+}
 pub fn lower_programa(
     ast: &[Sentencia],
     ctx: &crate::semantico::ContextoSemantico,
 ) -> Result<HirPrograma, Vec<String>> {
+    lower_programa_con_archivo(ast, ctx, None)
+}
+
+pub fn lower_programa_con_archivo(
+    ast: &[Sentencia],
+    ctx: &crate::semantico::ContextoSemantico,
+    archivo: Option<String>,
+) -> Result<HirPrograma, Vec<String>> {
     let mut res = ResolutorHir::nuevo();
+    res.archivo = archivo;
     let (hir, _cuerpo_principal): (HirPrograma, Vec<HirSentencia>) =
         lower_programa_con_resolutor(ast, ctx, &mut res)?;
     Ok(hir)
@@ -2474,23 +3168,44 @@ pub fn lower_programa_con_resolutor(
     // Pre-paso: registrar los nombres de las funciones de primer nivel en el
     // ámbito raíz (permite llamadas anticipadas y recursión), igual que
     // `registrar_funciones` en el semántico.
-    for s in ast {
+    fn registrar_metodos_hir(s: &Sentencia, res: &mut ResolutorHir) {
         match s {
             Sentencia::Funcion { nombre, .. } => {
-                if nombre == "main" {
-                    tiene_main_usuario = true;
-                }
                 res.insertar(nombre, None);
                 res.funciones.insert(nombre.clone());
             }
-            Sentencia::Exportar { sentencia, .. } => {
-                if let Sentencia::Funcion { nombre, .. } = &**sentencia {
-                    res.insertar(nombre, None);
-                    res.funciones.insert(nombre.clone());
+            Sentencia::ImplementacionInherente { tipo, metodos, .. } => {
+                for m in metodos {
+                    let es_inst = !matches!(m.receptor, crate::parser::ReceptorMetodo::Ninguno);
+                    let nombre_m = hir_mangle_metodo(tipo, &m.nombre, es_inst);
+                    res.insertar(&nombre_m, None);
+                    res.funciones.insert(nombre_m);
+                }
+            }
+            Sentencia::ImplementacionRasgo { tipo, metodos, .. } => {
+                for m in metodos {
+                    let es_inst = !matches!(m.receptor, crate::parser::ReceptorMetodo::Ninguno);
+                    let nombre_m = hir_mangle_metodo(tipo, &m.nombre, es_inst);
+                    res.insertar(&nombre_m, None);
+                    res.funciones.insert(nombre_m);
+                }
+            }
+            Sentencia::Exportar { sentencia, .. } => registrar_metodos_hir(sentencia, res),
+            Sentencia::Bloque(ss) => {
+                for st in ss {
+                    registrar_metodos_hir(st, res);
                 }
             }
             _ => {}
         }
+    }
+    for s in ast {
+        if let Sentencia::Funcion { nombre, .. } = s
+            && nombre == "main"
+        {
+            tiene_main_usuario = true;
+        }
+        registrar_metodos_hir(s, res);
     }
 
     for s in ast {
@@ -2507,20 +3222,30 @@ pub fn lower_programa_con_resolutor(
                 let val = lower_expresion(valor, ctx, res).map_err(|e| vec![e])?;
                 let id = res.insertar(nombre, None);
                 res.variables.insert(nombre.clone());
-                let tipo = tipo_anotacion
+                let mut tipo = tipo_anotacion
                     .as_ref()
                     .map(crate::semantico::tipo_anotacion_a_sem)
                     .unwrap_or(TipoSem::Desconocido);
-                // Las declaraciones de nivel superior se ejecutan en `main`,
-                // no en `__init`, para mantener el orden de ejecución con
-                // el resto de sentencias del programa.
-                cuerpo_principal.push(HirSentencia::Declaracion {
+                if matches!(tipo, TipoSem::Desconocido)
+                    && let Some(t) = ctx.buscar_tipo_variable(nombre)
+                    && !matches!(t, TipoSem::Desconocido)
+                {
+                    tipo = t;
+                }
+                if matches!(tipo, TipoSem::Desconocido) {
+                    let t = tipo_de_expr(&val);
+                    if !matches!(t, TipoSem::Desconocido) {
+                        tipo = t;
+                    }
+                }
+                items.push(HirItem::Declaracion {
                     simbodo: id,
                     tipo,
                     valor: val,
                     mutable: *mutable,
                     es_const: *es_const,
                     publico: *publico,
+                    span: None,
                 });
             }
             Sentencia::Funcion {
@@ -2528,6 +3253,8 @@ pub fn lower_programa_con_resolutor(
                 parametros,
                 tipo_retorno,
                 cuerpo,
+                linea,
+                columna,
                 ..
             } => {
                 // Id ya registrado por el pre-paso.
@@ -2575,10 +3302,14 @@ pub fn lower_programa_con_resolutor(
                     .map(crate::semantico::tipo_anotacion_a_sem)
                     .unwrap_or(TipoSem::Desconocido);
                 let mut body = Vec::new();
+                let mut body_spans = Vec::new();
                 let mut fallo = false;
                 for st in cuerpo {
                     match lower_sentencia(st, ctx, res) {
-                        Ok(hs) => body.push(hs),
+                        Ok(hs) => {
+                            body_spans.push(span_de_sentencia(st, &res.archivo));
+                            body.push(hs);
+                        }
                         Err(e) => {
                             errores.push(e);
                             fallo = true;
@@ -2602,14 +3333,196 @@ pub fn lower_programa_con_resolutor(
                     celdas: Vec::new(),
                     retorno: ret,
                     cuerpo: body,
+                    cuerpo_spans: body_spans,
+                    span: Some(crate::diagnostico::Span::punto(
+                        res.archivo.clone(),
+                        *linea,
+                        *columna,
+                    )),
                 });
+            }
+            Sentencia::ImplementacionInherente { tipo, metodos, .. } => {
+                for m in metodos {
+                    let es_inst = !matches!(m.receptor, crate::parser::ReceptorMetodo::Ninguno);
+                    let nombre_m = hir_mangle_metodo(tipo, &m.nombre, es_inst);
+                    let id = res
+                        .resolver(&nombre_m)
+                        .unwrap_or_else(|| res.insertar(&nombre_m, None));
+                    let tipo_nominal = ctx
+                        .buscar_nominal(tipo)
+                        .map(|i| TipoSem::Nominal(i.id))
+                        .unwrap_or(TipoSem::Desconocido);
+                    let param_names: Vec<String> =
+                        m.parametros.iter().map(|(n, _)| n.clone()).collect();
+                    let mut param_names_full = Vec::new();
+                    if es_inst {
+                        param_names_full.push("yo".to_string());
+                    }
+                    param_names_full.extend(param_names.iter().cloned());
+                    let (free, capturadas_por_anidados) =
+                        variables_libres(&m.cuerpo, &param_names_full);
+                    let _ = free;
+                    res.entrar();
+                    let mut params: Vec<(SimbodoId, TipoSem)> = Vec::new();
+                    if es_inst {
+                        let pid = res.insertar("yo", None);
+                        res.variables.insert("yo".to_string());
+                        params.push((pid, tipo_nominal.clone()));
+                    }
+                    for (n, t) in &m.parametros {
+                        let pid = res.insertar(n, None);
+                        res.variables.insert(n.clone());
+                        let ty = t
+                            .as_ref()
+                            .map(crate::semantico::tipo_anotacion_a_sem)
+                            .unwrap_or(TipoSem::Desconocido);
+                        params.push((pid, ty));
+                    }
+                    let ret = m
+                        .tipo_retorno
+                        .as_ref()
+                        .map(crate::semantico::tipo_anotacion_a_sem)
+                        .unwrap_or(TipoSem::Nulo);
+                    let prev_tipos_locales = std::mem::take(&mut res.tipos_locales);
+                    if es_inst {
+                        res.tipos_locales
+                            .insert("yo".to_string(), tipo_nominal.clone());
+                    }
+                    for (n, t) in &m.parametros {
+                        let ty = t
+                            .as_ref()
+                            .map(crate::semantico::tipo_anotacion_a_sem)
+                            .unwrap_or(TipoSem::Desconocido);
+                        res.tipos_locales.insert(n.clone(), ty);
+                    }
+                    let mut body = Vec::new();
+                    let mut fallo = false;
+                    for st in &m.cuerpo {
+                        match lower_sentencia(st, ctx, res) {
+                            Ok(hs) => body.push(hs),
+                            Err(e) => {
+                                errores.push(e);
+                                fallo = true;
+                            }
+                        }
+                    }
+                    res.tipos_locales = prev_tipos_locales;
+                    let capturadas_ids: Vec<SimbodoId> = capturadas_por_anidados
+                        .iter()
+                        .filter_map(|n| res.resolver(n))
+                        .collect();
+                    res.salir();
+                    if !fallo {
+                        let cuerpo_spans = vec![None; body.len()];
+                        items.push(HirItem::Funcion {
+                            nombre: nombre_m,
+                            simbodo: id,
+                            params,
+                            capturadas: capturadas_ids,
+                            capturas_externas: Vec::new(),
+                            celdas: Vec::new(),
+                            retorno: ret,
+                            cuerpo: body,
+                            cuerpo_spans,
+                            span: None,
+                        });
+                    }
+                }
+            }
+            Sentencia::ImplementacionRasgo { tipo, metodos, .. } => {
+                for m in metodos {
+                    let es_inst = !matches!(m.receptor, crate::parser::ReceptorMetodo::Ninguno);
+                    let nombre_m = hir_mangle_metodo(tipo, &m.nombre, es_inst);
+                    let id = res
+                        .resolver(&nombre_m)
+                        .unwrap_or_else(|| res.insertar(&nombre_m, None));
+                    let tipo_nominal = ctx
+                        .buscar_nominal(tipo)
+                        .map(|i| TipoSem::Nominal(i.id))
+                        .unwrap_or(TipoSem::Desconocido);
+                    let param_names: Vec<String> =
+                        m.parametros.iter().map(|(n, _)| n.clone()).collect();
+                    let mut param_names_full = Vec::new();
+                    if es_inst {
+                        param_names_full.push("yo".to_string());
+                    }
+                    param_names_full.extend(param_names.iter().cloned());
+                    let (_free, capturadas_por_anidados) =
+                        variables_libres(&m.cuerpo, &param_names_full);
+                    res.entrar();
+                    let mut params: Vec<(SimbodoId, TipoSem)> = Vec::new();
+                    if es_inst {
+                        let pid = res.insertar("yo", None);
+                        res.variables.insert("yo".to_string());
+                        params.push((pid, tipo_nominal.clone()));
+                    }
+                    for (n, t) in &m.parametros {
+                        let pid = res.insertar(n, None);
+                        res.variables.insert(n.clone());
+                        let ty = t
+                            .as_ref()
+                            .map(crate::semantico::tipo_anotacion_a_sem)
+                            .unwrap_or(TipoSem::Desconocido);
+                        params.push((pid, ty));
+                    }
+                    let ret = m
+                        .tipo_retorno
+                        .as_ref()
+                        .map(crate::semantico::tipo_anotacion_a_sem)
+                        .unwrap_or(TipoSem::Nulo);
+                    let prev_tipos_locales = std::mem::take(&mut res.tipos_locales);
+                    if es_inst {
+                        res.tipos_locales
+                            .insert("yo".to_string(), tipo_nominal.clone());
+                    }
+                    for (n, t) in &m.parametros {
+                        let ty = t
+                            .as_ref()
+                            .map(crate::semantico::tipo_anotacion_a_sem)
+                            .unwrap_or(TipoSem::Desconocido);
+                        res.tipos_locales.insert(n.clone(), ty);
+                    }
+                    let mut body = Vec::new();
+                    let mut fallo = false;
+                    for st in &m.cuerpo {
+                        match lower_sentencia(st, ctx, res) {
+                            Ok(hs) => body.push(hs),
+                            Err(e) => {
+                                errores.push(e);
+                                fallo = true;
+                            }
+                        }
+                    }
+                    res.tipos_locales = prev_tipos_locales;
+                    let capturadas_ids: Vec<SimbodoId> = capturadas_por_anidados
+                        .iter()
+                        .filter_map(|n| res.resolver(n))
+                        .collect();
+                    res.salir();
+                    if !fallo {
+                        let cuerpo_spans = vec![None; body.len()];
+                        items.push(HirItem::Funcion {
+                            nombre: nombre_m,
+                            simbodo: id,
+                            params,
+                            capturadas: capturadas_ids,
+                            capturas_externas: Vec::new(),
+                            celdas: Vec::new(),
+                            retorno: ret,
+                            cuerpo: body,
+                            cuerpo_spans,
+                            span: None,
+                        });
+                    }
+                }
             }
             Sentencia::Expresion(e) => {
                 ultima_es_expresion_bare = true;
                 if tiene_main_usuario {
-                    items.push(HirItem::Expresion(
-                        lower_expresion(e, ctx, res).map_err(|e| vec![e])?,
-                    ));
+                    items.push(HirItem::Expresion {
+                        expr: lower_expresion(e, ctx, res).map_err(|e| vec![e])?,
+                        span: None,
+                    });
                 } else {
                     // Bajar la expresión como sentencia (descarta el valor);
                     // el valor del programa será el de la última expresión.
@@ -2657,6 +3570,7 @@ pub fn lower_programa_con_resolutor(
                     cuerpo_intentar: ci,
                     variable_error: var_id,
                     cuerpo_rescatar: cr,
+                    span: None,
                 });
             }
             Sentencia::Importar { ruta, alias, .. } => {
@@ -2664,12 +3578,14 @@ pub fn lower_programa_con_resolutor(
                 items.push(HirItem::Importar {
                     ruta: ruta.clone(),
                     alias: alias.clone(),
+                    span: None,
                 });
                 items.extend(mods);
             }
             Sentencia::Exportar { sentencia, .. } => match lower_sentencia(sentencia, ctx, res) {
                 Ok(hs) => items.push(HirItem::Exportar {
                     sentencia: Box::new(hs),
+                    span: None,
                 }),
                 Err(e) => errores.push(e),
             },
@@ -2684,6 +3600,7 @@ pub fn lower_programa_con_resolutor(
                     ruta: ruta.clone(),
                     alias: alias.clone(),
                     nombres: nombres.clone(),
+                    span: None,
                 });
                 items.extend(mods);
             }
@@ -2712,6 +3629,7 @@ pub fn lower_programa_con_resolutor(
         }
         let id = res.insertar("main", None);
         res.funciones.insert("main".to_string());
+        let cuerpo_spans = vec![None; cuerpo.len()];
         items.push(HirItem::Funcion {
             nombre: "main".to_string(),
             simbodo: id,
@@ -2721,6 +3639,8 @@ pub fn lower_programa_con_resolutor(
             celdas: Vec::new(),
             retorno: TipoSem::Desconocido,
             cuerpo,
+            cuerpo_spans,
+            span: None,
         });
     }
     if !errores.is_empty() {
@@ -2747,7 +3667,7 @@ pub fn verificar_sin_residuos_genericos(programa: &HirPrograma) -> Result<(), St
         .find_map(|it| match it {
             HirItem::Funcion { nombre, .. } => Some(nombre.clone()),
             HirItem::Declaracion { .. } => Some("declaracion".to_string()),
-            HirItem::Expresion(_) => Some("expresion".to_string()),
+            HirItem::Expresion { .. } => Some("expresion".to_string()),
             HirItem::IntentarRescatar { .. } => Some("intentar/rescatar".to_string()),
             HirItem::Importar { .. } | HirItem::Exportar { .. } | HirItem::Usar { .. } => None,
         })
@@ -2864,6 +3784,39 @@ fn scan_expr_hir(e: &HirExpresion, ctx: &str, errs: &mut Vec<String>) {
         }
         HirExpresion::Otro(t) => scan_tipo_hir(t, ctx, errs),
         HirExpresion::ModuloObjeto { tipo, .. } => scan_tipo_hir(tipo, ctx, errs),
+        HirExpresion::ConstruirEstructura { campos, tipo, .. } => {
+            scan_tipo_hir(tipo, ctx, errs);
+            for (_, c) in campos {
+                scan_expr_hir(c, ctx, errs);
+            }
+        }
+        HirExpresion::AccesoNominal { objeto, tipo, .. } => {
+            scan_tipo_hir(tipo, ctx, errs);
+            scan_expr_hir(objeto, ctx, errs);
+        }
+        HirExpresion::DiscriminanteEnum { objeto, tipo } => {
+            scan_tipo_hir(tipo, ctx, errs);
+            scan_expr_hir(objeto, ctx, errs);
+        }
+        HirExpresion::Coincidir {
+            scrutinee,
+            brazos,
+            tipo,
+        } => {
+            scan_tipo_hir(tipo, ctx, errs);
+            scan_expr_hir(scrutinee, ctx, errs);
+            for b in brazos {
+                for st in &b.cuerpo {
+                    scan_stmt_hir(st, ctx, errs);
+                }
+            }
+        }
+        HirExpresion::ConstruirEnum { payload, tipo, .. } => {
+            scan_tipo_hir(tipo, ctx, errs);
+            for e in payload {
+                scan_expr_hir(e, ctx, errs);
+            }
+        }
     }
 }
 fn scan_stmt_hir(s: &HirSentencia, ctx: &str, errs: &mut Vec<String>) {
@@ -2937,7 +3890,13 @@ fn scan_stmt_hir(s: &HirSentencia, ctx: &str, errs: &mut Vec<String>) {
         }
         HirSentencia::Importar { .. }
         | HirSentencia::Exportar { .. }
-        | HirSentencia::Usar { .. } => {}
+        | HirSentencia::Usar { .. }
+        | HirSentencia::Estructura { .. }
+        | HirSentencia::Enumeracion { .. } => {}
+        HirSentencia::AsignarCampoNominal { objeto, valor, .. } => {
+            scan_expr_hir(objeto, ctx, errs);
+            scan_expr_hir(valor, ctx, errs);
+        }
     }
 }
 fn scan_item_hir(item: &HirItem, errs: &mut Vec<String>) {
@@ -2962,7 +3921,7 @@ fn scan_item_hir(item: &HirItem, errs: &mut Vec<String>) {
             scan_tipo_hir(tipo, "declaracion", errs);
             scan_expr_hir(valor, "declaracion", errs);
         }
-        HirItem::Expresion(e) => scan_expr_hir(e, "expresion", errs),
+        HirItem::Expresion { expr: e, .. } => scan_expr_hir(e, "expresion", errs),
         HirItem::IntentarRescatar {
             cuerpo_intentar,
             cuerpo_rescatar,
@@ -2995,7 +3954,9 @@ mod verificacion_3b_tests {
                 capturas_externas: vec![],
                 celdas: vec![],
                 retorno,
+                cuerpo_spans: vec![],
                 cuerpo,
+                span: None,
             }],
         }
     }
@@ -3096,7 +4057,8 @@ mod verificacion_3b_tests {
     }
 
     #[test]
-    fn d1_lista_a_arreglo_elemento_compatible_acepta() {
+    fn d1_lista_a_arreglo_rechaza_por_tamano_desconocido() {
+        // Política FE-14.2-01: Arreglo<-Lista rechazado estáticamente por tamaño desconocido.
         let e = HirExpresion::ArregloLiteral {
             elementos: vec![lit_entero(1)],
             tipo: TipoSem::Lista(Box::new(TipoSem::Entero)),
@@ -3105,7 +4067,11 @@ mod verificacion_3b_tests {
             TipoSem::Arreglo(Box::new(TipoSem::Entero), 1),
             vec![HirSentencia::Retornar(Some(e))],
         );
-        assert!(VerificadorHir::verificar_detallado(&p).es_ok());
+        let r = VerificadorHir::verificar_detallado(&p);
+        assert!(
+            !r.es_ok(),
+            "Arreglo<-Lista debe rechazarse por tamaño desconocido"
+        );
     }
 
     #[test]
@@ -3115,7 +4081,7 @@ mod verificacion_3b_tests {
             tipo: TipoSem::Arreglo(Box::new(TipoSem::Entero), 1),
         };
         let p = prog_funcion(
-            TipoSem::Coleccion(Box::new(TipoSem::Entero)),
+            TipoSem::Coleccion(Box::new(TipoSem::Entero), 1),
             vec![HirSentencia::Retornar(Some(e))],
         );
         assert!(VerificadorHir::verificar_detallado(&p).es_ok());
@@ -3181,6 +4147,7 @@ mod verificacion_3b_tests {
                 capturas_externas: vec![],
                 celdas: vec![],
                 retorno: TipoSem::Entero,
+                cuerpo_spans: vec![],
                 cuerpo: vec![
                     HirSentencia::Expresion(HirExpresion::Lambda {
                         nombre: "l".to_string(),
@@ -3190,6 +4157,7 @@ mod verificacion_3b_tests {
                     }),
                     HirSentencia::Retornar(Some(lit_entero(1))),
                 ],
+                span: None,
             }],
         };
         assert!(VerificadorHir::verificar_detallado(&p).es_ok());

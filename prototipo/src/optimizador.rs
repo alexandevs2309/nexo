@@ -114,6 +114,13 @@ fn sustituir_constantes(r: &mut MirRvalue, conocidos: &HashMap<usize, MirConst>)
         }
         MirRvalue::Campo { base, .. } => sustituir_operando(base, conocidos),
         MirRvalue::Longitud { base } => sustituir_operando(base, conocidos),
+        MirRvalue::ConstruirEnum { payload, .. } => {
+            for c in payload {
+                sustituir_operando(c, conocidos);
+            }
+        }
+        MirRvalue::DiscriminanteEnum { base } => sustituir_operando(base, conocidos),
+        MirRvalue::PayloadEnum { base, .. } => sustituir_operando(base, conocidos),
         MirRvalue::Rango { inicio, fin, .. } => {
             sustituir_operando(inicio, conocidos);
             sustituir_operando(fin, conocidos);
@@ -126,6 +133,12 @@ fn sustituir_constantes(r: &mut MirRvalue, conocidos: &HashMap<usize, MirConst>)
         MirRvalue::CrearCelda { valor } => sustituir_operando(valor, conocidos),
         MirRvalue::LeerCelda { base } => sustituir_operando(base, conocidos),
         MirRvalue::ObjetoModulo { .. } => {}
+        MirRvalue::ConstruirStruct { campos, .. } => {
+            for c in campos {
+                sustituir_operando(c, conocidos);
+            }
+        }
+        MirRvalue::CampoNominal { base, .. } => sustituir_operando(base, conocidos),
         MirRvalue::Use(op) => sustituir_operando(op, conocidos),
     }
 }

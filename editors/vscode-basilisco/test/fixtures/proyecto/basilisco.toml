@@ -1,0 +1,5 @@
+[paquete]
+nombre = "demo_e2e"
+version = "0.1.0"
+
+[dependencias]

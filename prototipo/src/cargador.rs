@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::evaluador::{CausaError, Entorno, ErrorEjecucion};
 use crate::lexer::Lexer;
-use crate::parser::{Parser, Sentencia};
+use crate::parser::{Expresion, Parser, Sentencia};
 use crate::valor::Valor;
 
 /// Estado de carga de un módulo (rastreado por el cargador, no por el módulo).
@@ -316,25 +316,39 @@ impl CargadorModulos {
             archivo: e.archivo.clone().or(Some(ruta_str.clone())),
         })?;
 
-        // Validar: solo Declaracion, Funcion y Usar en nivel superior (ADR-0017 D4).
+        // Validar sentencias permitidas en nivel superior de módulo.
         for s in &ast {
-            match s {
+            let permitida = match s {
                 Sentencia::Declaracion { .. }
                 | Sentencia::Funcion { .. }
-                | Sentencia::Usar { .. } => {}
-                _ => {
-                    let (linea, columna) = ubicacion_sentencia(s);
-                    return Err(ErrorEjecucion {
-                        mensaje: "sentencia no permitida en el nivel superior de un módulo"
-                            .to_string(),
-                        causa: Box::new(CausaError::SentenciaNoPermitidaEnModulo {
-                            sentencia: format!("{:?}", s),
-                        }),
-                        linea,
-                        columna,
-                        archivo: Some(ruta_str.clone()),
-                    });
-                }
+                | Sentencia::Estructura { .. }
+                | Sentencia::Enumeracion { .. }
+                | Sentencia::Rasgo { .. }
+                | Sentencia::ImplementacionInherente { .. }
+                | Sentencia::ImplementacionRasgo { .. }
+                | Sentencia::Usar { .. }
+                | Sentencia::Importar { .. } => true,
+                Sentencia::Exportar { sentencia, .. } => matches!(
+                    sentencia.as_ref(),
+                    Sentencia::Declaracion { .. }
+                        | Sentencia::Funcion { .. }
+                        | Sentencia::Estructura { .. }
+                        | Sentencia::Enumeracion { .. }
+                        | Sentencia::Rasgo { .. }
+                ),
+                _ => false,
+            };
+            if !permitida {
+                let (linea, columna) = ubicacion_sentencia(s);
+                return Err(ErrorEjecucion {
+                    mensaje: "sentencia no permitida en el nivel superior de un módulo".to_string(),
+                    causa: Box::new(CausaError::SentenciaNoPermitidaEnModulo {
+                        sentencia: format!("{:?}", s),
+                    }),
+                    linea,
+                    columna,
+                    archivo: Some(ruta_str.clone()),
+                });
             }
         }
 
@@ -430,12 +444,50 @@ fn ubicacion_sentencia(s: &Sentencia) -> (usize, usize) {
         | Sentencia::Mostrar { linea, columna, .. }
         | Sentencia::MostrarSinSalto { linea, columna, .. }
         | Sentencia::ParaCada { linea, columna, .. }
+        | Sentencia::Enumeracion { linea, columna, .. }
+        | Sentencia::Rasgo { linea, columna, .. }
+        | Sentencia::ImplementacionInherente { linea, columna, .. }
+        | Sentencia::ImplementacionRasgo { linea, columna, .. }
         | Sentencia::Romper { linea, columna }
         | Sentencia::Continuar { linea, columna }
         | Sentencia::IntentarRescatar { linea, columna, .. }
         | Sentencia::Importar { linea, columna, .. }
         | Sentencia::Exportar { linea, columna, .. }
-        | Sentencia::Usar { linea, columna, .. } => (*linea, *columna),
-        Sentencia::Bloque(_) | Sentencia::Expresion(_) => (1, 1),
+        | Sentencia::Usar { linea, columna, .. }
+        | Sentencia::AsignacionCampo { linea, columna, .. }
+        | Sentencia::Estructura { linea, columna, .. } => (*linea, *columna),
+        Sentencia::Expresion(e) => ubicacion_expresion(e),
+        Sentencia::Bloque(stmts) => stmts.first().map(ubicacion_sentencia).unwrap_or((1, 1)),
+    }
+}
+
+fn ubicacion_expresion(e: &Expresion) -> (usize, usize) {
+    match e {
+        Expresion::Literal { linea, columna, .. }
+        | Expresion::Variable { linea, columna, .. }
+        | Expresion::Llamada { linea, columna, .. }
+        | Expresion::ArregloLiteral { linea, columna, .. }
+        | Expresion::Indice { linea, columna, .. }
+        | Expresion::Acceso { linea, columna, .. }
+        | Expresion::LlamadaIndirecta { linea, columna, .. }
+        | Expresion::Lambda { linea, columna, .. }
+        | Expresion::Rango { linea, columna, .. }
+        | Expresion::ConstruccionEstructura { linea, columna, .. }
+        | Expresion::ConstruccionVariante { linea, columna, .. }
+        | Expresion::Coincidir { linea, columna, .. } => (*linea, *columna),
+        Expresion::Suma(a, _)
+        | Expresion::Resta(a, _)
+        | Expresion::Multiplicacion(a, _)
+        | Expresion::Division(a, _)
+        | Expresion::Modulo(a, _)
+        | Expresion::IgualIgual(a, _)
+        | Expresion::Distinto(a, _)
+        | Expresion::Menor(a, _)
+        | Expresion::MenorIgual(a, _)
+        | Expresion::Mayor(a, _)
+        | Expresion::MayorIgual(a, _)
+        | Expresion::Y(a, _)
+        | Expresion::O(a, _) => ubicacion_expresion(a),
+        Expresion::No(inner) => ubicacion_expresion(inner),
     }
 }

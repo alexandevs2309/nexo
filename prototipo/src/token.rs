@@ -26,6 +26,10 @@ pub enum TipoToken {
     Si,
     Sino,
     Mientras,
+    Coincidir,
+    Implementar,
+    Rasgo,
+    Yo,
     Y,
     O,
     No,
@@ -58,6 +62,8 @@ pub enum TipoToken {
     DosPuntos,
     /// Flecha `->` para anotación de tipo de retorno (ADR-0011).
     Flecha,
+    /// Flecha doble `=>` para brazos de `coincidir` (Fase 08 S8.3).
+    FlechaDoble,
     /// Palabra clave `nulo` (ADR-0011 §3.5).
     Nulo,
     /// Palabra clave `para` (ADR-0012 §3.1).
@@ -90,6 +96,10 @@ pub enum TipoToken {
     Como,
     /// Palabra clave `publico` (ADR-0017 D2).
     Publico,
+    /// Palabra clave `estructura` (Fase 08 S8.1).
+    Estructura,
+    /// Palabra clave `enumeracion` (Fase 08 S8.2).
+    Enumeracion,
     /// Fin de línea (LF o CRLF). El parser decide contextualmente si termina sentencia.
     FinDeLinea,
     Fin,

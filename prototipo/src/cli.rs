@@ -399,6 +399,7 @@ pub fn main() -> ExitCode {
             )
         }
         "registry" => {
+            let args = &args[1..];
             if args.is_empty() {
                 eprintln!(
                     "uso: {COMANDO} registry <add|list|remove|set-default|enable|disable|info>"
@@ -407,7 +408,7 @@ pub fn main() -> ExitCode {
             }
             match args[0].to_str().unwrap_or("") {
                 "add" => {
-                    if args.len() < 5 {
+                    if args.len() < 4 {
                         eprintln!("uso: {COMANDO} registry add <alias> <registry-id> <url>");
                         return ExitCode::from(2);
                     }
@@ -603,11 +604,20 @@ pub fn main() -> ExitCode {
             depurar_archivo(&args[1..])
         }
         "lsp" => {
-            if args.len() > 1 {
+            let extra = &args[1..];
+            if extra.iter().any(|a| a.to_string_lossy() != "--stdio") {
                 eprintln!("uso: {COMANDO} lsp");
                 return ExitCode::from(2);
             }
             ejecutar_lsp()
+        }
+        "dap" => {
+            let extra = &args[1..];
+            if extra.iter().any(|a| a.to_string_lossy() != "--stdio") {
+                eprintln!("uso: {COMANDO} dap");
+                return ExitCode::from(2);
+            }
+            ejecutar_dap()
         }
         "paquetes" => {
             if args.len() > 2 {
@@ -625,62 +635,247 @@ pub fn main() -> ExitCode {
 }
 
 fn repl() -> ExitCode {
+    use crate::parser::Sentencia;
     use std::io::{self, BufRead, Write};
     let stdin = io::stdin();
-    let mut env = Entorno::nueva();
     let mut buffer = String::new();
     let mut acumulado = String::new();
-    println!("{NOMBRE} REPL (escribe 'salir' para terminar)");
+    let mut preambulo: Vec<String> = Vec::new(); // definiciones/declaraciones persistentes
+    let mut historial: Vec<String> = Vec::new();
+    let mut vm_sesion: Option<crate::vm::MaquinaVirtual> = None;
+    let mut globals_previos: usize = 0;
+    println!(
+        "{NOMBRE} REPL (pipeline real: Lexer→Parser→Semántico→HIR→MIR→VM; sesión persistente; :help para ayuda)"
+    );
     loop {
-        print!(">>> ");
+        let prompt = if acumulado.is_empty() { ">>> " } else { "... " };
+        print!("{prompt}");
         let _ = io::stdout().flush();
         buffer.clear();
         match stdin.lock().read_line(&mut buffer) {
-            Ok(0) => break, // EOF
+            Ok(0) => break,
             Ok(_) => {}
             Err(e) => {
                 eprintln!("error de lectura: {e}");
                 break;
             }
         }
-        let linea = buffer.trim();
-        if linea == "salir" || linea == "exit" || linea == "quit" {
-            break;
-        }
-        if linea.is_empty() {
-            continue;
+        let linea = buffer.trim_end_matches(['\n', '\r']);
+        let trimmed = linea.trim();
+        if acumulado.is_empty() {
+            match trimmed {
+                "salir" | "exit" | "quit" | ":salir" | ":q" => break,
+                ":help" | ":ayuda" => {
+                    println!("Comandos: :help, :reset, :historial, :salir");
+                    println!(
+                        "El REPL ejecuta por el pipeline real VM y preserva estado de sesión (variables, mutaciones, funciones)."
+                    );
+                    continue;
+                }
+                ":reset" => {
+                    preambulo.clear();
+                    acumulado.clear();
+                    vm_sesion = None;
+                    globals_previos = 0;
+                    println!("estado reiniciado");
+                    continue;
+                }
+                ":historial" => {
+                    for (i, h) in historial.iter().enumerate() {
+                        println!("{}: {}", i + 1, h);
+                    }
+                    continue;
+                }
+                "" => continue,
+                _ => {}
+            }
+        } else if trimmed.is_empty() {
+            // intento de evaluación con bloque incompleto
         }
         acumulado.push_str(linea);
         acumulado.push('\n');
-        // Intentar parsear y ejecutar.
-        let tokens = match Lexer::nuevo(&acumulado).tokenizar() {
+
+        // Intentar parsear el input solo para detectar incompletitud
+        let tokens_input = match Lexer::nuevo(&acumulado).tokenizar() {
             Ok(t) => t,
             Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("untermin")
+                    || msg.contains("fin")
+                    || msg.contains("cadena no terminada")
+                {
+                    continue;
+                }
                 eprintln!("léxico: {e}");
                 acumulado.clear();
                 continue;
             }
         };
-        let sentencias = match Parser::nuevo(tokens).parsear_programa() {
+        let sentencias_input = match Parser::nuevo(tokens_input).parsear_programa() {
             Ok(s) => s,
             Err(e) => {
+                let msg = e.to_string().to_lowercase();
+                if msg.contains("fin de archivo")
+                    || msg.contains("no terminada")
+                    || msg.contains("untermin")
+                    || msg.contains("falta '}'")
+                    || msg.contains("falta ')'")
+                    || msg.contains("falta ']'")
+                {
+                    continue;
+                }
                 eprintln!("sintaxis: {e}");
                 acumulado.clear();
                 continue;
             }
         };
-        match env.ejecutar_programa(&sentencias) {
-            Ok(Some(v)) => println!("{v}"),
-            Ok(None) => {}
-            Err(e) => eprintln!("error: {e}"),
-        }
+
+        let entrada = acumulado.trim().to_string();
         acumulado.clear();
+        historial.push(entrada.clone());
+
+        let es_definicion = sentencias_input.iter().all(|s| {
+            matches!(
+                s,
+                Sentencia::Funcion { .. }
+                    | Sentencia::Estructura { .. }
+                    | Sentencia::Enumeracion { .. }
+                    | Sentencia::Rasgo { .. }
+                    | Sentencia::ImplementacionRasgo { .. }
+                    | Sentencia::Declaracion { .. }
+                    | Sentencia::Importar { .. }
+                    | Sentencia::Usar { .. }
+                    | Sentencia::Exportar { .. }
+            )
+        });
+
+        let fuente_programa = if es_definicion {
+            let mut src = String::new();
+            for p in &preambulo {
+                src.push_str(p);
+                src.push('\n');
+            }
+            src.push_str(&entrada);
+            src.push('\n');
+            src.push_str("funcion main() {}\n");
+            match compilar_fuente_a_mir(&src) {
+                Ok(programa) => {
+                    let globals_antes = globals_previos;
+                    match ejecutar_mir_en_sesion(&mut vm_sesion, &mut globals_previos, programa) {
+                        Ok(_) => {
+                            preambulo.push(entrada);
+                            // globals_previos ya actualizado; mantener estado persistente
+                            let _ = globals_antes;
+                        }
+                        Err(e) => eprintln!("{e}"),
+                    }
+                }
+                Err(e) => eprintln!("{e}"),
+            }
+            continue;
+        } else {
+            let mut src = String::new();
+            for p in &preambulo {
+                src.push_str(p);
+                src.push('\n');
+            }
+            let es_expr_unica = sentencias_input.len() == 1
+                && matches!(&sentencias_input[0], Sentencia::Expresion(_));
+            if es_expr_unica {
+                src.push_str("funcion main() {\n  mostrar(");
+                src.push_str(&entrada);
+                src.push_str(")\n}\n");
+            } else {
+                src.push_str("funcion main() {\n");
+                src.push_str(&entrada);
+                src.push_str("\n}\n");
+            }
+            src
+        };
+
+        match compilar_fuente_a_mir(&fuente_programa) {
+            Ok(programa) => {
+                if let Err(e) =
+                    ejecutar_mir_en_sesion(&mut vm_sesion, &mut globals_previos, programa)
+                {
+                    eprintln!("{e}");
+                }
+            }
+            Err(e) => eprintln!("{e}"),
+        }
     }
     ExitCode::SUCCESS
 }
 
+fn compilar_fuente_a_mir(fuente: &str) -> Result<crate::mir::MirPrograma, String> {
+    use crate::ContextoSemantico;
+    use crate::mir;
+    let tokens = Lexer::nuevo(fuente)
+        .tokenizar()
+        .map_err(|e| e.to_string())?;
+    let sentencias = Parser::nuevo(tokens)
+        .parsear_programa()
+        .map_err(|e| e.to_string())?;
+    let mut ctx = ContextoSemantico::nuevo();
+    let errs = ctx.analizar_programa(&sentencias);
+    if !errs.is_empty() {
+        return Err(errs
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"));
+    }
+    let (sentencias, errs_g4) = ctx.monomorfizar_programa(&sentencias);
+    if !errs_g4.is_empty() {
+        return Err(errs_g4
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"));
+    }
+    *crate::hir::MODULO_ERROR.lock().unwrap() = None;
+    let hir = crate::hir::lower_programa(&sentencias, &ctx).map_err(|e| format!("{:?}", e))?;
+    if let Some(e) = crate::hir::MODULO_ERROR.lock().unwrap().take() {
+        return Err(e);
+    }
+    gate_hir(&hir)?;
+    let programa = mir::lower_programa(&hir);
+    gate_mir(&programa)?;
+    Ok(programa)
+}
+
+fn ejecutar_mir_en_sesion(
+    vm_sesion: &mut Option<crate::vm::MaquinaVirtual>,
+    globals_previos: &mut usize,
+    programa: crate::mir::MirPrograma,
+) -> Result<(), String> {
+    use crate::vm::MaquinaVirtual;
+    if let Some(vm) = vm_sesion.as_mut() {
+        let prev = *globals_previos;
+        vm.reemplazar_programa_repl(programa, prev)
+            .map_err(|e| e.to_string())?;
+    } else {
+        let mut vm = MaquinaVirtual::nuevo(programa);
+        vm.registrar_stdlib();
+        *vm_sesion = Some(vm);
+    }
+    let vm = vm_sesion.as_mut().expect("vm sesion");
+    let idx = vm
+        .indice_de("main")
+        .ok_or_else(|| "el programa no define `funcion main()`".to_string())?;
+    vm.ejecutar_indice(idx, &[]).map_err(|e| e.to_string())?;
+    *globals_previos = vm.globals_len();
+    Ok(())
+}
+
 fn ejecutar_lsp() -> ExitCode {
     let mut servidor = crate::lsp::ServidorLsp::nuevo();
+    servidor.ejecutar();
+    ExitCode::SUCCESS
+}
+
+fn ejecutar_dap() -> ExitCode {
+    let mut servidor = crate::dap::ServidorDap::nuevo();
     servidor.ejecutar();
     ExitCode::SUCCESS
 }
@@ -813,6 +1008,7 @@ fn ayuda() {
     println!("  {COMANDO} update [ruta]          re-resuelve dependencias y reescribe {BLOQUEO}");
     println!("  {COMANDO} publish [ruta]         empaqueta el proyecto en un artefacto .bpk");
     println!("  {COMANDO} lsp                 servidor de idioma (LSP) sobre stdio");
+    println!("  {COMANDO} dap                 adaptador de depuración (DAP) sobre stdio");
     println!("  {COMANDO} depurar <archivo>    ejecuta con traza de funciones (depurador)");
     println!("  {COMANDO} demo                   ejecuta una demostración");
     println!("  {COMANDO} --version              muestra la versión");
@@ -1348,7 +1544,7 @@ fn ejecutar_fuente_vm(
 fn principal(fuente: &str) -> Result<Valor, String> {
     let tokens = Lexer::nuevo(fuente)
         .tokenizar()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("{e}\n---FUENTE---\n{fuente}\n---FIN---"))?;
     let expr = Parser::nuevo(tokens)
         .parsear_expresion()
         .map_err(|e| e.to_string())?;
@@ -1433,28 +1629,51 @@ fn instalar_paquetes(ruta: Option<PathBuf>) -> ExitCode {
         }
     };
 
-    let resueltas = match paquetes::resolver_dependencias(&manifiesto, &base) {
-        Ok(r) => r,
+    let bloqueo = match paquetes::leer_bloqueo(&base) {
+        Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::from(3);
         }
     };
 
-    if let Err(e) = paquetes::verificar_integridad(&base, &resueltas) {
-        eprintln!("error: {e}");
-        return ExitCode::from(3);
-    }
-    if let Err(e) = paquetes::escribir_bloqueo(&base, &resueltas) {
-        eprintln!("error: {e}");
-        return ExitCode::from(3);
-    }
+    let (resueltas, desde_lock) = if let Some(lock) = bloqueo {
+        match paquetes::instalar_desde_bloqueo(&base, &manifiesto, &lock) {
+            Ok(r) => (r, true),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(3);
+            }
+        }
+    } else {
+        let resueltas = match paquetes::resolver_dependencias(&manifiesto, &base) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(3);
+            }
+        };
+        if let Err(e) = paquetes::verificar_integridad(&base, &resueltas) {
+            eprintln!("error: {e}");
+            return ExitCode::from(3);
+        }
+        if let Err(e) = paquetes::escribir_bloqueo(&base, &resueltas) {
+            eprintln!("error: {e}");
+            return ExitCode::from(3);
+        }
+        (resueltas, false)
+    };
 
     println!(
-        "{} {}: {} dependencia(s) resuelta(s)",
+        "{} {}: {} dependencia(s) {}",
         manifiesto.paquete.nombre,
         manifiesto.paquete.version,
-        resueltas.len()
+        resueltas.len(),
+        if desde_lock {
+            "instalada(s) desde basilisco.lock"
+        } else {
+            "resuelta(s)"
+        }
     );
     for dep in &resueltas {
         if dep.verificado {
@@ -1473,7 +1692,11 @@ fn instalar_paquetes(ruta: Option<PathBuf>) -> ExitCode {
             );
         }
     }
-    println!("bloqueo escrito: {}", base.join(BLOQUEO).display());
+    if desde_lock {
+        println!("bloqueo usado: {}", base.join(BLOQUEO).display());
+    } else {
+        println!("bloqueo escrito: {}", base.join(BLOQUEO).display());
+    }
     ExitCode::SUCCESS
 }
 
@@ -1591,8 +1814,8 @@ fn agregar_dependencia(nombre: &str, resto: &[OsString]) -> ExitCode {
         return ExitCode::from(3);
     }
     println!("dependencia agregada: {entrada}");
-    // Re-instalar para resolver todo y reescribir el bloqueo.
-    instalar_paquetes(Some(base))
+    // Actualización deliberada del bloqueo tras cambio de manifiesto.
+    actualizar_paquetes(Some(base))
 }
 
 /// Inserta `entrada` al final de la sección `[dependencias]` del TOML,
@@ -2015,25 +2238,36 @@ fn instalar_remoto(metadata_url: &str, artifact_url: &str, destino: &Path) -> Ex
         eprintln!("error: {e}");
         return ExitCode::from(1);
     }
-    // Verificación criptográfica si hay firma y clave.
+    // Verificación criptográfica fail-closed para instalaciones remotas.
     let base = destino.parent().unwrap_or(destino);
     let almacen = crate::paquetes::AlmacenClaves::cargar(base).unwrap_or_default();
-    if let (Some(firma), Some(clave_hex)) = (&meta.firma, &meta.clave) {
-        let clave_bytes = match hex_decode(clave_hex) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("error: {e}");
-                return ExitCode::from(1);
-            }
-        };
-        if !almacen.es_confiable(&meta.registry_id, &meta.key_id, &clave_bytes) {
-            eprintln!("error: clave no confiable");
-            return ExitCode::from(1);
-        }
-        if let Err(e) = crate::paquetes::verificar_firma_metadatos(&meta, firma, &clave_bytes) {
+    let (Some(firma), Some(clave_hex)) = (&meta.firma, &meta.clave) else {
+        eprintln!("error: autenticidad no demostrada: faltan firma o clave");
+        return ExitCode::from(1);
+    };
+    let clave_bytes = match hex_decode(clave_hex) {
+        Ok(b) => b,
+        Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::from(1);
         }
+    };
+    if !almacen.es_confiable(&meta.registry_id, &meta.key_id, &clave_bytes) {
+        eprintln!("error: clave no confiable");
+        return ExitCode::from(1);
+    }
+    if let Err(e) = crate::paquetes::verificar_firma_metadatos(&meta, firma, &clave_bytes) {
+        eprintln!("error: {e}");
+        return ExitCode::from(1);
+    }
+    let mut nonces = crate::paquetes::RegistroNonces::cargar(base).unwrap_or_default();
+    if let Err(e) = nonces.aceptar(&meta.registry_id, &meta.nonce) {
+        eprintln!("error: {e}");
+        return ExitCode::from(1);
+    }
+    if let Err(e) = nonces.guardar(base) {
+        eprintln!("error: {e}");
+        return ExitCode::from(1);
     }
     match crate::cliente_remoto::extraer_bpk(&bytes, destino) {
         Ok(_) => {
@@ -2107,6 +2341,10 @@ mod tests_gate_3c {
         let prog = MirPrograma {
             funciones: vec![f],
             globals: vec![],
+            contiene_coincidir: false,
+            contiene_nominales: false,
+
+            source_map: std::collections::HashMap::new(),
         };
         assert!(gate_mir(&prog).is_err());
     }

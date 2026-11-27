@@ -1,96 +1,111 @@
-# FFI / ABI básico
+# FFI / ABI — Fase 11
 
-> **Estado: IMPLEMENTADA-PARCIAL**
-> El puente FFI/ABI C está implementado en el commit `dda5f05` y sigue activo
-> en el código actual (HEAD `db272c7`). Las dependencias `libffi` y `libloading`
-> están presentes en `Cargo.toml`. La suite `tests/ffi.rs` está activa.
-> Límites: solo ABI C con tipos escalares y texto; sin callbacks, structs ni
-> variádicos. La reimplementación con diseño de seguridad completo queda prevista
-> para **Fase 5 (interoperabilidad)** cuando exista IR estable.
-> Ver `10-especificacion/estabilizacion-basilisco-0.6.0.md` sección 8 para contexto.
+> **Estado:** IMPLEMENTED + VERIFIED (subconjunto ABI C, Fase 11). READY FOR HUMAN REVIEW en alcance definido.
+> **Motores soportados:** Tree-Walk y VM (paridad verificada en subconjunto). Backend nativo/WASM: rechazo explícito BAS-7124.
 
-## Estado y alcance
-Implementado en el prototipo (`prototipo/src/evaluador.rs`) como puente de **ABI C**
-sobre las bibliotecas `libffi` (llamadas dinámicas con tipos mixtos) y
-`libloading` (carga y descarga de `.so`/`.dll`). Cubierto por pruebas en
-`prototipo/tests/ffi.rs` (compilan una biblioteca C en tiempo de ejecución).
+## 1. Modelo de interoperabilidad
 
-**Fuera de alcance actual:** callbacks hacia BASILISCO, paso de estructuras
-(`struct`), símbolos con aridad variádica C (`...`), y LLVM/JIT.
+BASILISCO expone un puente FFI C mediante tres primitivas:
+- `cargar_ffi(ruta: texto) -> entero` — carga biblioteca dinámica, devuelve id.
+- `llamar_ffi(id: entero, simbolo: texto, args: lista, tipo_retorno?: texto) -> valor` — invoca símbolo.
+- `descargar_ffi(id: entero) -> nulo` — descarga biblioteca por id.
 
-## Funciones integradas
+Implementación: `prototipo/src/ffi.rs` (`libloading` para carga, `libffi` para llamadas). Errores tipados `CausaFfi` integrados en `CausaError::FFIInvalido` (TW) y `ErrorVm::FfiInvalido` (VM).
 
-| Función | Firma | Retorna |
+## 2. Contrato ABI
+
+- **ABI:** C ABI de la plataforma (`extern "C"` en el lado C). Convención de llamada: la provista por libffi para la plataforma/toolchain.
+- **Plataforma verificada:** Linux x86_64 (entorno CI/local de desarrollo), compilador `cc` disponible.
+- **Bibliotecas:** dinámicas (`.so` Linux, `.dll` Windows, `.dylib` macOS por convención de nombre; verificado en Linux).
+- **Símbolos:** resueltos por nombre; el nombre no debe contener byte NUL.
+- **Duración:** la biblioteca se mantiene viva por `Arc<Library>` durante la invocación aunque otro hilo la descargue. Tras `descargar_ffi`, el id se invalida; llamadas posteriores producen error.
+
+## 3. Tipos y conversiones
+
+| Valor BASILISCO | Tipo C ABI | Notas |
 |---|---|---|
-| `cargar_ffi(ruta)` | 1 argumento, ruta de la biblioteca (`.so`/`.dll`) | `entero` (identificador) |
-| `llamar_ffi(id, "símbolo", [args], "tipo_retorno"?)` | 3 o 4 argumentos | depende de `tipo_retorno` |
-| `descargar_ffi(id)` | 1 argumento | `nulo` |
+| `entero` | `int64_t` / `long long` | 64 bits con signo |
+| `real` | `double` | IEEE 754 64-bit |
+| `decimal` | `double` | Escalado BASILISCO /10^9 antes de pasar; retorno `double` reescalado a `decimal`, error si no finito o desborda i128 |
+| `texto` | `const char*` | UTF-8 NUL-terminated. Argumento: `CString` propiedad de BASILISCO durante la llamada; callee no debe conservar/liberar. Retorno: BASILISCO copia contenido, no libera puntero; nulo => error. |
 
-El cuarto argumento de `llamar_ffi` es el tipo de retorno declarado; si se
-omite, se asume `entero`. Los tipos de retorno aceptados son:
-`entero` (por omisión), `logico`, `real`, `decimal`, `texto`, `nulo` / `vacío`.
-
-Errores: `E1040` (`CausaError::FFIInvalido`) con mensaje
-`error de FFI: {detalle}` para carga fallida, símbolo inexistente, argumento
-de tipo no aceptado, tipo de retorno desconocido, id inexistente, puntero
-nulo en retorno de texto o resultado no representable en `decimal`.
-
-## Mapeo de tipos (ABI C)
-
-El tipo del lado C debe **coincidir con el literal que pasa el programa**:
-un argumento `entero` de BASILISCO se pasa como `long long` (64 bits con
-signo); un argumento `real`/`decimal` se pasa como `double` de 64 bits
-IEEE 754.
-
-| Valor BASILISCO | Tipo C supuesto |
-|---|---|
-| `Entero` | `int64_t` / `long long` |
-| `Real` | `double` |
-| `Decimal` (entero escalado /10^9) | `double` |
-| `Texto` | `const char *` (puntero UTF‑8 terminado en NUL) |
-
-| tipo_retorno | Tipo C supuesto | Resultado BASILISCO |
+| tipo_retorno | Tipo C ABI | Resultado BASILISCO |
 |---|---|---|
-| `entero` | `int64_t` | `entero` (el valor C tal cual) |
-| `logico` | `int64_t` | `lógico`: distinto de 0 es verdadero |
+| `entero` (default) | `int64_t` | `entero` |
+| `logico` | `int64_t` | `lógico` (`!= 0`) |
 | `real` | `double` | `real` |
-| `decimal` | `double` | `decimal` escalado ×10^9; error si no es finito o se desborda |
-| `texto` | `const char *` | `texto` (copia UTF‑8; ver convención de propiedad) |
-| `nulo` / `vacío` | `void` | `nulo` |
+| `decimal` | `double` | `decimal` o error de rango |
+| `texto` | `const char*` | `texto` (copia) o error si nulo |
+| `nulo`/`vacío` | `void` | `nulo` |
 
-Ejemplos: una función C `double media(double, double)` se llama con
-`llamar_ffi(lib, "media", [2.0, 4.0], "real")` (literales `real`); si se le
-pasan literales `entero` E1040 no ocurre pero el resultado será incorrecto,
-porque ambos lados suponen tamaños de registro distintos. La regla es: la
-firma C manda y el programa BASILISCO debe emitir literales del tipo
-equivalente.
+No hay conversión silenciosa entre tipos incompatibles. Tipos no admitidos como argumento (`lógico`, colecciones, objetos, etc.) producen `E1077`.
 
-## Convención de propiedad de textos
+## 4. Firmas y validación
 
-- **Argumentos de texto:** BASILISCO crea un `CString` y pasa el puntero;
-  el callee NO debe conservar el puntero más allá de la llamada ni
-  liberarlo (la memoria la posee el calling code de BASILISCO).
-- **Retorno de texto:** se copia el contenido del puntero devuelto y **no
-  se libera**. Por lo tanto: solo es seguro para cadenas estáticas o
-  gestionadas por el callee; un puntero devuelto por `malloc` y jamás
-  liberado deja una fuga (se acepta como límite de este puente básico).
-- Un puntero nulo en retorno de texto produce E1040.
+- La firma ABI se expresa por los valores reales pasados y `tipo_retorno`. libffi construye el CIF antes de la llamada.
+- No se valida la firma C real del símbolo (limitación ABI C dinámica). Una firma incompatible puede causar UB nativo; el contrato exige que el programa BASILISCO coincida con la firma C.
+- `tipo_retorno` desconocido => `E1075`.
+- El identificador de biblioteca inválido/descargado => `E1073`/`E1074`.
 
-## Gestión de bibliotecas
+## 5. Memoria y seguridad
 
-- `cargar_ffi` devuelve un identificador incremental global; la biblioteca
-  vive en un registro interno (`HashMap<i64, Arc<Library>>`) hasta
-  `descargar_ffi`.
-- El `Arc` mantiene viva la biblioteca durante una llamada aunque otro
-  hilo la descargue (no hay desreferencia de símbolo tras `dlclose`).
-- `llamar_ffi` con un id no cargado (por ejemplo tras `descargar_ffi`, o
-  un id inventado) produce E1040 `no hay biblioteca cargada con id N`.
+- **Argumentos texto:** `CString` vivo durante toda la invocación. El callee no debe retener el puntero.
+- **Retorno texto:** BASILISCO lee con `CStr::from_ptr` y copia a `String`. No libera el puntero. Contrato: puntero válido, NUL-terminated, legible durante la conversión. Punteros retornados por `malloc` no liberados por callee son fuga de responsabilidad del callee (límite documentado).
+- **Bibliotecas:** `Arc<Library>` evita descarga efectiva durante llamada en curso. `descargar_ffi` elimina id del registro.
+- **Pánico Rust:** llamadas libffi envueltas con `catch_unwind`; pánico no controlado => `E1080`. No impide abort/segfault nativo.
+- **Límites de seguridad:** BASILISCO no puede validar punteros arbitrarios devueltos por C ni impedir UB/corrupción en código nativo. FFI convencional no es sandbox. Código nativo no confiable requiere aislamiento por proceso (fuera de alcance Fase 11).
 
-## Límites declarados
+## 6. Errores y diagnósticos
 
-1. Sin callbacks: una función C no puede llamar de vuelta a BASILISCO.
-2. Sin structs: solo tipos escalares y punteros a texto de la tabla.
-3. Sin variádicos C: la firma debe fijar la cantidad de argumentos.
-4. Sin manejo de señales ni excepciones C++: comportamientos no definidos
-   del callee se propagan al proceso.
-5. Los textos devueltos no se liberan (ver convención de propiedad).
+| Código | Causa | Descripción |
+|---|---|---|
+| E1070 | BibliotecaNoEncontrada | Ruta inexistente/no encontrable |
+| E1071 | BibliotecaNoCargable | Existe pero no cargable/incompatible |
+| E1072 | SimboloNoEncontrado | Símbolo no resuelto |
+| E1073 | IdBibliotecaInvalido | Id no válido en registro |
+| E1074 | BibliotecaDescargada | Biblioteca ya descargada / id no presente |
+| E1075 | FirmaInvalida | Tipo de retorno/firma inválida |
+| E1076 | AridadIncompatible | Reservado (no validable sin metadata C) |
+| E1077 | TipoArgumentoIncompatible | Tipo de argumento no admitido/con NUL interno |
+| E1078 | ConversionFueraDeRango | Decimal no finito/desbordado |
+| E1079 | ResultadoIncompatible | Retorno incompatible (p.ej. texto nulo) |
+| E1080 | ErrorInvocacion | Error de invocación/pánico capturado |
+| E1081 | EstadoRecursoInvalido | Estado de recurso inválido |
+| E1082 | Memoria | Error de memoria controlable |
+
+Normalización paridad TW↔VM: categoría `FfiInvalido`, subcausa = código, detalle normaliza ids de runtime.
+
+## 7. Integración por motor
+
+| Motor | Estado | Evidencia |
+|---|---|---|
+| Tree-Walk | SUPPORTED | `prototipo/tests/ffi.rs` (E2E real con cc/libffi/libloading) |
+| VM | SUPPORTED | Mismos casos E2E y paridad TW↔VM |
+| Backend nativo | UNSUPPORTED | Rechazo explícito `BAS-7124` al detectar `cargar_ffi/llamar_ffi/descargar_ffi` |
+| WASM | UNSUPPORTED | Rechazo explícito `BAS-7124` en backend entero/WASM; carga dinámica nativa no aplicable |
+
+## 8. Matriz de compatibilidad
+
+| Dimensión | Valor | Clasificación |
+|---|---|---|
+| ABI | C ABI plataforma, libffi | SUPPORTED (verificado Linux x86_64) |
+| Plataformas | Linux x86_64 verificado; Windows/macOS por diseño libloading/libffi | Linux SUPPORTED, otros UNVERIFIED |
+| Tipos args | entero, real, decimal, texto | SUPPORTED |
+| Tipos ret | entero, logico, real, decimal, texto, nulo/vacío | SUPPORTED |
+| Carga/descarga/símbolos | cargar/descargar/resolver | SUPPORTED |
+| Texto NUL interno | rechazado | SUPPORTED |
+| Punteros opacos | no expuestos | UNSUPPORTED |
+| Structs C | no | UNSUPPORTED |
+| Callbacks C→BASILISCO | no | UNSUPPORTED |
+| Variádicos C | no | UNSUPPORTED |
+| Buffers/memoria raw | no | UNSUPPORTED |
+| Aislamiento de código nativo | no | UNSUPPORTED (requiere arquitectura proceso aislado) |
+
+## 9. Limitaciones
+
+- No validación de firma C real del símbolo (riesgo UB si el programa no coincide con ABI C).
+- No callbacks, structs, variádicos, punteros opacos, buffers raw.
+- Retorno texto: copia sin liberar; puntero nulo rechazado; puntero inválido/UTF-8 no válido puede causar comportamiento definido por contrato de CStr/to_string_lossy (se copia con reemplazo de UTF-8 inválido).
+- `descargar_ffi` invalida id; no garantiza que código C haya liberado sus propios recursos.
+- FFI global por proceso (registro estático), no aislado por contexto de ejecución BASILISCO.
+- No sandbox: crashes/UB nativos pueden terminar el proceso.

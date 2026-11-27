@@ -4,7 +4,11 @@
 //! funciones reales vía `cargar_ffi`/`llamar_ffi`/`descargar_ffi`. Si no hay
 //! compilador C, las pruebas se omiten con un aviso por stderr.
 
-use basilisco::{CausaError, Entorno, ErrorEjecucion, Lexer, Parser, Valor};
+use basilisco::{
+    CausaError, Comparacion, ContextoSemantico, EfectosObservables, Entorno, ErrorEjecucion, Lexer,
+    Parser, ResultadoNormalizado, Valor, comparar_semantica, hir, mir, normalizar_error_tw,
+    normalizar_error_vm, normalizar_valor, vm,
+};
 use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,6 +24,22 @@ double mezcla(long long a, double b) { return a + b; }
 const char *saludo(void) { return "hola ffi"; }
 long long largo(const char *s) { long long n = 0; while (s[n]) n++; return n; }
 void nada(void) {}
+const char *texto_nulo(void) { return 0; }
+double retorna_nan(void) { return 0.0 / 0.0; }
+double retorna_inf(void) { return 1.0 / 0.0; }
+double retorna_decimal_grande(void) { return 1e300; }
+long long id_entero(long long x) { return x; }
+static char eco_buf[256];
+const char *eco_texto(const char *s) {
+    long long i = 0;
+    while (s[i] && i < 255) { eco_buf[i] = s[i]; i++; }
+    eco_buf[i] = 0;
+    return eco_buf;
+}
+static long long contador = 0;
+void contador_reset(void) { contador = 0; }
+long long contador_inc(void) { contador++; return contador; }
+long long contador_get(void) { return contador; }
 "#;
 
 fn directorio_temporal(nombre: &str) -> PathBuf {
@@ -85,6 +105,98 @@ fn declaracion_biblioteca(ruta: &Path) -> String {
 /// para que `ejecutar` devuelva su valor.
 fn programa(ruta: &Path, ultima_expresion: &str) -> String {
     format!("{}{}\n", declaracion_biblioteca(ruta), ultima_expresion)
+}
+
+fn vm_resultado(fuente: &str) -> ResultadoNormalizado {
+    let tokens = Lexer::nuevo(fuente).tokenizar().unwrap();
+    let ss = Parser::nuevo(tokens).parsear_programa().unwrap();
+    let mut ctx = ContextoSemantico::nuevo();
+    let errores_sem = ctx.analizar_programa(&ss);
+    if let Some(e) = errores_sem.first() {
+        let relevante = matches!(
+            e.causa.as_ref(),
+            CausaError::ReasignacionInmutable { .. }
+                | CausaError::CondicionNoLogica { .. }
+                | CausaError::VariableNoDefinida(_)
+        );
+        if relevante {
+            return ResultadoNormalizado::Err(normalizar_error_tw(e));
+        }
+    }
+    let (ss, errs_g4) = ctx.monomorfizar_programa(&ss);
+    if let Some(e) = errs_g4.first() {
+        return ResultadoNormalizado::Err(normalizar_error_tw(e));
+    }
+    let hir_p = match hir::lower_programa(&ss, &ctx) {
+        Ok(h) => h,
+        Err(e) => {
+            return ResultadoNormalizado::Err(basilisco::paridad::ErrorNormalizado {
+                causa: basilisco::paridad::CausaNormalizada {
+                    categoria: basilisco::paridad::CategoriaError::NoSoportado,
+                    subcausa: Some("hir_no_implementado".to_string()),
+                    datos: {
+                        let mut d = std::collections::BTreeMap::new();
+                        d.insert("detalle".into(), format!("{e:?}"));
+                        d
+                    },
+                },
+            });
+        }
+    };
+    let mir_p = mir::lower_programa(&hir_p);
+    let mut maquina = vm::MaquinaVirtual::nuevo(mir_p);
+    maquina.registrar_stdlib();
+    let Some(idx) = maquina.indice_de("main") else {
+        return ResultadoNormalizado::Err(basilisco::paridad::ErrorNormalizado {
+            causa: basilisco::paridad::CausaNormalizada {
+                categoria: basilisco::paridad::CategoriaError::FuncionNoEncontrada,
+                subcausa: None,
+                datos: {
+                    let mut d = std::collections::BTreeMap::new();
+                    d.insert("nombre".into(), "main".into());
+                    d
+                },
+            },
+        });
+    };
+    match maquina.ejecutar_indice(idx, &[]) {
+        Ok(v) => ResultadoNormalizado::Ok {
+            valor: v.as_ref().map(normalizar_valor),
+            efectos: EfectosObservables::default(),
+        },
+        Err(e) => ResultadoNormalizado::Err(normalizar_error_vm(&e)),
+    }
+}
+
+fn tw_resultado(fuente: &str) -> ResultadoNormalizado {
+    let src = if fuente.contains("funcion main") {
+        format!(
+            "{}
+main()",
+            fuente
+        )
+    } else {
+        fuente.to_string()
+    };
+    match ejecutar(&src) {
+        Ok(v) => ResultadoNormalizado::Ok {
+            valor: v.as_ref().map(normalizar_valor),
+            efectos: EfectosObservables::default(),
+        },
+        Err(e) => ResultadoNormalizado::Err(normalizar_error_tw(&e)),
+    }
+}
+
+fn assert_ffi_parity(fuente: &str) {
+    let tw = tw_resultado(fuente);
+    let vmr = vm_resultado(fuente);
+    let cmp = comparar_semantica(&tw, &vmr);
+    match cmp {
+        Comparacion::Equivalente | Comparacion::DiferenciaDiagnostico(_) => {}
+        other => {
+            panic!("divergencia TW↔VM FFI\nSRC:\n{fuente}\nTW: {tw:?}\nVM: {vmr:?}\nCMP: {other:?}")
+        }
+    }
 }
 
 #[test]
@@ -221,8 +333,13 @@ fn cargar_ruta_inexistente_es_error() {
     let ruta_inexistente = directorio_temporal("inexistente").join(nombre_libreria());
     let e = ejecutar(&programa(&ruta_inexistente, "0")).unwrap_err();
     match *e.causa {
-        CausaError::FFIInvalido { detalle } => {
-            assert!(detalle.contains("no se pudo cargar"), "{detalle}");
+        CausaError::FFIInvalido { causa } => {
+            let detalle = causa.to_string();
+            assert!(
+                detalle.contains("biblioteca FFI no encontrada")
+                    || detalle.contains("biblioteca FFI no cargable"),
+                "{detalle}"
+            );
         }
         otro => panic!("se esperaba FFIInvalido, se obtuvo {otro:?}"),
     }
@@ -239,8 +356,12 @@ fn simbolo_inexistente_es_error() {
     ))
     .unwrap_err();
     match *e.causa {
-        CausaError::FFIInvalido { detalle } => {
-            assert!(detalle.contains("no_existe_nada"), "{detalle}");
+        CausaError::FFIInvalido { causa } => {
+            let detalle = causa.to_string();
+            assert!(
+                detalle.contains("no_existe_nada") || detalle.contains("símbolo FFI"),
+                "{detalle}"
+            );
         }
         otro => panic!("se esperaba FFIInvalido, se obtuvo {otro:?}"),
     }
@@ -270,8 +391,13 @@ fn descargar_y_llamar_es_error() {
     );
     let e = ejecutar(&fuente).unwrap_err();
     match *e.causa {
-        CausaError::FFIInvalido { detalle } => {
-            assert!(detalle.contains("no hay biblioteca cargada"), "{detalle}");
+        CausaError::FFIInvalido { causa } => {
+            let detalle = causa.to_string();
+            assert!(
+                detalle.contains("biblioteca FFI descargada")
+                    || detalle.contains("id de biblioteca FFI inválido"),
+                "{detalle}"
+            );
         }
         otro => panic!("se esperaba FFIInvalido, se obtuvo {otro:?}"),
     }
@@ -281,8 +407,13 @@ fn descargar_y_llamar_es_error() {
 fn descargar_con_id_invalido_es_error() {
     let e = ejecutar("descargar_ffi(999)").unwrap_err();
     match *e.causa {
-        CausaError::FFIInvalido { detalle } => {
-            assert!(detalle.contains("no hay biblioteca cargada"), "{detalle}");
+        CausaError::FFIInvalido { causa } => {
+            let detalle = causa.to_string();
+            assert!(
+                detalle.contains("biblioteca FFI descargada")
+                    || detalle.contains("id de biblioteca FFI inválido"),
+                "{detalle}"
+            );
         }
         otro => panic!("se esperaba FFIInvalido, se obtuvo {otro:?}"),
     }
@@ -299,10 +430,255 @@ fn argumento_de_tipo_no_aceptado_es_error() {
     ))
     .unwrap_err();
     match *e.causa {
-        CausaError::FFIInvalido { detalle } => {
-            assert!(detalle.contains("no aceptado"), "{detalle}");
+        CausaError::FFIInvalido { causa } => {
+            let detalle = causa.to_string();
+            assert!(
+                detalle.contains("incompatible") || detalle.contains("no aceptado"),
+                "{detalle}"
+            );
             assert!(detalle.contains("lógico"), "{detalle}");
         }
         otro => panic!("se esperaba FFIInvalido, se obtuvo {otro:?}"),
     }
+}
+
+fn programa_main(ruta: &Path, cuerpo: &str, retorno: &str) -> String {
+    format!(
+        "funcion main() -> {} {{\n  {}\n  retornar {}\n}}\n",
+        "texto", /* placeholder, overridden below */
+        declaracion_biblioteca(ruta),
+        cuerpo
+    )
+    .replace(
+        "funcion main() -> texto {",
+        &format!("funcion main() -> {} {{", retorno),
+    )
+}
+
+fn programa_main_stmt(ruta: &Path, stmts: &str) -> String {
+    format!(
+        "funcion main() -> entero {{\n  {}\n  {}\n  retornar 0\n}}\n",
+        declaracion_biblioteca(ruta),
+        stmts
+    )
+}
+
+#[test]
+fn tw_vm_paridad_ffi_basico() {
+    let Some(ruta) = compilar_libreria("paridad_basico") else {
+        return;
+    };
+    let src = programa_main(
+        &ruta,
+        "llamar_ffi(lib, \"sumar\", [20, 22], \"entero\")",
+        "entero",
+    );
+    assert_ffi_parity(&src);
+    let src = programa_main(
+        &ruta,
+        "llamar_ffi(lib, \"media\", [2.0, 4.0], \"real\")",
+        "real",
+    );
+    assert_ffi_parity(&src);
+    let src = programa_main(&ruta, "llamar_ffi(lib, \"saludo\", [], \"texto\")", "texto");
+    assert_ffi_parity(&src);
+}
+
+#[test]
+fn tw_vm_paridad_ffi_errores() {
+    let Some(ruta) = compilar_libreria("paridad_err") else {
+        return;
+    };
+    let src = programa_main(
+        &ruta,
+        "llamar_ffi(lib, \"no_existe\", [], \"entero\")",
+        "entero",
+    );
+    assert_ffi_parity(&src);
+    let src = programa_main_stmt(
+        &ruta,
+        "descargar_ffi(lib)\n  llamar_ffi(lib, \"sumar\", [1, 2], \"entero\")",
+    );
+    assert_ffi_parity(&src);
+}
+
+#[test]
+fn ffi_id_invalido_en_llamar() {
+    let e = ejecutar("llamar_ffi(9999, \"sumar\", [1, 2], \"entero\")").unwrap_err();
+    let CausaError::FFIInvalido { causa } = &*e.causa else {
+        panic!("esperaba FFIInvalido, got {:?}", e.causa)
+    };
+    let s = causa.to_string();
+    assert!(
+        s.contains("descargada") || s.contains("inválido") || s.contains("id"),
+        "{s}"
+    );
+}
+
+#[test]
+fn ffi_retorno_invalido_tipo_no_aceptado() {
+    let Some(ruta) = compilar_libreria("ret_tipo") else {
+        return;
+    };
+    let e = ejecutar(&programa(
+        &ruta,
+        "llamar_ffi(lib, \"sumar\", [1, 2], \"puntero\")",
+    ))
+    .unwrap_err();
+    let CausaError::FFIInvalido { causa } = &*e.causa else {
+        panic!("{:?}", e.causa)
+    };
+    assert_eq!(causa.codigo(), "E1075");
+    assert!(
+        causa.to_string().contains("tipo de retorno") || causa.to_string().contains("firma"),
+        "{}",
+        causa
+    );
+}
+
+#[test]
+fn ffi_texto_nulo_retorno_es_error() {
+    let Some(ruta) = compilar_libreria("texto_nulo") else {
+        return;
+    };
+    let e = ejecutar(&programa(
+        &ruta,
+        "llamar_ffi(lib, \"texto_nulo\", [], \"texto\")",
+    ))
+    .unwrap_err();
+    let CausaError::FFIInvalido { causa } = &*e.causa else {
+        panic!("{:?}", e.causa)
+    };
+    assert_eq!(causa.codigo(), "E1079");
+    assert!(causa.to_string().contains("nulo"), "{}", causa);
+}
+
+#[test]
+fn ffi_decimal_nan_inf_grande_es_error() {
+    let Some(ruta) = compilar_libreria("decimal_nan") else {
+        return;
+    };
+    for (sym, label) in [
+        ("retorna_nan", "nan"),
+        ("retorna_inf", "inf"),
+        ("retorna_decimal_grande", "grande"),
+    ] {
+        let e = ejecutar(&programa(
+            &ruta,
+            &format!("llamar_ffi(lib, \"{sym}\", [], \"decimal\")"),
+        ))
+        .unwrap_err();
+        let CausaError::FFIInvalido { causa } = &*e.causa else {
+            panic!("{label}: {:?}", e.causa)
+        };
+        assert_eq!(causa.codigo(), "E1078", "{label}: {}", causa);
+    }
+}
+
+#[test]
+fn ffi_argumento_texto_con_nul_interno_es_error() {
+    let Some(ruta) = compilar_libreria("nul_texto") else {
+        return;
+    };
+    let id = basilisco::ffi::cargar_libreria(ruta.to_str().unwrap()).unwrap();
+    let err = basilisco::ffi::llamar_funcion(id, "largo", &[Valor::Texto("a\0b".into())], "entero")
+        .unwrap_err();
+    assert_eq!(err.codigo(), "E1077");
+    assert!(err.to_string().contains("NUL"), "{}", err);
+    let _ = basilisco::ffi::descargar_libreria(id);
+}
+
+#[test]
+fn ffi_simbolo_con_nul_es_error() {
+    let Some(ruta) = compilar_libreria("nul_sym") else {
+        return;
+    };
+    let id = basilisco::ffi::cargar_libreria(ruta.to_str().unwrap()).unwrap();
+    let err = basilisco::ffi::llamar_funcion(id, "su\0mar", &[], "entero").unwrap_err();
+    assert_eq!(err.codigo(), "E1072");
+    let _ = basilisco::ffi::descargar_libreria(id);
+}
+
+#[test]
+fn ffi_descargar_y_recargar_genera_nuevo_id() {
+    let Some(ruta) = compilar_libreria("reload") else {
+        return;
+    };
+    let id1 = basilisco::ffi::cargar_libreria(ruta.to_str().unwrap()).unwrap();
+    basilisco::ffi::descargar_libreria(id1).unwrap();
+    let err = basilisco::ffi::llamar_funcion(
+        id1,
+        "sumar",
+        &[Valor::Entero(1), Valor::Entero(2)],
+        "entero",
+    )
+    .unwrap_err();
+    assert!(matches!(err.codigo(), "E1073" | "E1074"));
+    let id2 = basilisco::ffi::cargar_libreria(ruta.to_str().unwrap()).unwrap();
+    assert_ne!(id1, id2);
+    let v = basilisco::ffi::llamar_funcion(
+        id2,
+        "sumar",
+        &[Valor::Entero(2), Valor::Entero(3)],
+        "entero",
+    )
+    .unwrap();
+    assert_eq!(v, Valor::Entero(5));
+    let _ = basilisco::ffi::descargar_libreria(id2);
+}
+
+#[test]
+fn ffi_ciclo_vida_estado_dentro_biblioteca() {
+    let Some(ruta) = compilar_libreria("estado") else {
+        return;
+    };
+    let src = format!(
+        "{}\nllamar_ffi(lib, \"contador_reset\", [], \"nulo\")\nllamar_ffi(lib, \"contador_inc\", [], \"entero\")\nllamar_ffi(lib, \"contador_inc\", [], \"entero\")\nllamar_ffi(lib, \"contador_get\", [], \"entero\")\n",
+        declaracion_biblioteca(&ruta)
+    );
+    let v = ejecutar(&src).unwrap().unwrap();
+    assert_eq!(v, Valor::Entero(2));
+}
+
+#[test]
+fn ffi_texto_roundtrip_y_boundaries() {
+    let Some(ruta) = compilar_libreria("roundtrip") else {
+        return;
+    };
+    let src = format!(
+        "{}\nllamar_ffi(lib, \"eco_texto\", [\"hola\"], \"texto\")\n",
+        declaracion_biblioteca(&ruta)
+    );
+    let v = ejecutar(&src).unwrap().unwrap();
+    assert_eq!(v, Valor::Texto("hola".into()));
+    let src = format!(
+        "{}\nllamar_ffi(lib, \"id_entero\", [-9223372036854775808], \"entero\")\n",
+        declaracion_biblioteca(&ruta)
+    );
+    let v = ejecutar(&src).unwrap().unwrap();
+    assert_eq!(v, Valor::Entero(i64::MIN));
+}
+
+#[test]
+fn tw_vm_paridad_ffi_errores_tipados() {
+    let Some(ruta) = compilar_libreria("paridad_tipos_err") else {
+        return;
+    };
+    let src = programa_main_stmt(&ruta, "llamar_ffi(lib, \"texto_nulo\", [], \"texto\")");
+    assert_ffi_parity(&src);
+    let src = programa_main_stmt(&ruta, "llamar_ffi(lib, \"retorna_nan\", [], \"decimal\")");
+    assert_ffi_parity(&src);
+    let src = programa_main(
+        &ruta,
+        "llamar_ffi(lib, \"sumar\", [verdadero], \"entero\")",
+        "entero",
+    );
+    assert_ffi_parity(&src);
+}
+
+#[test]
+fn ffi_error_tiene_codigo_e10xx() {
+    let e = ejecutar("descargar_ffi(999999)").unwrap_err();
+    let s = e.to_string();
+    assert!(s.contains("[E1073]") || s.contains("[E1074]"), "{s}");
 }

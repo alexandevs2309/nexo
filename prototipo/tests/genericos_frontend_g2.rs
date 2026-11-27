@@ -1,5 +1,5 @@
 use basilisco::parser::{Expresion, Sentencia, TipoAnotacion};
-use basilisco::{Lexer, Parser};
+use basilisco::{ContextoSemantico, Lexer, Parser};
 
 fn parsear_ok(fuente: &str) -> Vec<Sentencia> {
     let tokens = Lexer::nuevo(fuente).tokenizar().expect("léxico");
@@ -138,31 +138,33 @@ fn parametros_tipo_en_colecciones_existentes_y_anidadas() {
     }
 }
 
-// --- Rechazo de tipos desconocidos fuera de contexto genérico válido ---
+// --- S8.1: nombres de tipo nominal desconocidos se aceptan en parseo y se rechazan en semántica (BAS-7101). ---
 
-#[test]
-fn rechazo_tipo_desconocido_fuera_de_funcion_generica() {
-    assert_err(
-        "var x: Foo = 1\n",
-        "tipo desconocido; se esperaba: entero, decimal, real, logico, texto, nulo, arreglo<T, N>, lista<T>",
-    );
-    assert_err(
-        "funcion f(x: Foo) -> entero {\n  retornar 1\n}\n",
-        "tipo desconocido; se esperaba: entero, decimal, real, logico, texto, nulo, arreglo<T, N>, lista<T>",
-    );
-    assert_err(
-        "funcion f(x: entero) -> Bar {\n  retornar x\n}\n",
-        "tipo desconocido; se esperaba: entero, decimal, real, logico, texto, nulo, arreglo<T, N>, lista<T>",
+fn assert_semantico_bas7101(fuente: &str) {
+    let ss = parsear_ok(fuente);
+    let mut ctx = ContextoSemantico::nuevo();
+    let errores = ctx.analizar_programa(&ss);
+    assert!(
+        errores.iter().any(|e| e.causa.codigo() == "BAS-7101"),
+        "se esperaba BAS-7101 para: {fuente}\nerrores: {:?}",
+        errores
+            .iter()
+            .map(|e| (e.causa.codigo(), e.mensaje.clone()))
+            .collect::<Vec<_>>()
     );
 }
 
 #[test]
+fn rechazo_tipo_desconocido_fuera_de_funcion_generica() {
+    assert_semantico_bas7101("var x: Foo = 1\n");
+    assert_semantico_bas7101("funcion f(x: Foo) -> entero {\n  retornar 1\n}\n");
+    assert_semantico_bas7101("funcion f(x: entero) -> Bar {\n  retornar x\n}\n");
+}
+
+#[test]
 fn rechazo_tipo_desconocido_no_declarado_en_funcion_generica() {
-    // U no está declarado como parámetro de tipo de f<T>.
-    assert_err(
-        "funcion f<T>(x: U) -> T {\n  retornar x\n}\n",
-        "tipo desconocido; se esperaba: entero, decimal, real, logico, texto, nulo, arreglo<T, N>, lista<T>",
-    );
+    // U no está declarado como parámetro de tipo de f<T>; con S8.1 se parsea como Nominal y semántica emite BAS-7101.
+    assert_semantico_bas7101("funcion f<T>(x: U) -> T {\n  retornar x\n}\n");
 }
 
 // --- Turbofish (llamada directa por identificador) ---

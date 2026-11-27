@@ -343,3 +343,19 @@ fn backend_wasm_codigo_intermedio_contiene_export_valido() {
     assert!(rust.contains("pub extern \"C\" fn bsk_main"));
     assert!(rust.contains("pub extern \"C\" fn bsk_sumar"));
 }
+
+#[test]
+fn backend_wasm_rechaza_ffi_bas7124() {
+    let src = r#"
+funcion main() -> entero {
+    sea lib = cargar_ffi("lib.so")
+    retornar 0
+}
+"#;
+    let rust = generar(src);
+    assert!(
+        rust.contains("BAS-7124"),
+        "debe rechazar FFI con BAS-7124: {rust}"
+    );
+    assert!(rust.contains("FFI"), "debe mencionar FFI: {rust}");
+}

@@ -328,12 +328,19 @@ fn g4_mir_gate_rechaza_residuos_genericos() {
             id: BlockId(0),
             stmts: vec![],
             terminator: MirTerminator::Return(Some(MirOperand::Const(mir::MirConst::Entero(0)))),
+
+            stmt_spans: Vec::new(),
+            terminator_span: None,
         }],
         bloque_entrada: BlockId(0),
     };
     let prog = MirPrograma {
         funciones: vec![f],
         globals: vec![],
+        contiene_coincidir: false,
+        contiene_nominales: false,
+
+        source_map: std::collections::HashMap::new(),
     };
     let err = basilisco::mir::verificar_sin_residuos_genericos(&prog)
         .expect_err("debe rechazar residuo genérico en MIR");
@@ -359,10 +366,12 @@ fn g4_hir_gate_rechaza_residuos_genericos() {
             capturas_externas: vec![],
             celdas: vec![],
             retorno: TipoSem::Entero,
+            cuerpo_spans: vec![],
             cuerpo: vec![HirSentencia::Retornar(Some(HirExpresion::Literal(
                 HirLiteral::Entero(0),
                 TipoSem::Entero,
             )))],
+            span: None,
         }],
     };
     let err = basilisco::hir::verificar_sin_residuos_genericos(&prog)
@@ -698,6 +707,7 @@ mod integridad_gate_negativos {
                 }),
                 error: None,
                 dependencias: vec![],
+                origen: None,
             },
         );
         let mut plantillas = BTreeMap::new();
@@ -947,6 +957,7 @@ mod integridad_gate_negativos {
                 }),
                 error: None,
                 dependencias: vec![],
+                origen: None,
             },
         );
         let mut plantillas = BTreeMap::new();

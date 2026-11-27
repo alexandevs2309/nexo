@@ -23,7 +23,64 @@ use crate::semantico::TipoSem;
 
 /// Genera solo las funciones del subconjunto puro entero/lógico (sin texto ni
 /// E/S), reutilizable por el backend WASM donde `String` no cruza el ABI C.
+fn tipo_contiene_nominal(t: &TipoSem) -> bool {
+    match t {
+        TipoSem::Nominal(_) => true,
+        TipoSem::Arreglo(inner, _) | TipoSem::Lista(inner) | TipoSem::Coleccion(inner, _) => {
+            tipo_contiene_nominal(inner)
+        }
+        TipoSem::Funcion {
+            params, retorno, ..
+        } => params.iter().any(tipo_contiene_nominal) || tipo_contiene_nominal(retorno),
+        _ => false,
+    }
+}
+
+fn rvalue_contiene_nominal(r: &MirRvalue) -> bool {
+    matches!(
+        r,
+        MirRvalue::ConstruirStruct { .. } | MirRvalue::CampoNominal { .. }
+    )
+}
+
+pub fn programa_contiene_nominal(programa: &MirPrograma) -> bool {
+    programa.funciones.iter().any(|f| {
+        f.params.iter().any(|(_, t)| tipo_contiene_nominal(t))
+            || tipo_contiene_nominal(&f.retorno)
+            || f.locals.iter().any(tipo_contiene_nominal)
+            || f.bloques.iter().any(|b| {
+                b.stmts.iter().any(|s| match s {
+                    MirStmt::Asignacion { valor, .. } => rvalue_contiene_nominal(valor),
+                    _ => false,
+                })
+            })
+    })
+}
+
+fn programa_usa_ffi(programa: &MirPrograma) -> bool {
+    programa.funciones.iter().any(|f| {
+        f.bloques.iter().any(|b| {
+            b.stmts.iter().any(|s| match s {
+                MirStmt::Llamada { callee, .. } => matches!(
+                    callee.as_str(),
+                    "cargar_ffi" | "llamar_ffi" | "descargar_ffi"
+                ),
+                _ => false,
+            })
+        })
+    })
+}
+
 pub fn generar_funciones_enteras(programa: &MirPrograma) -> String {
+    if programa.contiene_nominales
+        || programa_contiene_nominal(programa)
+        || programa.contiene_coincidir
+    {
+        return "compile_error!(\"BAS-7124: capacidad nominal/coincidir no soportada por backend_entero/wasm en este programa\");\n".to_string();
+    }
+    if programa_usa_ffi(programa) {
+        return "compile_error!(\"BAS-7124: FFI (cargar_ffi/llamar_ffi/descargar_ffi) no soportada en backend WASM/entero; usar motor Tree-Walk o VM\");\n".to_string();
+    }
     generar_funciones_con(programa, false)
 }
 
@@ -326,7 +383,12 @@ fn rvalue_soportado(r: &MirRvalue) -> bool {
         | MirRvalue::Longitud { .. }
         | MirRvalue::Rango { .. }
         | MirRvalue::Clausura { .. }
-        | MirRvalue::ObjetoModulo { .. } => false,
+        | MirRvalue::ObjetoModulo { .. }
+        | MirRvalue::ConstruirStruct { .. }
+        | MirRvalue::CampoNominal { .. }
+        | MirRvalue::ConstruirEnum { .. }
+        | MirRvalue::DiscriminanteEnum { .. }
+        | MirRvalue::PayloadEnum { .. } => false,
     }
 }
 
@@ -609,5 +671,10 @@ fn generar_rvalue(r: &MirRvalue, ctx: &CtxFn) -> String {
         MirRvalue::CrearCelda { .. } => "0".to_string(),
         MirRvalue::LeerCelda { .. } => "0".to_string(),
         MirRvalue::ObjetoModulo { .. } => "0".to_string(),
+        MirRvalue::ConstruirStruct { .. } => "0".to_string(),
+        MirRvalue::CampoNominal { .. } => "0".to_string(),
+        MirRvalue::ConstruirEnum { .. } => "0".to_string(),
+        MirRvalue::DiscriminanteEnum { .. } => "0".to_string(),
+        MirRvalue::PayloadEnum { .. } => "0".to_string(),
     }
 }

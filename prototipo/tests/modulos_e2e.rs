@@ -542,3 +542,21 @@ fn e2e_llamadas_internas_en_cadena() {
         "la VM debe ejecutar sin aviso de fallback: {stderr}"
     );
 }
+
+// Regresión F14.1-FE-01: ubicación de sentencia no permitida en nivel superior de módulo.
+#[test]
+fn e2e_modulo_sentencia_no_permitida_reporta_ubicacion_expresion() {
+    let dir = tmpdir("ubicacion_sentencia_no_permitida");
+    escribir(&dir, "lib.bsk", "# comentario\n\n1 + 2\n");
+    escribir(&dir, "main.bsk", "usar \"lib.bsk\" como lib\n");
+    let (code, _stdout, stderr) = run_bsk(&dir, &["run", "main.bsk"]);
+    assert_ne!(code, 0, "debería fallar por sentencia no permitida");
+    assert!(
+        stderr.contains("lib.bsk:3:1") || stderr.contains("lib.bsk:3:"),
+        "la ubicación debe apuntar a la expresión en línea 3, stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("sentencia no permitida en el nivel superior de un módulo"),
+        "mensaje esperado, stderr: {stderr}"
+    );
+}

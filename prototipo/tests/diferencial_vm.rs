@@ -777,6 +777,188 @@ fn diff_closure_retornada_anidada() {
     );
 }
 
+// === Fase 09 A: cobertura diferencial closures/celdas ===
+
+#[test]
+fn diff_f09_closure_mutable_como_parametro() {
+    // Celda mutable capturada pasada indirectamente: closure que muta captura se pasa como argumento.
+    let src = r#"
+funcion crear() {
+  var x: entero = 0
+  funcion inc() {
+    x = x + 1
+    retornar x
+  }
+  retornar inc
+}
+funcion aplicar_dos_veces(f) {
+  f()
+  retornar f()
+}
+funcion main() -> entero { retornar aplicar_dos_veces(crear()) }
+"#;
+    assert_parity(src);
+}
+
+#[test]
+fn diff_f09_closure_retorno_y_anidamiento() {
+    let src = r#"
+funcion fabrica(base) {
+  var x: entero = base
+  funcion mk() {
+    funcion inc() {
+    x = x + 1
+    retornar x
+  }
+    retornar inc
+  }
+  retornar mk
+}
+funcion main() -> entero {
+  sea mk = fabrica(10)
+  sea c = mk()
+  c()
+  retornar c()
+}
+"#;
+    assert_parity(src);
+}
+
+#[test]
+fn diff_f09_captura_mutable_lectura_tras_llamada() {
+    let src = r#"
+funcion crear() {
+  var x: entero = 1
+  funcion set(v) {
+    x = v
+    retornar x
+  }
+  funcion get() { retornar x }
+  retornar [set, get]
+}
+funcion main() -> entero {
+  sea p = crear()
+  sea set = p[0]
+  sea get = p[1]
+  set(41)
+  retornar get() + 1
+}
+"#;
+    assert_parity(src);
+}
+
+#[test]
+fn diff_f09_alias_referencia_compartida() {
+    let src = r#"
+funcion crear() {
+  var x: entero = 0
+  funcion inc() {
+    x = x + 1
+    retornar x
+  }
+  funcion ver() { retornar x }
+  retornar [inc, ver]
+}
+funcion main() -> entero {
+  sea a = crear()
+  sea inc = a[0]
+  sea ver = a[1]
+  inc()
+  inc()
+  retornar ver()
+}
+"#;
+    assert_parity(src);
+}
+
+#[test]
+fn diff_f09_alias_dos_closures_misma_celda() {
+    let src = r#"
+funcion crear() {
+  var x: entero = 5
+  funcion add(n) {
+    x = x + n
+    retornar x
+  }
+  funcion mul(n) {
+    x = x * n
+    retornar x
+  }
+  retornar [add, mul]
+}
+funcion main() -> entero {
+  sea ops = crear()
+  sea add = ops[0]
+  sea mul = ops[1]
+  add(3)
+  mul(2)
+  retornar add(0)
+}
+"#;
+    assert_parity(src);
+}
+
+#[test]
+fn diff_f09_mutacion_tras_llamada_indirecta() {
+    let src = r#"
+funcion aplicar(f) { retornar f() }
+funcion main() -> entero {
+  var x: entero = 0
+  funcion inc() {
+    x = x + 1
+    retornar x
+  }
+  aplicar(inc)
+  aplicar(inc)
+  retornar x
+}
+"#;
+    assert_parity(src);
+}
+
+#[test]
+fn diff_f09_closure_anidada_captura_mutable() {
+    let src = r#"
+funcion exterior() {
+  var x: entero = 1
+  funcion medio() {
+    funcion interior() {
+    x = x + 1
+    retornar x
+  }
+    retornar interior
+  }
+  retornar medio()
+}
+funcion main() -> entero {
+  sea f = exterior()
+  f()
+  retornar f()
+}
+"#;
+    assert_parity(src);
+}
+
+#[test]
+fn diff_f09_closure_negativa_arity_mismatch() {
+    // Negativa: llamada con aridad incorrecta debe fallar de forma equivalente.
+    let src = r#"
+funcion crear() {
+  var x: entero = 0
+  funcion inc() {
+    x = x + 1
+    retornar x
+  }
+  retornar inc
+}
+funcion main() -> entero {
+  sea c = crear()
+  retornar c(1)
+}
+"#;
+    assert_parity(src);
+}
+
 #[test]
 fn diff_lambda_en_map() {
     assert_parity(

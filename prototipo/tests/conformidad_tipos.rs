@@ -53,3 +53,48 @@ fn a_texto_convierte_explicitamente() {
     assert_eq!(valor("texto(42)"), Valor::Texto("42".into()));
     assert_eq!(valor("texto(verdadero)"), Valor::Texto("verdadero".into()));
 }
+
+// Regresión FE-14.2: literal colección con tamaño incompatible contra arreglo anotado
+// debe ser rechazado estáticamente (no solo en runtime).
+#[test]
+fn literal_coleccion_tamano_incompatible_con_arreglo_es_error() {
+    let fuente = "var x: arreglo<entero, 3> = [1, 2]";
+    assert!(ejecutar(fuente).is_err());
+}
+
+#[test]
+fn literal_coleccion_tamano_compatible_con_arreglo_aceptado() {
+    let fuente = "var x: arreglo<entero, 2> = [1, 2]\nx[0]";
+    assert_eq!(valor(fuente), Valor::Entero(1));
+}
+
+#[test]
+fn literal_coleccion_tamano_incompatible_rechazado_por_semantico() {
+    let src = "var x: arreglo<entero, 3> = [1, 2]";
+    let tokens = basilisco::Lexer::nuevo(src).tokenizar().unwrap();
+    let ast = basilisco::Parser::nuevo(tokens).parsear_programa().unwrap();
+    let mut ctx = basilisco::ContextoSemantico::nuevo();
+    let errs = ctx.analizar_programa(&ast);
+    assert!(
+        !errs.is_empty(),
+        "el semántico debe rechazar tamaño incompatible de colección literal"
+    );
+}
+
+// Regresión FE-14.2R: unificar Coleccion<T,n> con Arreglo<T,m> de distinto tamaño debe fallar.
+#[test]
+fn unificar_coleccion_arreglo_tamano_distinto_falla() {
+    use basilisco::semantico::{TipoParamId, TipoSem, unificar};
+    use std::collections::{HashMap, HashSet};
+    let param = TipoParamId {
+        propietario: basilisco::simbodo::SimbodoId(0),
+        nombre: "T".to_string(),
+    };
+    let mut objetivo = HashSet::new();
+    objetivo.insert(param.clone());
+    let formal = TipoSem::Coleccion(Box::new(TipoSem::Param(param)), 3);
+    let observado = TipoSem::Arreglo(Box::new(TipoSem::Entero), 2);
+    let mut sigma = HashMap::new();
+    let r = unificar(&formal, &observado, &objetivo, &mut sigma);
+    assert!(r.is_err(), "debe rechazar tamaño incompatible: {:?}", r);
+}

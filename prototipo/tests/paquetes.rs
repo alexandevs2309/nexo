@@ -1092,3 +1092,528 @@ fn publica_rechaza_clave_invalida() {
     );
     fs::remove_dir_all(&base).ok();
 }
+
+#[test]
+fn bloqueo_preserva_procedencia_remota() {
+    let base = raiz("lock-provenance");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nmate = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "mate", "0.1.0", "exportar dato = 1\n");
+
+    let instalar = ejecutar(&base, &["instalar"]);
+    assert!(instalar.status.success(), "{}", texto(&instalar.stderr));
+
+    let mut deps = basilisco::paquetes::leer_bloqueo(&base).unwrap().unwrap();
+    assert_eq!(deps.len(), 1);
+    deps[0].registro = Some("official".to_string());
+    deps[0].key_id = Some("key-1".to_string());
+    deps[0].firma = Some("ZmlybWE=".to_string());
+    deps[0].nonce = Some("nonce-1".to_string());
+    deps[0].expira = Some("2027-01-01T00:00:00Z".to_string());
+    deps[0].verificado = true;
+    basilisco::paquetes::escribir_bloqueo(&base, &deps).unwrap();
+
+    let deps2 = basilisco::paquetes::leer_bloqueo(&base).unwrap().unwrap();
+    assert_eq!(deps2[0].registro.as_deref(), Some("official"));
+    assert_eq!(deps2[0].key_id.as_deref(), Some("key-1"));
+    assert_eq!(deps2[0].firma.as_deref(), Some("ZmlybWE="));
+    assert_eq!(deps2[0].nonce.as_deref(), Some("nonce-1"));
+    assert_eq!(deps2[0].expira.as_deref(), Some("2027-01-01T00:00:00Z"));
+    assert!(deps2[0].verificado);
+    let lock = fs::read_to_string(base.join("basilisco.lock")).unwrap();
+    assert!(lock.contains("registro = \"official\""), "{lock}");
+    assert!(lock.contains("verificado = true"), "{lock}");
+
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn instalar_remoto_desde_registro_mock() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let base = raiz("remoto-mock");
+    // crear BPK válido
+    let contenido = b"exportar dato = 7\n";
+    let sha_contenido = basilisco::paquetes::sha256_hex(contenido);
+    let manifest = format!(
+        "[format]\nname = \"BASILISCO_PACKAGE\"\nversion = \"1.0\"\n\n[package]\nnamespace = \"demo\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"demo\"\nlicense = \"MIT\"\nauthors = [\"a\"]\n\n[compatibility]\nbasilisco = \">=0.6.0\"\n\n[dependencies]\n\n[[files]]\npath = \"lib.bsk\"\nsize = {}\nsha256 = \"{}\"\n",
+        contenido.len(),
+        sha_contenido
+    );
+    let bpk = basilisco::cliente_remoto::crear_bpk(
+        &manifest,
+        &[("lib.bsk".to_string(), contenido.to_vec())],
+    )
+    .unwrap();
+    let artifact_sha = basilisco::paquetes::sha256_hex(&bpk);
+
+    // clave y firma
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let vk = sk.verifying_key();
+    let pk_hex: String = vk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+    let meta = basilisco::paquetes::MetadatosPaquete {
+        namespace: "demo".to_string(),
+        name: "demo".to_string(),
+        version: "0.1.0".to_string(),
+        sha256: artifact_sha.clone(),
+        published_at: "2026-01-01T00:00:00Z".to_string(),
+        registry_id: "mock".to_string(),
+        key_id: "k1".to_string(),
+        nonce: "nonce-mock-1".to_string(),
+        expires_at: "2099-01-01T00:00:00Z".to_string(),
+        firma: None,
+        clave: None,
+    };
+    let firma = basilisco::paquetes::firmar_metadatos(&meta, sk.as_bytes()).unwrap();
+    let meta_firmada = basilisco::paquetes::MetadatosPaquete {
+        firma: Some(firma),
+        clave: Some(pk_hex.clone()),
+        ..meta
+    };
+
+    // trust store
+    let pk_bytes = vk.to_bytes().to_vec();
+    let mut almacen = basilisco::paquetes::AlmacenClaves::default();
+    almacen.agregar_seguro("mock", "k1", pk_bytes).unwrap();
+    almacen.guardar(&base).unwrap();
+
+    let meta_json =
+        serde_json::json!({"success": true, "data": meta_firmada, "error": null}).to_string();
+    let bpk_bytes = bpk.clone();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let (body, ct) = if req.contains("/download") {
+                (bpk_bytes.clone(), "application/octet-stream")
+            } else {
+                (meta_json.as_bytes().to_vec(), "application/json")
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {}\r\nConnection: close\r\n\r\n",
+                body.len(),
+                ct
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        }
+    });
+
+    let meta_url = format!("http://127.0.0.1:{}/api/v1/packages/demo/demo/0.1.0", port);
+    let art_url = format!("{}/download", meta_url);
+    let res =
+        basilisco::paquetes::instalar_paquete_remoto_completo(&base, &meta_url, &art_url).unwrap();
+    assert_eq!(res.nombre, "demo");
+    assert!(res.verificado);
+    assert_eq!(res.registro.as_deref(), Some("mock"));
+    handle.join().unwrap();
+    fs::remove_dir_all(&base).ok();
+}
+
+fn bpk_demo() -> (
+    Vec<u8>,
+    String,
+    basilisco::paquetes::MetadatosPaquete,
+    ed25519_dalek::SigningKey,
+) {
+    let contenido = b"exportar dato = 7\n";
+    let sha_contenido = basilisco::paquetes::sha256_hex(contenido);
+    let manifest = format!(
+        "[format]\nname = \"BASILISCO_PACKAGE\"\nversion = \"1.0\"\n\n[package]\nnamespace = \"demo\"\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"demo\"\nlicense = \"MIT\"\nauthors = [\"a\"]\n\n[compatibility]\nbasilisco = \">=0.6.0\"\n\n[dependencies]\n\n[[files]]\npath = \"lib.bsk\"\nsize = {}\nsha256 = \"{}\"\n",
+        contenido.len(),
+        sha_contenido
+    );
+    let bpk = basilisco::cliente_remoto::crear_bpk(
+        &manifest,
+        &[("lib.bsk".to_string(), contenido.to_vec())],
+    )
+    .unwrap();
+    let artifact_sha = basilisco::paquetes::sha256_hex(&bpk);
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let vk = sk.verifying_key();
+    let pk_hex: String = vk.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+    let meta = basilisco::paquetes::MetadatosPaquete {
+        namespace: "demo".to_string(),
+        name: "demo".to_string(),
+        version: "0.1.0".to_string(),
+        sha256: artifact_sha,
+        published_at: "2026-01-01T00:00:00Z".to_string(),
+        registry_id: "mock".to_string(),
+        key_id: "k1".to_string(),
+        nonce: "nonce-mock-1".to_string(),
+        expires_at: "2099-01-01T00:00:00Z".to_string(),
+        firma: None,
+        clave: Some(pk_hex),
+    };
+    let firma = basilisco::paquetes::firmar_metadatos(&meta, sk.as_bytes()).unwrap();
+    let meta = basilisco::paquetes::MetadatosPaquete {
+        firma: Some(firma),
+        ..meta
+    };
+    (bpk, "mock".to_string(), meta, sk)
+}
+
+fn servir_mock(
+    meta_json: String,
+    bpk: Vec<u8>,
+    hits: usize,
+) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        for _ in 0..hits {
+            let (mut stream, _) = match listener.accept() {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let (body, ct) = if req.contains("/download") {
+                (bpk.clone(), "application/octet-stream")
+            } else {
+                (meta_json.as_bytes().to_vec(), "application/json")
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {}\r\nConnection: close\r\n\r\n",
+                body.len(),
+                ct
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    (
+        format!("http://127.0.0.1:{port}/api/v1/packages/demo/demo/0.1.0"),
+        handle,
+    )
+}
+
+#[test]
+fn remoto_rechaza_sin_firma() {
+    let base = raiz("remoto-sin-firma");
+    let (bpk, _reg, mut meta, _sk) = bpk_demo();
+    meta.firma = None;
+    let meta_json = serde_json::json!({"success":true,"data":meta,"error":null}).to_string();
+    let (url, h) = servir_mock(meta_json, bpk, 2);
+    let e = basilisco::paquetes::instalar_paquete_remoto_completo(
+        &base,
+        &url,
+        &format!("{url}/download"),
+    )
+    .unwrap_err();
+    assert!(e.contains("autenticidad no demostrada"), "{e}");
+    h.join().unwrap();
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn remoto_rechaza_sin_clave() {
+    let base = raiz("remoto-sin-clave");
+    let (bpk, _reg, mut meta, _sk) = bpk_demo();
+    meta.clave = None;
+    let meta_json = serde_json::json!({"success":true,"data":meta,"error":null}).to_string();
+    let (url, h) = servir_mock(meta_json, bpk, 2);
+    let e = basilisco::paquetes::instalar_paquete_remoto_completo(
+        &base,
+        &url,
+        &format!("{url}/download"),
+    )
+    .unwrap_err();
+    assert!(e.contains("autenticidad no demostrada"), "{e}");
+    h.join().unwrap();
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn remoto_rechaza_clave_revocada() {
+    let base = raiz("remoto-revocada");
+    let (bpk, reg, meta, sk) = bpk_demo();
+    let mut almacen = basilisco::paquetes::AlmacenClaves::default();
+    almacen
+        .agregar_seguro(&reg, "k1", sk.verifying_key().to_bytes().to_vec())
+        .unwrap();
+    almacen.revocar(&reg, "k1");
+    almacen.guardar(&base).unwrap();
+    let meta_json = serde_json::json!({"success":true,"data":meta,"error":null}).to_string();
+    let (url, h) = servir_mock(meta_json, bpk, 2);
+    let e = basilisco::paquetes::instalar_paquete_remoto_completo(
+        &base,
+        &url,
+        &format!("{url}/download"),
+    )
+    .unwrap_err();
+    assert!(e.contains("clave no confiable"), "{e}");
+    h.join().unwrap();
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn remoto_rechaza_hash_manipulado() {
+    let base = raiz("remoto-hash-mal");
+    let (bpk, reg, mut meta, sk) = bpk_demo();
+    let mut almacen = basilisco::paquetes::AlmacenClaves::default();
+    almacen
+        .agregar_seguro(&reg, "k1", sk.verifying_key().to_bytes().to_vec())
+        .unwrap();
+    almacen.guardar(&base).unwrap();
+    meta.sha256 = "00".repeat(32);
+    let meta_json = serde_json::json!({"success":true,"data":meta,"error":null}).to_string();
+    let (url, h) = servir_mock(meta_json, bpk, 2);
+    let e = basilisco::paquetes::instalar_paquete_remoto_completo(
+        &base,
+        &url,
+        &format!("{url}/download"),
+    )
+    .unwrap_err();
+    assert!(
+        e.contains("hash") || e.contains("integridad") || e.contains("inválido"),
+        "{e}"
+    );
+    h.join().unwrap();
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn remoto_rechaza_metadatos_incompletos_sin_nonce() {
+    let base = raiz("remoto-meta-inc");
+    let (bpk, reg, mut meta, sk) = bpk_demo();
+    let mut almacen = basilisco::paquetes::AlmacenClaves::default();
+    almacen
+        .agregar_seguro(&reg, "k1", sk.verifying_key().to_bytes().to_vec())
+        .unwrap();
+    almacen.guardar(&base).unwrap();
+    meta.nonce = String::new();
+    // firma ya no corresponde al canonical; debe fallar por firma inválida
+    let meta_json = serde_json::json!({"success":true,"data":meta,"error":null}).to_string();
+    let (url, h) = servir_mock(meta_json, bpk, 2);
+    let e = basilisco::paquetes::instalar_paquete_remoto_completo(
+        &base,
+        &url,
+        &format!("{url}/download"),
+    )
+    .unwrap_err();
+    assert!(
+        e.to_lowercase().contains("firma")
+            || e.to_lowercase().contains("autenticidad")
+            || e.to_lowercase().contains("signature")
+            || e.to_lowercase().contains("invalid"),
+        "{e}"
+    );
+    h.join().unwrap();
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn instalar_repite_desde_lock_sin_reescribir() {
+    let base = raiz("lock-repite");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nmate = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "mate", "0.1.0", "exportar dato = 1\n");
+    assert!(ejecutar(&base, &["instalar"]).status.success());
+    let lock1 = fs::read_to_string(base.join("basilisco.lock")).unwrap();
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    let lock2 = fs::read_to_string(base.join("basilisco.lock")).unwrap();
+    assert_eq!(
+        lock1, lock2,
+        "lock no debe reescribirse en instalación desde lock"
+    );
+    assert!(
+        texto(&out.stdout).contains("instalada(s) desde basilisco.lock"),
+        "{}",
+        texto(&out.stdout)
+    );
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn instalar_respeta_version_bloqueada_aunque_exista_mas_nueva() {
+    let base = raiz("lock-version-fija");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nmate = \"*\"\n",
+    );
+    crear_dependencia(&base, "mate", "0.1.0", "exportar dato = 1\n");
+    assert!(ejecutar(&base, &["instalar"]).status.success());
+    let lock1 = fs::read_to_string(base.join("basilisco.lock")).unwrap();
+    assert!(lock1.contains("version = \"0.1.0\""), "{lock1}");
+    // Hay una versión más nueva disponible en vendor, pero el artefacto bloqueado permanece intacto.
+    escribir(
+        &base,
+        "vendor/mate/basilisco.toml",
+        "[paquete]\nnombre = \"mate\"\nversion = \"0.2.0\"\n",
+    );
+    escribir(&base, "vendor/mate/lib.bsk", "exportar dato = 2\n");
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    let lock2 = fs::read_to_string(base.join("basilisco.lock")).unwrap();
+    assert!(
+        lock2.contains("version = \"0.1.0\""),
+        "debe conservar versión bloqueada: {lock2}"
+    );
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn instalar_falla_si_hash_bloqueado_no_coincide() {
+    let base = raiz("lock-hash-mal");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nmate = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "mate", "0.1.0", "exportar dato = 1\n");
+    assert!(ejecutar(&base, &["instalar"]).status.success());
+    fs::write(base.join("paquetes/mate/lib.bsk"), "exportar dato = 999\n").unwrap();
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(!out.status.success());
+    assert!(
+        texto(&out.stderr).contains("integridad") || texto(&out.stderr).contains("hash"),
+        "{}",
+        texto(&out.stderr)
+    );
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn instalar_falla_si_dependencia_bloqueada_falta() {
+    let base = raiz("lock-falta-dep");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nmate = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "mate", "0.1.0", "exportar dato = 1\n");
+    assert!(ejecutar(&base, &["instalar"]).status.success());
+    fs::remove_file(base.join("paquetes/mate/lib.bsk")).unwrap();
+    let _ = fs::remove_dir_all(base.join(".basilisco/cache"));
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(!out.status.success());
+    let err = texto(&out.stderr);
+    assert!(
+        err.contains("no disponible") || err.contains("falta") || err.contains("lock"),
+        "{err}"
+    );
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn instalar_falla_si_lock_incompatible_con_manifiesto() {
+    let base = raiz("lock-incomp");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nmate = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "mate", "0.1.0", "exportar dato = 1\n");
+    assert!(ejecutar(&base, &["instalar"]).status.success());
+    // cambiar manifiesto para requerir otra dependencia no presente en lock
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nmate = \"0.1.0\"\notra = \"1.0.0\"\n",
+    );
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(!out.status.success());
+    let err = texto(&out.stderr);
+    assert!(
+        err.contains("incompatible") || err.contains("update"),
+        "{err}"
+    );
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn instalar_lock_con_transitivas() {
+    let base = raiz("lock-trans");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nb = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "b", "0.1.0", "exportar dato = 2\n");
+    escribir(
+        &base,
+        "paquetes/b/basilisco.toml",
+        "[paquete]\nnombre = \"b\"\nversion = \"0.1.0\"\n\n[dependencias]\na = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "a", "0.1.0", "exportar dato = 1\n");
+    assert!(ejecutar(&base, &["instalar"]).status.success());
+    let lock = fs::read_to_string(base.join("basilisco.lock")).unwrap();
+    assert!(
+        lock.contains("nombre = \"a\"") && lock.contains("nombre = \"b\""),
+        "{lock}"
+    );
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn instalar_desde_lock_con_cache_sin_red() {
+    let base = raiz("lock-cache-offline");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nmate = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "mate", "0.1.0", "exportar dato = 1\n");
+    assert!(ejecutar(&base, &["instalar"]).status.success());
+    // borrar fuente original, dejar caché y lock
+    fs::remove_file(base.join("paquetes/mate/lib.bsk")).unwrap();
+    // asegurar que está en caché
+    let cache = base.join(".basilisco/cache/mate/0.1.0/lib.bsk");
+    assert!(cache.exists(), "debe existir cache");
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(out.status.success(), "{}", texto(&out.stderr));
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn update_es_actualizacion_deliberada() {
+    let base = raiz("lock-update-deliberado");
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nmate = \"0.1.0\"\n",
+    );
+    crear_dependencia(&base, "mate", "0.1.0", "exportar dato = 1\n");
+    assert!(ejecutar(&base, &["instalar"]).status.success());
+    // Cambiar manifiesto y paquete a 0.2.0
+    escribir(
+        &base,
+        "basilisco.toml",
+        "[paquete]\nnombre = \"demo\"\nversion = \"0.1.0\"\n\n[dependencias]\nmate = \"0.2.0\"\n",
+    );
+    crear_dependencia(&base, "mate", "0.2.0", "exportar dato = 2\n");
+    // instalar desde lock debe fallar por incompatibilidad con manifiesto
+    let out = ejecutar(&base, &["instalar"]);
+    assert!(!out.status.success());
+    let err = texto(&out.stderr);
+    assert!(
+        err.contains("incompatible") || err.contains("update"),
+        "{err}"
+    );
+    // update deliberado debe resolver
+    let up = ejecutar(&base, &["update"]);
+    assert!(up.status.success(), "{}", texto(&up.stderr));
+    let lock = fs::read_to_string(base.join("basilisco.lock")).unwrap();
+    assert!(lock.contains("version = \"0.2.0\""), "{lock}");
+    fs::remove_dir_all(&base).ok();
+}

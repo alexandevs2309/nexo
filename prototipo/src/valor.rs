@@ -65,6 +65,17 @@ pub enum Valor {
     },
     /// Celda de referencia mutable (captura por referencia en clausuras).
     Celda(Arc<Mutex<Valor>>),
+    /// Estructura nominal (Fase 08 S8.1). Identidad por tipo_id, layout por campos en orden de declaración.
+    EstructuraNominal {
+        tipo_id: u32,
+        campos: Vec<Valor>,
+    },
+    /// Enumeración nominal (Fase 08 S8.2). Identidad por tipo_id, variante por índice, payload posicional.
+    EnumNominal {
+        tipo_id: u32,
+        variante: u32,
+        payload: Vec<Valor>,
+    },
 }
 
 /// Estado interno de un archivo abierto (ADR-0013 §3.5). Opaco para el código BASILISCO.
@@ -112,6 +123,19 @@ impl Clone for Valor {
                 capturas: capturas.clone(),
             },
             Valor::Celda(arc) => Valor::Celda(Arc::clone(arc)),
+            Valor::EstructuraNominal { tipo_id, campos } => Valor::EstructuraNominal {
+                tipo_id: *tipo_id,
+                campos: campos.clone(),
+            },
+            Valor::EnumNominal {
+                tipo_id,
+                variante,
+                payload,
+            } => Valor::EnumNominal {
+                tipo_id: *tipo_id,
+                variante: *variante,
+                payload: payload.clone(),
+            },
         }
     }
 }
@@ -135,6 +159,16 @@ impl std::fmt::Debug for Valor {
             Valor::FuncionClausura { .. } => write!(f, "FuncionClausura"),
             Valor::ClausuraMir { nombre, .. } => write!(f, "ClausuraMir({nombre})"),
             Valor::Celda(_) => write!(f, "Celda(<opaco>)"),
+            Valor::EstructuraNominal { tipo_id, campos } => {
+                write!(f, "EstructuraNominal({tipo_id}, {campos:?})")
+            }
+            Valor::EnumNominal {
+                tipo_id,
+                variante,
+                payload,
+            } => {
+                write!(f, "EnumNominal({tipo_id}, {variante}, {payload:?})")
+            }
         }
     }
 }
@@ -166,6 +200,28 @@ impl PartialEq for Valor {
                     capturas: cb,
                 },
             ) => a == b && ca == cb,
+            (
+                Valor::EstructuraNominal {
+                    tipo_id: a,
+                    campos: ca,
+                },
+                Valor::EstructuraNominal {
+                    tipo_id: b,
+                    campos: cb,
+                },
+            ) => a == b && ca == cb,
+            (
+                Valor::EnumNominal {
+                    tipo_id: a,
+                    variante: va,
+                    payload: pa,
+                },
+                Valor::EnumNominal {
+                    tipo_id: b,
+                    variante: vb,
+                    payload: pb,
+                },
+            ) => a == b && va == vb && pa == pb,
             _ => false,
         }
     }
@@ -280,6 +336,8 @@ impl Valor {
             Valor::FuncionClausura { .. } => "función",
             Valor::ClausuraMir { .. } => "función",
             Valor::Celda(_) => "celda",
+            Valor::EstructuraNominal { .. } => "estructura",
+            Valor::EnumNominal { .. } => "enumeracion",
         }
     }
 }
@@ -564,6 +622,8 @@ impl Valor {
             Valor::FuncionClausura { .. } => false,
             Valor::ClausuraMir { .. } => false,
             Valor::Celda(_) => false,
+            Valor::EstructuraNominal { .. } => false,
+            Valor::EnumNominal { .. } => false,
         }
     }
 
@@ -592,6 +652,8 @@ impl Valor {
             Valor::FuncionClausura { .. } => f64::NAN,
             Valor::ClausuraMir { .. } => f64::NAN,
             Valor::Celda(_) => f64::NAN,
+            Valor::EstructuraNominal { .. } => f64::NAN,
+            Valor::EnumNominal { .. } => f64::NAN,
         }
     }
 }
@@ -658,6 +720,34 @@ impl fmt::Display for Valor {
             Valor::FuncionClausura { .. } => write!(f, "<clausura>"),
             Valor::ClausuraMir { .. } => write!(f, "<clausura>"),
             Valor::Celda(_) => write!(f, "<celda>"),
+            Valor::EstructuraNominal { tipo_id, campos } => {
+                write!(f, "<estructura#{tipo_id} {{")?;
+                for (i, c) in campos.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{c}")?;
+                }
+                write!(f, "}}>")
+            }
+            Valor::EnumNominal {
+                tipo_id,
+                variante,
+                payload,
+            } => {
+                write!(f, "<enum#{tipo_id}::{variante}")?;
+                if !payload.is_empty() {
+                    write!(f, "(")?;
+                    for (i, c) in payload.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{c}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                write!(f, ">")
+            }
         }
     }
 }

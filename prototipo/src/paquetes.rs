@@ -79,6 +79,8 @@ pub struct DependenciaResuelta {
     pub nonce: Option<String>,
     /// Fecha de expiración, si está disponible.
     pub expira: Option<String>,
+    /// Fecha de publicación, si está disponible.
+    pub published_at: Option<String>,
 }
 
 /// Lee y valida `basilisco.toml` en `base`.
@@ -379,9 +381,16 @@ pub fn resolver_dependencia(dep: &Dependencia, base: &Path) -> Result<Dependenci
                 firma: dep.firma.clone(),
                 nonce: dep.nonce.clone(),
                 expira: dep.expira.clone(),
+                published_at: None,
             });
         }
         buscados.push(candidato.display().to_string());
+    }
+
+    if (dep.registro.is_some() || dep.firma.is_some() || dep.clave.is_some())
+        && let Ok(remota) = resolver_dependencia_remota(dep, base)
+    {
+        return Ok(remota);
     }
 
     Err(format!(
@@ -389,6 +398,168 @@ pub fn resolver_dependencia(dep: &Dependencia, base: &Path) -> Result<Dependenci
         dep.nombre,
         buscados.join(", ")
     ))
+}
+
+fn resolver_dependencia_remota(
+    dep: &Dependencia,
+    base: &Path,
+) -> Result<DependenciaResuelta, String> {
+    let cfg = ConfigRegistros::cargar(base).unwrap_or_default();
+    let reg = if let Some(alias) = &dep.registro {
+        cfg.obtener(alias)
+            .or_else(|| cfg.registros.values().find(|r| &r.registry_id == alias))
+            .cloned()
+    } else {
+        cfg.predeterminado().cloned()
+    };
+    let reg = reg.ok_or_else(|| format!("no hay registro configurado para '{}'", dep.nombre))?;
+    if !reg.habilitado {
+        return Err(format!("registro '{}' deshabilitado", reg.alias));
+    }
+
+    let (namespace, nombre_pkg) = if let Some((ns, n)) = dep.nombre.split_once('/') {
+        (ns.to_string(), n.to_string())
+    } else {
+        (dep.nombre.clone(), dep.nombre.clone())
+    };
+
+    let version = if dep.version == "*" || dep.version.is_empty() {
+        let url = format!(
+            "{}/api/v1/packages/{}/{}/versions",
+            reg.url.trim_end_matches('/'),
+            namespace,
+            nombre_pkg
+        );
+        // versions endpoint returns different shape; do a simple fetch
+        let resp = ureq::get(&url).call().map_err(|e| e.to_string())?;
+        let texto = resp
+            .into_body()
+            .read_to_string()
+            .map_err(|e| e.to_string())?;
+        let valor: serde_json::Value = serde_json::from_str(&texto).map_err(|e| e.to_string())?;
+        let data = valor.get("data").cloned().unwrap_or(valor);
+        let versiones = data
+            .get("versions")
+            .or_else(|| data.get("items"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut elegida: Option<String> = None;
+        for v in &versiones {
+            let ver = v
+                .get("version")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let yanked = v.get("yanked").and_then(|x| x.as_bool()).unwrap_or(false);
+            if ver.is_empty() || yanked {
+                continue;
+            }
+            if semver::Version::parse(&ver).is_ok() {
+                if let Some(ref actual) = elegida {
+                    if let (Ok(a), Ok(b)) =
+                        (semver::Version::parse(&ver), semver::Version::parse(actual))
+                        && a > b
+                    {
+                        elegida = Some(ver);
+                    }
+                } else {
+                    elegida = Some(ver);
+                }
+            }
+        }
+        elegida.ok_or_else(|| format!("no hay versiones disponibles para '{}'", dep.nombre))?
+    } else {
+        dep.version.clone()
+    };
+
+    let meta_url = format!(
+        "{}/api/v1/packages/{}/{}/{}",
+        reg.url.trim_end_matches('/'),
+        namespace,
+        nombre_pkg,
+        version
+    );
+    let art_url = format!("{}/download", meta_url);
+    let meta = crate::cliente_remoto::obtener_metadatos(&meta_url)?;
+    let bytes = crate::cliente_remoto::descargar_artefacto(&art_url)?;
+    crate::cliente_remoto::verificar_artefacto(&bytes, &meta.sha256)?;
+
+    let almacen = AlmacenClaves::cargar(base).unwrap_or_default();
+    let firma = meta
+        .firma
+        .as_ref()
+        .ok_or_else(|| "autenticidad no demostrada: falta firma".to_string())?;
+    let clave_hex = meta
+        .clave
+        .as_ref()
+        .ok_or_else(|| "autenticidad no demostrada: falta clave".to_string())?;
+    let clave_bytes = hex_decode(clave_hex)?;
+    if !almacen.es_confiable(&meta.registry_id, &meta.key_id, &clave_bytes) {
+        return Err("clave no confiable".to_string());
+    }
+    if reg.registry_id != meta.registry_id {
+        return Err("identidad de registro no coincide con metadatos".to_string());
+    }
+    verificar_firma_metadatos(&meta, firma, &clave_bytes)?;
+    let mut nonces = RegistroNonces::cargar(base).unwrap_or_default();
+    nonces.aceptar(&meta.registry_id, &meta.nonce)?;
+    nonces.guardar(base)?;
+
+    crate::cliente_remoto::validar_bpk(&bytes)?;
+
+    let mut tmp_dir = None;
+    for attempt in 0..10 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let candidate = std::env::temp_dir().join(format!(
+            "basilisco_remoto_{}_{}_{}",
+            std::process::id(),
+            nanos,
+            attempt
+        ));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => {
+                tmp_dir = Some(candidate);
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    let tmp_dir =
+        tmp_dir.ok_or_else(|| "no se pudo crear directorio temporal exclusivo".to_string())?;
+    let extraido = crate::cliente_remoto::extraer_bpk(&bytes, &tmp_dir)?;
+    let archivo = archivo_de_paquete(&extraido)
+        .ok_or_else(|| "no se encontró archivo de paquete".to_string())?;
+    let hash = hash_archivo(&archivo)?;
+
+    let remote_dir = base
+        .join(".basilisco")
+        .join("remote")
+        .join(&meta.name)
+        .join(&meta.version);
+    std::fs::create_dir_all(&remote_dir).map_err(|e| e.to_string())?;
+    let archivo_instalado = remote_dir.join(archivo.file_name().unwrap_or_default());
+    std::fs::copy(&archivo, &archivo_instalado).map_err(|e| e.to_string())?;
+    let dep_resuelta = DependenciaResuelta {
+        nombre: dep.nombre.clone(),
+        version: meta.version.clone(),
+        ruta: archivo_instalado,
+        hash,
+        verificado: meta.firma.is_some() && meta.clave.is_some(),
+        registro: Some(meta.registry_id.clone()),
+        key_id: Some(meta.key_id.clone()),
+        firma: meta.firma.clone(),
+        nonce: Some(meta.nonce.clone()),
+        expira: Some(meta.expires_at.clone()),
+        published_at: Some(meta.published_at.clone()),
+    };
+    asegurar_cache(base, &dep_resuelta)?;
+    std::fs::remove_dir_all(&tmp_dir).ok();
+    Ok(dep_resuelta)
 }
 
 /// Devuelve el archivo de entrada si `ruta` es un archivo o un directorio de paquete.
@@ -454,6 +625,347 @@ pub fn verificar_integridad(base: &Path, resueltas: &[DependenciaResuelta]) -> R
     Ok(())
 }
 
+/// Valida que el lock cubra las dependencias del manifiesto.
+pub fn lock_compatible_con_manifiesto(
+    manifiesto: &Manifiesto,
+    bloqueo: &[DependenciaResuelta],
+) -> Result<(), String> {
+    for dep in &manifiesto.dependencias {
+        let Some(resuelta) = bloqueo.iter().find(|b| b.nombre == dep.nombre) else {
+            return Err(format!(
+                "basilisco.lock incompatible con el manifiesto: falta la dependencia '{}'; ejecuta 'basilisco update'",
+                dep.nombre
+            ));
+        };
+        if !version_compatible(&dep.version, &resuelta.version) {
+            return Err(format!(
+                "basilisco.lock incompatible con el manifiesto: '{}' requiere {} pero el lock fija {}",
+                dep.nombre, dep.version, resuelta.version
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Instala/verifica dependencias desde un lock existente sin re-resolver versiones.
+/// Falla explícitamente si el lock no puede cumplirse.
+pub fn instalar_desde_bloqueo(
+    base: &Path,
+    manifiesto: &Manifiesto,
+    bloqueo: &[DependenciaResuelta],
+) -> Result<Vec<DependenciaResuelta>, String> {
+    lock_compatible_con_manifiesto(manifiesto, bloqueo)?;
+    let mut materializadas = Vec::new();
+    for dep in bloqueo {
+        let dep_mat = materializar_dep_bloqueada(base, dep)?;
+        materializadas.push(dep_mat);
+    }
+    // Verificar integridad final con hashes bloqueados.
+    for dep in &materializadas {
+        let actual = hash_archivo(&dep.ruta)?;
+        if !dep.hash.is_empty() && actual != dep.hash {
+            return Err(format!(
+                "integridad comprometida para '{}': lock esperaba {} y se obtuvo {}",
+                dep.nombre, dep.hash, actual
+            ));
+        }
+    }
+    Ok(materializadas)
+}
+
+fn materializar_dep_bloqueada(
+    base: &Path,
+    dep: &DependenciaResuelta,
+) -> Result<DependenciaResuelta, String> {
+    let ruta_bloqueada = if dep.ruta.is_absolute() {
+        dep.ruta.clone()
+    } else {
+        base.join(&dep.ruta)
+    };
+
+    if ruta_bloqueada.is_file() {
+        let actual = hash_archivo(&ruta_bloqueada)?;
+        if !dep.hash.is_empty() && actual != dep.hash {
+            return Err(format!(
+                "integridad comprometida para '{}': hash bloqueado {} y hash actual {}",
+                dep.nombre, dep.hash, actual
+            ));
+        }
+        verificar_autenticidad_bloqueada(base, dep, &actual)?;
+        return Ok(DependenciaResuelta {
+            ruta: ruta_bloqueada,
+            ..dep.clone()
+        });
+    }
+
+    // Intentar restaurar desde caché local.
+    let cache = base
+        .join(".basilisco")
+        .join("cache")
+        .join(&dep.nombre)
+        .join(&dep.version);
+    if cache.is_dir()
+        && let Some(archivo) = archivo_de_paquete(&cache)
+    {
+        let actual = hash_archivo(&archivo)?;
+        if dep.hash.is_empty() || actual == dep.hash {
+            verificar_autenticidad_bloqueada(base, dep, &actual)?;
+            return Ok(DependenciaResuelta {
+                ruta: archivo,
+                hash: if dep.hash.is_empty() {
+                    actual
+                } else {
+                    dep.hash.clone()
+                },
+                ..dep.clone()
+            });
+        }
+    }
+
+    // Si es dependencia remota, intentar obtener exactamente el artefacto bloqueado.
+    if dep.registro.is_some() {
+        return obtener_dep_remota_bloqueada(base, dep);
+    }
+
+    Err(format!(
+        "dependencia '{}' no disponible según basilisco.lock: falta '{}' (hash {}). Ejecute 'basilisco instalar' desde el proyecto correcto o 'basilisco update' para una actualización deliberada",
+        dep.nombre,
+        ruta_bloqueada.display(),
+        dep.hash
+    ))
+}
+
+fn verificar_autenticidad_bloqueada(
+    base: &Path,
+    dep: &DependenciaResuelta,
+    hash_actual: &str,
+) -> Result<(), String> {
+    if dep.registro.is_none() && dep.firma.is_none() && dep.key_id.is_none() {
+        return Ok(());
+    }
+    let Some(registro) = &dep.registro else {
+        return Err(format!(
+            "lock inválido para '{}': procedencia remota incompleta",
+            dep.nombre
+        ));
+    };
+    let Some(firma) = &dep.firma else {
+        return Err(format!(
+            "autenticidad no demostrada para '{}': falta firma en lock",
+            dep.nombre
+        ));
+    };
+    let Some(key_id) = &dep.key_id else {
+        return Err(format!(
+            "autenticidad no demostrada para '{}': falta key_id en lock",
+            dep.nombre
+        ));
+    };
+    let Some(nonce) = &dep.nonce else {
+        return Err(format!(
+            "autenticidad no demostrada para '{}': falta nonce en lock",
+            dep.nombre
+        ));
+    };
+    let Some(expira) = &dep.expira else {
+        return Err(format!(
+            "autenticidad no demostrada para '{}': falta expira en lock",
+            dep.nombre
+        ));
+    };
+    let Some(published_at) = &dep.published_at else {
+        return Err(format!(
+            "autenticidad no demostrada para '{}': falta published_at en lock",
+            dep.nombre
+        ));
+    };
+    let almacen = AlmacenClaves::cargar(base).unwrap_or_default();
+    let clave = almacen
+        .claves
+        .get(registro)
+        .and_then(|m| m.get(key_id))
+        .cloned()
+        .ok_or_else(|| format!("clave no confiable para '{}'", dep.nombre))?;
+    if !almacen.es_confiable(registro, key_id, &clave) {
+        return Err(format!("clave no confiable para '{}'", dep.nombre));
+    }
+    let meta = MetadatosPaquete {
+        namespace: dep.nombre.clone(),
+        name: dep.nombre.clone(),
+        version: dep.version.clone(),
+        sha256: hash_actual.to_string(),
+        published_at: published_at.clone(),
+        registry_id: registro.clone(),
+        key_id: key_id.clone(),
+        nonce: nonce.clone(),
+        expires_at: expira.clone(),
+        firma: Some(firma.clone()),
+        clave: Some(hex::encode(&clave)),
+    };
+    verificar_firma_metadatos(&meta, firma, &clave)
+        .map_err(|e| format!("firma inválida para '{}': {e}", dep.nombre))?;
+    // Nonce: si ya fue aceptado en este cliente, no rechazar la reinstalación del mismo lock;
+    // si es nuevo, registrarlo.
+    let mut nonces = RegistroNonces::cargar(base).unwrap_or_default();
+    if !nonces
+        .nonces
+        .get(registro)
+        .is_some_and(|s| s.contains(nonce))
+    {
+        nonces.aceptar(registro, nonce)?;
+        nonces.guardar(base)?;
+    }
+    Ok(())
+}
+
+fn obtener_dep_remota_bloqueada(
+    base: &Path,
+    dep: &DependenciaResuelta,
+) -> Result<DependenciaResuelta, String> {
+    let registro = dep
+        .registro
+        .as_ref()
+        .ok_or_else(|| format!("lock inválido para '{}': falta registro", dep.nombre))?;
+    let cfg = ConfigRegistros::cargar(base).unwrap_or_default();
+    let reg = cfg
+        .obtener(registro)
+        .or_else(|| cfg.registros.values().find(|r| &r.registry_id == registro))
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "registro '{}' no configurado para restaurar '{}' desde lock; configure el registro o restaure la caché",
+                registro, dep.nombre
+            )
+        })?;
+    if !reg.habilitado {
+        return Err(format!("registro '{}' deshabilitado", reg.alias));
+    }
+    let (namespace, nombre_pkg) = if let Some((ns, n)) = dep.nombre.split_once('/') {
+        (ns.to_string(), n.to_string())
+    } else {
+        (dep.nombre.clone(), dep.nombre.clone())
+    };
+    let meta_url = format!(
+        "{}/api/v1/packages/{}/{}/{}",
+        reg.url.trim_end_matches('/'),
+        namespace,
+        nombre_pkg,
+        dep.version
+    );
+    let art_url = format!("{}/download", meta_url);
+    let meta = crate::cliente_remoto::obtener_metadatos(&meta_url).map_err(|e| {
+        format!(
+            "no se pudo obtener metadatos para '{}' desde lock: {e}",
+            dep.nombre
+        )
+    })?;
+    let bytes = crate::cliente_remoto::descargar_artefacto(&art_url)
+        .map_err(|e| format!("no se pudo descargar '{}' desde lock: {e}", dep.nombre))?;
+    crate::cliente_remoto::verificar_artefacto(&bytes, &dep.hash).map_err(|e| {
+        format!(
+            "artefacto descargado no coincide con lock para '{}': {e}",
+            dep.nombre
+        )
+    })?;
+    if meta.sha256 != dep.hash {
+        return Err(format!(
+            "metadatos remotos no coinciden con lock para '{}'",
+            dep.nombre
+        ));
+    }
+    // Autenticidad fail-closed
+    let firma = dep.firma.as_ref().ok_or_else(|| {
+        format!(
+            "autenticidad no demostrada para '{}': falta firma en lock",
+            dep.nombre
+        )
+    })?;
+    let key_id = dep.key_id.as_ref().ok_or_else(|| {
+        format!(
+            "autenticidad no demostrada para '{}': falta key_id en lock",
+            dep.nombre
+        )
+    })?;
+    let nonce = dep.nonce.as_ref().ok_or_else(|| {
+        format!(
+            "autenticidad no demostrada para '{}': falta nonce en lock",
+            dep.nombre
+        )
+    })?;
+    let almacen = AlmacenClaves::cargar(base).unwrap_or_default();
+    let clave = almacen
+        .claves
+        .get(&meta.registry_id)
+        .and_then(|m| m.get(key_id))
+        .cloned()
+        .ok_or_else(|| format!("clave no confiable para '{}'", dep.nombre))?;
+    if !almacen.es_confiable(&meta.registry_id, key_id, &clave) {
+        return Err(format!("clave no confiable para '{}'", dep.nombre));
+    }
+    let meta_verif = MetadatosPaquete {
+        firma: Some(firma.clone()),
+        clave: Some(hex::encode(&clave)),
+        ..meta.clone()
+    };
+    verificar_firma_metadatos(&meta_verif, firma, &clave)
+        .map_err(|e| format!("firma inválida para '{}': {e}", dep.nombre))?;
+    if meta_verif.registry_id != *registro
+        || meta_verif.key_id != *key_id
+        || meta_verif.nonce != *nonce
+    {
+        return Err(format!(
+            "metadatos remotos no coinciden con procedencia bloqueada para '{}'",
+            dep.nombre
+        ));
+    }
+    let mut nonces = RegistroNonces::cargar(base).unwrap_or_default();
+    if !nonces
+        .nonces
+        .get(&meta.registry_id)
+        .is_some_and(|s| s.contains(nonce))
+    {
+        nonces.aceptar(&meta.registry_id, nonce)?;
+        nonces.guardar(base)?;
+    }
+    crate::cliente_remoto::validar_bpk(&bytes)?;
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "basilisco_lock_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos()
+    ));
+    fs::create_dir_all(&tmp_dir).map_err(|e| e.to_string())?;
+    let extraido = crate::cliente_remoto::extraer_bpk(&bytes, &tmp_dir)?;
+    let archivo = archivo_de_paquete(&extraido)
+        .ok_or_else(|| "no se encontró archivo de paquete".to_string())?;
+    let actual = hash_archivo(&archivo)?;
+    if actual != dep.hash {
+        fs::remove_dir_all(&tmp_dir).ok();
+        return Err(format!(
+            "hash extraído no coincide con lock para '{}'",
+            dep.nombre
+        ));
+    }
+    let remote_dir = base
+        .join(".basilisco")
+        .join("remote")
+        .join(&nombre_pkg)
+        .join(&dep.version);
+    fs::create_dir_all(&remote_dir).map_err(|e| e.to_string())?;
+    let archivo_instalado = remote_dir.join(archivo.file_name().unwrap_or_default());
+    fs::copy(&archivo, &archivo_instalado).map_err(|e| e.to_string())?;
+    fs::remove_dir_all(&tmp_dir).ok();
+    let resuelta = DependenciaResuelta {
+        ruta: archivo_instalado,
+        hash: dep.hash.clone(),
+        ..dep.clone()
+    };
+    asegurar_cache(base, &resuelta)?;
+    Ok(resuelta)
+}
+
 /// Asegura una copia en caché local organizada por nombre y versión.
 pub fn asegurar_cache(base: &Path, dep: &DependenciaResuelta) -> Result<PathBuf, String> {
     let cache_dir = base
@@ -504,6 +1016,27 @@ pub fn escribir_bloqueo(base: &Path, resueltas: &[DependenciaResuelta]) -> Resul
         let ruta_portable = ruta.to_string_lossy().replace('\\', "/");
         salida.push_str(&format!("ruta = \"{}\"\n", escapar(&ruta_portable)));
         salida.push_str(&format!("hash = \"{}\"\n", escapar(&dep.hash)));
+        if let Some(registro) = &dep.registro {
+            salida.push_str(&format!("registro = \"{}\"\n", escapar(registro)));
+        }
+        if let Some(key_id) = &dep.key_id {
+            salida.push_str(&format!("key_id = \"{}\"\n", escapar(key_id)));
+        }
+        if let Some(firma) = &dep.firma {
+            salida.push_str(&format!("firma = \"{}\"\n", escapar(firma)));
+        }
+        if let Some(nonce) = &dep.nonce {
+            salida.push_str(&format!("nonce = \"{}\"\n", escapar(nonce)));
+        }
+        if let Some(expira) = &dep.expira {
+            salida.push_str(&format!("expira = \"{}\"\n", escapar(expira)));
+        }
+        if let Some(published_at) = &dep.published_at {
+            salida.push_str(&format!("published_at = \"{}\"\n", escapar(published_at)));
+        }
+        if dep.verificado {
+            salida.push_str("verificado = true\n");
+        }
     }
     let ruta = base.join(BLOQUEO);
     fs::write(&ruta, salida).map_err(|e| format!("no se pudo escribir '{}': {e}", ruta.display()))
@@ -575,6 +1108,13 @@ fn parsear_bloqueo(texto: &str) -> Result<Vec<DependenciaResuelta>, String> {
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+        Option<String>,
     )> = None;
     let mut version_bloqueo: Option<u32> = None;
 
@@ -587,7 +1127,9 @@ fn parsear_bloqueo(texto: &str) -> Result<Vec<DependenciaResuelta>, String> {
             if let Some(prev) = actual.take() {
                 resultado.push(construir_dependencia(prev, numero)?);
             }
-            actual = Some((None, None, None, None));
+            actual = Some((
+                None, None, None, None, None, None, None, None, None, false, None,
+            ));
             continue;
         }
         if linea.starts_with('[') {
@@ -598,14 +1140,41 @@ fn parsear_bloqueo(texto: &str) -> Result<Vec<DependenciaResuelta>, String> {
             .ok_or_else(|| format!("línea {}: se esperaba 'clave = valor'", numero + 1))?;
         let clave = clave.trim();
         let valor = valor.trim();
-        if let Some((nombre, version, ruta, hash)) = actual.as_mut() {
-            let texto = parsear_texto(valor).map_err(|e| format!("línea {}: {e}", numero + 1))?;
+        if let Some((
+            nombre,
+            version,
+            ruta,
+            hash,
+            registro,
+            key_id,
+            firma,
+            nonce,
+            expira,
+            verificado,
+            published_at,
+        )) = actual.as_mut()
+        {
             match clave {
-                "nombre" => *nombre = Some(texto),
-                "version" => *version = Some(texto),
-                "ruta" => *ruta = Some(texto),
-                "hash" => *hash = Some(texto),
-                _ => {}
+                "verificado" => {
+                    *verificado = valor == "true";
+                }
+                _ => {
+                    let texto =
+                        parsear_texto(valor).map_err(|e| format!("línea {}: {e}", numero + 1))?;
+                    match clave {
+                        "nombre" => *nombre = Some(texto),
+                        "version" => *version = Some(texto),
+                        "ruta" => *ruta = Some(texto),
+                        "hash" => *hash = Some(texto),
+                        "registro" | "registry" => *registro = Some(texto),
+                        "key_id" => *key_id = Some(texto),
+                        "firma" | "signature" => *firma = Some(texto),
+                        "nonce" => *nonce = Some(texto),
+                        "expira" | "expires_at" => *expira = Some(texto),
+                        "published_at" => *published_at = Some(texto),
+                        _ => {}
+                    }
+                }
             }
         } else if clave == "version" {
             let texto = if valor.starts_with('"') {
@@ -651,16 +1220,36 @@ fn parsear_bloqueo(texto: &str) -> Result<Vec<DependenciaResuelta>, String> {
     Ok(resultado)
 }
 
+#[allow(clippy::type_complexity)]
 fn construir_dependencia(
     campos: (
         Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+        Option<String>,
     ),
     numero: usize,
 ) -> Result<DependenciaResuelta, String> {
-    let (nombre, version, ruta, hash) = campos;
+    let (
+        nombre,
+        version,
+        ruta,
+        hash,
+        registro,
+        key_id,
+        firma,
+        nonce,
+        expira,
+        verificado,
+        published_at,
+    ) = campos;
     let ubicacion = if numero == 0 {
         "al final del bloqueo".to_string()
     } else {
@@ -671,12 +1260,13 @@ fn construir_dependencia(
         version: version.ok_or_else(|| format!("{ubicacion}: falta 'version'"))?,
         ruta: PathBuf::from(ruta.ok_or_else(|| format!("{ubicacion}: falta 'ruta'"))?),
         hash: hash.unwrap_or_default(),
-        verificado: false,
-        registro: None,
-        key_id: None,
-        firma: None,
-        nonce: None,
-        expira: None,
+        verificado,
+        registro,
+        key_id,
+        firma,
+        nonce,
+        expira,
+        published_at,
     })
 }
 
@@ -975,6 +1565,7 @@ util = { version = "0.2.0", ruta = "../util" }
             firma: None,
             nonce: None,
             expira: None,
+            published_at: None,
         }];
         let base = std::env::temp_dir().join(format!(
             "basilisco-bloqueo-{}-{:?}",
@@ -1523,6 +2114,7 @@ pub fn instalar_paquete_remoto_completo(
         firma: meta.firma.clone(),
         nonce: Some(meta.nonce.clone()),
         expira: Some(meta.expires_at.clone()),
+        published_at: Some(meta.published_at.clone()),
     };
     asegurar_cache(base, &dep_resuelta)?;
 

@@ -97,6 +97,10 @@ fn pipeline_gates_consistentes_funciones_publicas() {
             bloque_entrada: mir::BlockId(0),
         }],
         globals: vec![],
+        contiene_coincidir: false,
+        contiene_nominales: false,
+
+        source_map: std::collections::HashMap::new(),
     };
     let e = cli::gate_mir(&bad).unwrap_err();
     assert!(e.contains("verificacion:"), "prefijo de verificación: {e}");

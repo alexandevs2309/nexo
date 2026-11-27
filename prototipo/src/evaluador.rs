@@ -124,7 +124,9 @@ pub enum CausaError {
     /// Sentencia no permitida en el nivel superior de un módulo (ADR-0017 D4).
     SentenciaNoPermitidaEnModulo { sentencia: String },
     /// Error al cargar una biblioteca dinámica (FFI básico).
-    FFIInvalido { detalle: String },
+    FFIInvalido { causa: crate::ffi::CausaFfi },
+    /// Operación no soportada en el motor/ruta actual (Fase 08, etc.).
+    NoSoportado { mensaje: String },
 
     // ===== G2.2/G3: semántica de genéricos =====
     /// Llamada a función genérica sin argumentos de tipo explícitos (inferencia no disponible).
@@ -185,6 +187,81 @@ pub enum CausaError {
         cadena: Vec<String>,
         detalle: String,
     },
+
+    // ===== Fase 08 S8.1: diagnósticos nominales (BAS-71xx) =====
+    /// BAS-7101: tipo nominal no resuelto.
+    TipoNominalDesconocido { nombre: String },
+    /// BAS-7102: duplicado o sombreado nominal no permitido en v1.
+    TipoNominalDuplicadoOSombreado { nombre: String, detalle: String },
+    /// BAS-7103: campo inexistente en struct.
+    CampoStructDesconocido { campo: String, tipo: String },
+    /// BAS-7104: campo duplicado en literal struct.
+    CampoStructDuplicado { campo: String, tipo: String },
+    /// BAS-7105: falta campo obligatorio en construcción.
+    CampoStructFaltante { campo: String, tipo: String },
+    /// BAS-7106: campo no pertenece al struct.
+    CampoStructSobrante { campo: String, tipo: String },
+    /// BAS-7107: tipo de campo incompatible.
+    TipoCampoIncompatible {
+        campo: String,
+        tipo: String,
+        esperado: String,
+        obtenido: String,
+    },
+    /// BAS-7108: construcción nominal inválida.
+    ConstruccionNominalInvalida { tipo: String, detalle: String },
+    /// BAS-7109: variante de enum desconocida.
+    VarianteEnumDesconocida { variante: String, tipo: String },
+    /// BAS-7110: payload de variante incompatible.
+    PayloadVarianteIncompatible {
+        variante: String,
+        tipo: String,
+        detalle: String,
+    },
+    /// BAS-7111: construcción/forma de variante inválida.
+    ConstruccionVarianteInvalida { tipo: String, detalle: String },
+    /// Variante enum duplicada en declaración (S8.2, mapeado a BAS-7111).
+    VarianteEnumDuplicada { variante: String, tipo: String },
+    /// BAS-7112: patrón incompatible con scrutinee.
+    PatronIncompatible { detalle: String },
+    /// BAS-7113: match no exhaustivo.
+    MatchNoExhaustivo { detalle: String },
+    /// BAS-7114: patrón inalcanzable/redundante.
+    PatronInalcanzable { detalle: String },
+    /// BAS-7115: binding de patrón inválido.
+    BindingPatronInvalido { detalle: String },
+    /// BAS-7116: uso de patrón inválido.
+    UsoPatronInvalido { detalle: String },
+    /// BAS-7117: método no encontrado.
+    MetodoNoEncontrado { metodo: String, tipo: String },
+    /// BAS-7118: firma incompatible o colisión de método.
+    FirmaMetodoIncompatibleOColision { detalle: String },
+    /// BAS-7119: trait no encontrado.
+    TraitNoEncontrado { nombre: String },
+    /// BAS-7120: trait no implementado.
+    TraitNoImplementado { rasgo: String, tipo: String },
+    /// BAS-7121: implementación incompleta.
+    ImplIncompleta {
+        rasgo: String,
+        tipo: String,
+        detalle: String,
+    },
+    /// BAS-7122: impl duplicada o violación de coherencia.
+    ImplDuplicadaOCoherencia { detalle: String },
+    /// BAS-7124: capacidad nominal no soportada por backend/capa.
+    CapacidadNominalNoSoportadaBackend {
+        capacidad: String,
+        backend: String,
+        capa: String,
+    },
+    /// BAS-7125: genéricos nominales no soportados en v1.
+    GenericoNominalNoSoportado { tipo: String },
+    /// BAS-7126: igualdad nominal no soportada en v1.
+    IgualdadNominalNoSoportada { tipo: String },
+    /// BAS-7128: miembro no visible.
+    MiembroNoVisible { miembro: String, tipo: String },
+    /// BAS-7130: recursividad nominal por valor.
+    RecursividadNominalPorValor { tipo: String, ciclo: String },
 }
 
 /// Límite de iteraciones por ciclo `mientras` (protección frente a bucles infinitos).
@@ -194,10 +271,26 @@ static IMPORTANDO: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::n
 static CACHE_MODULOS: LazyLock<Mutex<HashMap<PathBuf, Entorno>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub(crate) type Canal = (Arc<Mutex<Vec<Valor>>>, Arc<Condvar>);
+#[derive(Debug)]
+pub(crate) struct CanalEstado {
+    pub buffer: Vec<Valor>,
+    pub cerrado: bool,
+}
+
+pub(crate) type Canal = Arc<(Mutex<CanalEstado>, Condvar)>;
 pub(crate) type RegistroCanales = Vec<Canal>;
 pub(crate) type TareaHandle = Option<thread::JoinHandle<Result<Valor, String>>>;
 pub(crate) type RegistroTareas = Vec<TareaHandle>;
+
+pub(crate) fn crear_canal_nuevo() -> Canal {
+    Arc::new((
+        Mutex::new(CanalEstado {
+            buffer: Vec::new(),
+            cerrado: false,
+        }),
+        Condvar::new(),
+    ))
+}
 
 thread_local! {
     // El flag `managed` distingue un contexto de ejecución gestionado
@@ -217,7 +310,7 @@ thread_local! {
 /// contexto anterior (incluido su estado gestionado/lazy) al salir, también
 /// ante panic. Aísla ejecuciones paralelas; las tareas del mismo run comparten
 /// este contexto (Fase 02).
-pub(crate) fn instalar_contexto_ejecucion() -> GuardaContextoEjecucion {
+pub fn instalar_contexto_ejecucion() -> GuardaContextoEjecucion {
     let prev_c = CTX_CANALES.with(|c| c.replace(Some((Arc::new(Mutex::new(Vec::new())), true))));
     let prev_t = CTX_TAREAS.with(|t| t.replace(Some((Arc::new(Mutex::new(Vec::new())), true))));
     GuardaContextoEjecucion {
@@ -226,7 +319,7 @@ pub(crate) fn instalar_contexto_ejecucion() -> GuardaContextoEjecucion {
     }
 }
 
-pub(crate) struct GuardaContextoEjecucion {
+pub struct GuardaContextoEjecucion {
     prev_canales: Option<(Arc<Mutex<RegistroCanales>>, bool)>,
     prev_tareas: Option<(Arc<Mutex<RegistroTareas>>, bool)>,
 }
@@ -351,7 +444,7 @@ mod fase02_contexto_tests {
         {
             let reg = canales_actual();
             let mut c = reg.lock().unwrap();
-            c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+            c.push(crear_canal_nuevo());
         }
         // VM top-level debe ignorar el lazy y obtener contexto fresco: crear_canal
         // devuelve 0 y recibir/enviar operan sobre el canal nuevo (aislado).
@@ -383,7 +476,7 @@ mod fase02_contexto_tests {
                 let reg = canales_actual();
                 let mut c = reg.lock().unwrap();
                 let id = c.len();
-                c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+                c.push(crear_canal_nuevo());
                 id
             };
             assert_eq!(id1, 0);
@@ -410,15 +503,15 @@ mod fase02_contexto_tests {
             {
                 let reg = canales_actual();
                 let mut c = reg.lock().unwrap();
-                c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+                c.push(crear_canal_nuevo());
             }
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _g2 = instalar_contexto_ejecucion();
                 {
                     let reg = canales_actual();
                     let mut c = reg.lock().unwrap();
-                    c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
-                    c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+                    c.push(crear_canal_nuevo());
+                    c.push(crear_canal_nuevo());
                 }
                 panic!("boom");
             }));
@@ -441,7 +534,7 @@ mod fase02_contexto_tests {
         {
             let reg = canales_actual();
             let mut c = reg.lock().unwrap();
-            c.push((Arc::new(Mutex::new(Vec::new())), Arc::new(Condvar::new())));
+            c.push(crear_canal_nuevo());
         }
         let canales = canales_actual();
         let tareas = tareas_actual();
@@ -549,6 +642,7 @@ pub const NOMBRES_RESERVADOS: &[&str] = &[
     "crear_canal",
     "enviar",
     "recibir",
+    "cerrar_canal",
     "esperar_tarea",
     "cargar_ffi",
     "llamar_ffi",
@@ -605,7 +699,8 @@ impl CausaError {
             CausaError::RutaNoPermitida { .. } => "E1036",
             CausaError::SentenciaNoPermitidaEnModulo { .. } => "E1037",
             CausaError::ImportacionesNoDisponibles => "E1038",
-            CausaError::FFIInvalido { .. } => "E1040",
+            CausaError::FFIInvalido { causa } => causa.codigo(),
+            CausaError::NoSoportado { .. } => "E1099",
             CausaError::InferenciaArgumentosTipoNoDisponible { .. } => "E1041",
             CausaError::ArgumentosTipoEnFuncionNoGenerica { .. } => "E1042",
             CausaError::AridadArgumentosTipoInvalida { .. } => "E1043",
@@ -622,6 +717,34 @@ impl CausaError {
             CausaError::ProfundidadInstanciacionExcedida { .. } => "E1054",
             CausaError::ReferenciaGenericaResidualIr { .. } => "E1055",
             CausaError::LimiteInstanciasExcedido { .. } => "E1056",
+            CausaError::TipoNominalDesconocido { .. } => "BAS-7101",
+            CausaError::TipoNominalDuplicadoOSombreado { .. } => "BAS-7102",
+            CausaError::CampoStructDesconocido { .. } => "BAS-7103",
+            CausaError::CampoStructDuplicado { .. } => "BAS-7104",
+            CausaError::CampoStructFaltante { .. } => "BAS-7105",
+            CausaError::CampoStructSobrante { .. } => "BAS-7106",
+            CausaError::TipoCampoIncompatible { .. } => "BAS-7107",
+            CausaError::ConstruccionNominalInvalida { .. } => "BAS-7108",
+            CausaError::VarianteEnumDesconocida { .. } => "BAS-7109",
+            CausaError::PayloadVarianteIncompatible { .. } => "BAS-7110",
+            CausaError::ConstruccionVarianteInvalida { .. } => "BAS-7111",
+            CausaError::VarianteEnumDuplicada { .. } => "BAS-7111",
+            CausaError::PatronIncompatible { .. } => "BAS-7112",
+            CausaError::MatchNoExhaustivo { .. } => "BAS-7113",
+            CausaError::PatronInalcanzable { .. } => "BAS-7114",
+            CausaError::BindingPatronInvalido { .. } => "BAS-7115",
+            CausaError::UsoPatronInvalido { .. } => "BAS-7116",
+            CausaError::MetodoNoEncontrado { .. } => "BAS-7117",
+            CausaError::FirmaMetodoIncompatibleOColision { .. } => "BAS-7118",
+            CausaError::TraitNoEncontrado { .. } => "BAS-7119",
+            CausaError::TraitNoImplementado { .. } => "BAS-7120",
+            CausaError::ImplIncompleta { .. } => "BAS-7121",
+            CausaError::ImplDuplicadaOCoherencia { .. } => "BAS-7122",
+            CausaError::CapacidadNominalNoSoportadaBackend { .. } => "BAS-7124",
+            CausaError::GenericoNominalNoSoportado { .. } => "BAS-7125",
+            CausaError::IgualdadNominalNoSoportada { .. } => "BAS-7126",
+            CausaError::MiembroNoVisible { .. } => "BAS-7128",
+            CausaError::RecursividadNominalPorValor { .. } => "BAS-7130",
         }
     }
 }
@@ -756,7 +879,8 @@ impl std::fmt::Display for CausaError {
                     "sentencia no permitida en el nivel superior de un módulo: {sentencia}"
                 )
             }
-            CausaError::FFIInvalido { detalle } => write!(f, "error de FFI: {detalle}"),
+            CausaError::FFIInvalido { causa } => write!(f, "{causa}"),
+            CausaError::NoSoportado { mensaje } => write!(f, "{mensaje}"),
             CausaError::InferenciaArgumentosTipoNoDisponible { funcion } => write!(
                 f,
                 "la inferencia de argumentos de tipo para la función '{funcion}' no está disponible en esta etapa; especifique los argumentos de tipo explícitamente"
@@ -869,6 +993,159 @@ impl std::fmt::Display for CausaError {
                 }
                 Ok(())
             }
+            CausaError::TipoNominalDesconocido { nombre } => {
+                write!(
+                    f,
+                    "tipo nominal '{nombre}' no encontrado en el ámbito actual"
+                )
+            }
+            CausaError::TipoNominalDuplicadoOSombreado { nombre, detalle } => {
+                if detalle.is_empty() {
+                    write!(
+                        f,
+                        "el tipo nominal '{nombre}' ya está declarado o su sombreado no está permitido en v1"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "el tipo nominal '{nombre}' ya está declarado o su sombreado no está permitido en v1: {detalle}"
+                    )
+                }
+            }
+            CausaError::CampoStructDesconocido { campo, tipo } => {
+                write!(f, "el campo '{campo}' no existe en la estructura '{tipo}'")
+            }
+            CausaError::CampoStructDuplicado { campo, tipo } => {
+                write!(
+                    f,
+                    "el campo '{campo}' está duplicado en la construcción de '{tipo}'"
+                )
+            }
+            CausaError::CampoStructFaltante { campo, tipo } => {
+                write!(f, "falta el campo '{campo}' en la construcción de '{tipo}'")
+            }
+            CausaError::CampoStructSobrante { campo, tipo } => {
+                write!(
+                    f,
+                    "el campo '{campo}' no pertenece a la estructura '{tipo}'"
+                )
+            }
+            CausaError::TipoCampoIncompatible {
+                campo,
+                tipo,
+                esperado,
+                obtenido,
+            } => {
+                write!(
+                    f,
+                    "el campo '{campo}' de '{tipo}' espera {esperado} y recibió {obtenido}"
+                )
+            }
+            CausaError::ConstruccionNominalInvalida { tipo, detalle } => {
+                write!(
+                    f,
+                    "construcción inválida del tipo nominal '{tipo}': {detalle}"
+                )
+            }
+            CausaError::VarianteEnumDesconocida { variante, tipo } => {
+                write!(
+                    f,
+                    "la variante '{variante}' no existe en la enumeración '{tipo}'"
+                )
+            }
+            CausaError::PayloadVarianteIncompatible {
+                variante,
+                tipo,
+                detalle,
+            } => {
+                write!(
+                    f,
+                    "payload incompatible para la variante '{variante}' de '{tipo}': {detalle}"
+                )
+            }
+            CausaError::ConstruccionVarianteInvalida { tipo, detalle } => {
+                write!(
+                    f,
+                    "construcción inválida de variante para '{tipo}': {detalle}"
+                )
+            }
+            CausaError::VarianteEnumDuplicada { variante, tipo } => {
+                write!(
+                    f,
+                    "la variante '{variante}' está duplicada en la enumeración '{tipo}'"
+                )
+            }
+            CausaError::PatronIncompatible { detalle } => {
+                write!(f, "patrón incompatible: {detalle}")
+            }
+            CausaError::MatchNoExhaustivo { detalle } => {
+                write!(f, "coincidir no exhaustivo: {detalle}")
+            }
+            CausaError::PatronInalcanzable { detalle } => {
+                write!(f, "patrón inalcanzable: {detalle}")
+            }
+            CausaError::BindingPatronInvalido { detalle } => {
+                write!(f, "binding de patrón inválido: {detalle}")
+            }
+            CausaError::UsoPatronInvalido { detalle } => {
+                write!(f, "uso de patrón inválido: {detalle}")
+            }
+            CausaError::MetodoNoEncontrado { metodo, tipo } => {
+                write!(f, "método '{metodo}' no encontrado en '{tipo}'")
+            }
+            CausaError::FirmaMetodoIncompatibleOColision { detalle } => {
+                write!(f, "firma/colisión de método incompatible: {detalle}")
+            }
+            CausaError::TraitNoEncontrado { nombre } => write!(f, "rasgo '{nombre}' no encontrado"),
+            CausaError::TraitNoImplementado { rasgo, tipo } => {
+                write!(f, "el tipo '{tipo}' no implementa el rasgo '{rasgo}'")
+            }
+            CausaError::ImplIncompleta {
+                rasgo,
+                tipo,
+                detalle,
+            } => write!(
+                f,
+                "implementación incompleta de '{rasgo}' para '{tipo}': {detalle}"
+            ),
+            CausaError::ImplDuplicadaOCoherencia { detalle } => write!(
+                f,
+                "implementación duplicada o violación de coherencia: {detalle}"
+            ),
+            CausaError::CapacidadNominalNoSoportadaBackend {
+                capacidad,
+                backend,
+                capa,
+            } => {
+                write!(
+                    f,
+                    "capacidad nominal '{capacidad}' no soportada por el backend '{backend}' en capa '{capa}'"
+                )
+            }
+            CausaError::GenericoNominalNoSoportado { tipo } => {
+                write!(
+                    f,
+                    "tipos nominales genéricos no soportados en Fase 08 v1: '{tipo}'"
+                )
+            }
+            CausaError::IgualdadNominalNoSoportada { tipo } => {
+                write!(
+                    f,
+                    "igualdad nominal no soportada en Fase 08 v1 para '{tipo}'"
+                )
+            }
+            CausaError::MiembroNoVisible { miembro, tipo } => {
+                write!(
+                    f,
+                    "miembro '{miembro}' de '{tipo}' no es visible en este contexto"
+                )
+            }
+            CausaError::RecursividadNominalPorValor { tipo, ciclo } => {
+                write!(
+                    f,
+                    "recursividad por valor no permitida en tipo nominal '{tipo}': {ciclo}"
+                )
+            }
         }
     }
 }
@@ -947,6 +1224,19 @@ pub struct FuncionDef {
     pub tipos_parametros_inferidos: Option<Vec<Valor>>,
 }
 
+/// S8.4: método nominal (inherente o de rasgo).
+#[derive(Debug, Clone)]
+pub struct MetodoNominalDef {
+    pub nombre: String,
+    pub receptor: crate::parser::ReceptorMetodo,
+    pub parametros: Vec<(String, Option<TipoAnotacion>)>,
+    pub tipo_retorno: Option<TipoAnotacion>,
+    pub cuerpo: Vec<Sentencia>,
+    pub linea: usize,
+    pub columna: usize,
+    pub publico: bool,
+}
+
 /// Entorno de ejecución: pila de ámbitos con las variables (ADR-0006 §1.6),
 /// más un mapa global de funciones (ADR-0008).
 #[derive(Debug, Default, Clone)]
@@ -964,6 +1254,16 @@ pub struct Entorno {
     pub archivo: Option<String>,
     /// Indica si se está ejecutando dentro de una función.
     pub en_funcion: bool,
+    /// S8.1: layouts nominales (nombre -> (tipo_id, campos en orden de declaración)).
+    nominales: HashMap<String, (u32, Vec<String>)>,
+    /// S8.2: layouts de enums (nombre -> (tipo_id, variantes: nombre -> (indice, aridad_payload))).
+    #[allow(clippy::type_complexity)]
+    nominales_enum: HashMap<String, (u32, HashMap<String, (u32, usize)>)>,
+    siguiente_nominal_id: u32,
+    /// S8.4: métodos inherentes por tipo_id.
+    metodos_inherentes: HashMap<u32, HashMap<String, MetodoNominalDef>>,
+    /// S8.4: métodos de rasgo por tipo_id (nombre -> def). Resolución ya validada por semántica.
+    metodos_rasgo: HashMap<u32, HashMap<String, MetodoNominalDef>>,
 }
 
 impl Entorno {
@@ -976,6 +1276,11 @@ impl Entorno {
             cargador: None,
             archivo: None,
             en_funcion: false,
+            nominales: HashMap::new(),
+            nominales_enum: HashMap::new(),
+            siguiente_nominal_id: 0,
+            metodos_inherentes: HashMap::new(),
+            metodos_rasgo: HashMap::new(),
         }
     }
 
@@ -989,12 +1294,30 @@ impl Entorno {
             cargador: Some(cargador),
             archivo,
             en_funcion: false,
+            nominales: HashMap::new(),
+            nominales_enum: HashMap::new(),
+            siguiente_nominal_id: 0,
+            metodos_inherentes: HashMap::new(),
+            metodos_rasgo: HashMap::new(),
         }
     }
 
     /// Inserta una variable en el ámbito actual con su metadato completo.
     fn insertar_variable(&mut self, nombre: String, info: VariableInfo) {
         self.ambitos.last_mut().unwrap().insert(nombre, info);
+    }
+
+    /// Envuelve variables mutables en celdas para compartirlas con clausuras.
+    /// Idempotente: no reenvuelve celdas existentes.
+    fn celda_wrap_mutables(&mut self) {
+        for ambito in &mut self.ambitos {
+            for info in ambito.values_mut() {
+                if info.mutable && !info.es_const && !matches!(info.valor, Valor::Celda(_)) {
+                    let val = info.valor.clone();
+                    info.valor = Valor::Celda(Arc::new(Mutex::new(val)));
+                }
+            }
+        }
     }
 
     /// Verifica si una variable existe en el ámbito actual (para declaración duplicada).
@@ -1183,11 +1506,53 @@ impl Entorno {
         sentencias: &[Sentencia],
     ) -> Result<Option<Valor>, ErrorEjecucion> {
         let _ctx = instalar_contexto_ejecucion();
+        self.registrar_nominales(sentencias);
         // Primer pase: izar las funciones de nivel superior. Así el evaluador
         // coincide con el analizador semántico (llamadas anticipadas y
         // recursión entre funciones declaradas después).
         self.izar_funciones(sentencias)?;
         self.ejecutar_sentencias(sentencias)
+    }
+
+    fn registrar_nominales(&mut self, sentencias: &[Sentencia]) {
+        for s in sentencias {
+            self.registrar_nominal_sentencia(s);
+        }
+    }
+
+    fn registrar_nominal_sentencia(&mut self, s: &Sentencia) {
+        match s {
+            Sentencia::Estructura { nombre, campos, .. } => {
+                if self.nominales.contains_key(nombre) || self.nominales_enum.contains_key(nombre) {
+                    return;
+                }
+                let id = self.siguiente_nominal_id;
+                self.siguiente_nominal_id = self.siguiente_nominal_id.saturating_add(1);
+                let nombres: Vec<String> = campos.iter().map(|c| c.nombre.clone()).collect();
+                self.nominales.insert(nombre.clone(), (id, nombres));
+            }
+            Sentencia::Enumeracion {
+                nombre, variantes, ..
+            } => {
+                if self.nominales.contains_key(nombre) || self.nominales_enum.contains_key(nombre) {
+                    return;
+                }
+                let id = self.siguiente_nominal_id;
+                self.siguiente_nominal_id = self.siguiente_nominal_id.saturating_add(1);
+                let mut vars = HashMap::new();
+                for (i, v) in variantes.iter().enumerate() {
+                    vars.insert(v.nombre.clone(), (i as u32, v.payload.len()));
+                }
+                self.nominales_enum.insert(nombre.clone(), (id, vars));
+            }
+            Sentencia::Exportar { sentencia, .. } => self.registrar_nominal_sentencia(sentencia),
+            Sentencia::Bloque(ss) => {
+                for st in ss {
+                    self.registrar_nominal_sentencia(st);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Registra las funciones declaradas en el nivel superior de un programa o
@@ -1310,6 +1675,193 @@ impl Entorno {
         r
     }
 
+    fn ejecutar_asignacion_campo(
+        &mut self,
+        objeto: &Expresion,
+        campo: &str,
+        valor: Expresion,
+        linea: usize,
+        columna: usize,
+    ) -> Result<(), ErrorEjecucion> {
+        let Expresion::Variable {
+            nombre: base_nombre,
+            ..
+        } = objeto
+        else {
+            return Err(error(
+                CausaError::NoSoportado {
+                    mensaje: "forma de lvalue no soportada en Fase 08 v1: se admite solo `id.campo = expr`".to_string(),
+                },
+                linea,
+                columna,
+            ));
+        };
+        let Some((idx_ambito, info)) = self.localizar_info(base_nombre) else {
+            return Err(error(
+                CausaError::VariableNoDefinida(base_nombre.clone()),
+                linea,
+                columna,
+            ));
+        };
+        if !info.mutable {
+            return Err(error(
+                CausaError::ReasignacionInmutable {
+                    nombre: base_nombre.clone(),
+                },
+                linea,
+                columna,
+            ));
+        }
+        // C2: resolver proyección, luego evaluar RHS, luego mutar.
+        let valor_base = deref_celda_ref(&info.valor);
+        let tipo_id = match &valor_base {
+            Valor::EstructuraNominal { tipo_id, .. } => *tipo_id,
+            _ => {
+                return Err(error(
+                    CausaError::ConstruccionNominalInvalida {
+                        tipo: "<no-nominal>".to_string(),
+                        detalle: "asignación de campo sobre valor no nominal".to_string(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+        };
+        let layout_nombres = self
+            .nominales
+            .values()
+            .find(|(id, _)| *id == tipo_id)
+            .map(|(_, cs)| cs.clone());
+        let Some(nombres) = layout_nombres else {
+            return Err(error(
+                CausaError::ConstruccionNominalInvalida {
+                    tipo: "<nominal>".to_string(),
+                    detalle: "layout nominal no encontrado".to_string(),
+                },
+                linea,
+                columna,
+            ));
+        };
+        let Some(campo_idx) = nombres.iter().position(|n| n == campo) else {
+            return Err(error(
+                CausaError::CampoStructDesconocido {
+                    campo: campo.to_string(),
+                    tipo: "<nominal>".to_string(),
+                },
+                linea,
+                columna,
+            ));
+        };
+        let _ = nombres;
+        let nuevo_val = evaluar_con(&valor, self)?;
+        // Mutar in-place
+        let ambito = &mut self.ambitos[idx_ambito];
+        if let Some(var_info) = ambito.get_mut(base_nombre) {
+            match &mut var_info.valor {
+                Valor::Celda(c) => {
+                    let mut guard = c.lock().unwrap();
+                    if let Valor::EstructuraNominal { campos, .. } = &mut *guard
+                        && campo_idx < campos.len()
+                    {
+                        campos[campo_idx] = nuevo_val;
+                        return Ok(());
+                    }
+                }
+                Valor::EstructuraNominal { campos, .. } if campo_idx < campos.len() => {
+                    campos[campo_idx] = nuevo_val;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        Err(error(
+            CausaError::ConstruccionNominalInvalida {
+                tipo: "<nominal>".to_string(),
+                detalle: "no se pudo asignar campo nominal".to_string(),
+            },
+            linea,
+            columna,
+        ))
+    }
+
+    fn registrar_impl_s8(&mut self, s: &Sentencia) {
+        match s {
+            Sentencia::ImplementacionInherente { tipo, metodos, .. } => {
+                let Some(tipo_id) = self.buscar_tipo_id_nominal(tipo) else {
+                    return;
+                };
+                let mapa = self.metodos_inherentes.entry(tipo_id).or_default();
+                for m in metodos {
+                    mapa.insert(
+                        m.nombre.clone(),
+                        MetodoNominalDef {
+                            nombre: m.nombre.clone(),
+                            receptor: m.receptor.clone(),
+                            parametros: m.parametros.clone(),
+                            tipo_retorno: m.tipo_retorno.clone(),
+                            cuerpo: m.cuerpo.clone(),
+                            linea: m.linea,
+                            columna: m.columna,
+                            publico: m.publico,
+                        },
+                    );
+                }
+            }
+            Sentencia::ImplementacionRasgo { tipo, metodos, .. } => {
+                let Some(tipo_id) = self.buscar_tipo_id_nominal(tipo) else {
+                    return;
+                };
+                let mapa = self.metodos_rasgo.entry(tipo_id).or_default();
+                for m in metodos {
+                    mapa.insert(
+                        m.nombre.clone(),
+                        MetodoNominalDef {
+                            nombre: m.nombre.clone(),
+                            receptor: m.receptor.clone(),
+                            parametros: m.parametros.clone(),
+                            tipo_retorno: m.tipo_retorno.clone(),
+                            cuerpo: m.cuerpo.clone(),
+                            linea: m.linea,
+                            columna: m.columna,
+                            publico: m.publico,
+                        },
+                    );
+                }
+            }
+            Sentencia::Exportar { sentencia, .. } => self.registrar_impl_s8(sentencia),
+            Sentencia::Bloque(ss) => {
+                for st in ss {
+                    self.registrar_impl_s8(st);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn buscar_tipo_id_nominal(&self, nombre: &str) -> Option<u32> {
+        if let Some((id, _)) = self.nominales.get(nombre) {
+            return Some(*id);
+        }
+        if let Some((id, _)) = self.nominales_enum.get(nombre) {
+            return Some(*id);
+        }
+        None
+    }
+
+    fn nombre_tipo_nominal_por_id(&self, tipo_id: u32) -> Option<String> {
+        for (n, (id, _)) in &self.nominales {
+            if *id == tipo_id {
+                return Some(n.clone());
+            }
+        }
+        for (n, (id, _)) in &self.nominales_enum {
+            if *id == tipo_id {
+                return Some(n.clone());
+            }
+        }
+        None
+    }
+
     fn ejecutar_funcion_sentencias(
         &mut self,
         sentencias: &[Sentencia],
@@ -1318,6 +1870,22 @@ impl Entorno {
         for s in sentencias {
             let s = s.clone();
             match s {
+                Sentencia::Rasgo { .. } => {}
+                s @ Sentencia::ImplementacionInherente { .. }
+                | s @ Sentencia::ImplementacionRasgo { .. } => {
+                    self.registrar_impl_s8(&s);
+                }
+                Sentencia::AsignacionCampo {
+                    objeto,
+                    campo,
+                    valor,
+                    linea,
+                    columna,
+                } => {
+                    self.ejecutar_asignacion_campo(&objeto, &campo, valor, linea, columna)?;
+                }
+                Sentencia::Estructura { .. } => {}
+                Sentencia::Enumeracion { .. } => {}
                 Sentencia::Declaracion {
                     nombre,
                     linea,
@@ -1348,7 +1916,12 @@ impl Entorno {
                     // Convertir y validar contra el tipo anotado si existe.
                     let v = if let Some(tipo_anotado) = tipo_anotacion {
                         let tipo_obtenido = v.nombre_tipo();
-                        match convertir_a_tipo_anotado(v, tipo_anotado) {
+                        match convertir_a_tipo_anotado(
+                            v,
+                            tipo_anotado,
+                            &self.nominales,
+                            &self.nominales_enum,
+                        ) {
                             Some(convertido) => convertido,
                             None => {
                                 return Err(error(
@@ -1382,6 +1955,8 @@ impl Entorno {
                 } => {
                     let nuevo = evaluar_con(&valor, self)?;
                     let nuevo_tipo = nuevo.nombre_tipo();
+                    let nominales = self.nominales.clone();
+                    let nominales_enum = self.nominales_enum.clone();
                     // Buscar la variable y verificar mutabilidad
                     let Some((idx, info)) = self.localizar_info(&nombre) else {
                         return Err(error(
@@ -1401,17 +1976,28 @@ impl Entorno {
                         ));
                     }
                     // Verificar compatibilidad de tipo (según el tipo declarado si lo hay).
-                    let Some(ajustado) = convertir_para_variable(info, nuevo) else {
+                    let info_clone = info.clone();
+                    let Some(ajustado) =
+                        convertir_para_variable(&info_clone, nuevo, &nominales, &nominales_enum)
+                    else {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
-                                esperado: info.valor.nombre_tipo().into(),
+                                esperado: deref_celda_ref(&info_clone.valor).nombre_tipo().into(),
                                 obtenido: nuevo_tipo.to_string(),
                             },
                             linea,
                             columna,
                         ));
                     };
-                    self.ambitos[idx].get_mut(&nombre).unwrap().valor = ajustado;
+                    let slot = &mut self.ambitos[idx].get_mut(&nombre).unwrap().valor;
+                    match slot {
+                        Valor::Celda(c) => {
+                            *c.lock().unwrap() = ajustado;
+                        }
+                        _ => {
+                            *slot = ajustado;
+                        }
+                    }
                 }
                 Sentencia::AsignacionIndice {
                     objeto,
@@ -1480,7 +2066,8 @@ impl Entorno {
                     }
                     let idx_usize = i as usize;
                     let nuevo = evaluar_con(&valor, self)?;
-                    let actual = match &info.valor {
+                    let valor_actual = deref_celda_ref(&info.valor);
+                    let actual = match &valor_actual {
                         Valor::Arreglo(v) | Valor::Lista(v) => {
                             if idx_usize >= v.len() {
                                 return Err(error(
@@ -1498,7 +2085,7 @@ impl Entorno {
                             return Err(error(
                                 CausaError::AsignacionIncompatible {
                                     esperado: "arreglo o lista".into(),
-                                    obtenido: info.valor.nombre_tipo().to_string(),
+                                    obtenido: valor_actual.nombre_tipo().to_string(),
                                 },
                                 linea,
                                 columna,
@@ -1515,11 +2102,21 @@ impl Entorno {
                             columna,
                         ));
                     };
-                    if let Some(info_mut) = self.ambitos[idx_amb].get_mut(&var_nombre)
-                        && let Valor::Arreglo(v) | Valor::Lista(v) = &mut info_mut.valor
-                        && idx_usize < v.len()
-                    {
-                        v[idx_usize] = ajustado;
+                    if let Some(info_mut) = self.ambitos[idx_amb].get_mut(&var_nombre) {
+                        match &mut info_mut.valor {
+                            Valor::Celda(c) => {
+                                let mut guard = c.lock().unwrap();
+                                if let Valor::Arreglo(v) | Valor::Lista(v) = &mut *guard
+                                    && idx_usize < v.len()
+                                {
+                                    v[idx_usize] = ajustado;
+                                }
+                            }
+                            Valor::Arreglo(v) | Valor::Lista(v) if idx_usize < v.len() => {
+                                v[idx_usize] = ajustado;
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 Sentencia::Si {
@@ -1748,6 +2345,7 @@ impl Entorno {
                             columna,
                         ));
                     }
+                    self.celda_wrap_mutables();
                     let capturado = Arc::new(Mutex::new(self.clone()));
                     self.insertar_variable(
                         nombre.clone(),
@@ -1777,18 +2375,23 @@ impl Entorno {
                             .and_then(|f| f.tipo_retorno_anotado.as_ref())
                         {
                             let obtenido = resultado.nombre_tipo().to_string();
-                            resultado = convertir_a_tipo_anotado(resultado, tipo_esperado)
-                                .ok_or_else(|| {
-                                    error(
-                                        CausaError::RetornoIncompatibleConAnotacion {
-                                            funcion: nombre_funcion.into(),
-                                            esperado: tipo_esperado.nombre(),
-                                            obtenido,
-                                        },
-                                        linea,
-                                        columna,
-                                    )
-                                })?;
+                            resultado = convertir_a_tipo_anotado(
+                                resultado,
+                                tipo_esperado,
+                                &self.nominales,
+                                &self.nominales_enum,
+                            )
+                            .ok_or_else(|| {
+                                error(
+                                    CausaError::RetornoIncompatibleConAnotacion {
+                                        funcion: nombre_funcion.into(),
+                                        esperado: tipo_esperado.nombre(),
+                                        obtenido,
+                                    },
+                                    linea,
+                                    columna,
+                                )
+                            })?;
                         }
                         return Ok(Some(resultado));
                     } else {
@@ -1975,6 +2578,22 @@ impl Entorno {
         for s in sentencias {
             let s = s.clone();
             match s {
+                Sentencia::AsignacionCampo {
+                    objeto,
+                    campo,
+                    valor,
+                    linea,
+                    columna,
+                } => {
+                    self.ejecutar_asignacion_campo(&objeto, &campo, valor, linea, columna)?;
+                }
+                Sentencia::Estructura { .. } => {}
+                Sentencia::Enumeracion { .. } => {}
+                Sentencia::Rasgo { .. } => {}
+                s @ Sentencia::ImplementacionInherente { .. }
+                | s @ Sentencia::ImplementacionRasgo { .. } => {
+                    self.registrar_impl_s8(&s);
+                }
                 Sentencia::Declaracion {
                     nombre,
                     linea,
@@ -2005,7 +2624,12 @@ impl Entorno {
                     // Convertir y validar contra el tipo anotado si existe.
                     let v = if let Some(tipo_anotado) = tipo_anotacion {
                         let tipo_obtenido = v.nombre_tipo();
-                        match convertir_a_tipo_anotado(v, tipo_anotado) {
+                        match convertir_a_tipo_anotado(
+                            v,
+                            tipo_anotado,
+                            &self.nominales,
+                            &self.nominales_enum,
+                        ) {
                             Some(convertido) => convertido,
                             None => {
                                 return Err(error(
@@ -2039,6 +2663,8 @@ impl Entorno {
                 } => {
                     let nuevo = evaluar_con(&valor, self)?;
                     let nuevo_tipo = nuevo.nombre_tipo();
+                    let nominales = self.nominales.clone();
+                    let nominales_enum = self.nominales_enum.clone();
                     // Buscar la variable y verificar mutabilidad
                     let Some((idx, info)) = self.localizar_info(&nombre) else {
                         return Err(error(
@@ -2058,17 +2684,28 @@ impl Entorno {
                         ));
                     }
                     // Verificar compatibilidad de tipo (según el tipo declarado si lo hay).
-                    let Some(ajustado) = convertir_para_variable(info, nuevo) else {
+                    let info_clone = info.clone();
+                    let Some(ajustado) =
+                        convertir_para_variable(&info_clone, nuevo, &nominales, &nominales_enum)
+                    else {
                         return Err(error(
                             CausaError::AsignacionIncompatible {
-                                esperado: info.valor.nombre_tipo().into(),
+                                esperado: deref_celda_ref(&info_clone.valor).nombre_tipo().into(),
                                 obtenido: nuevo_tipo.to_string(),
                             },
                             linea,
                             columna,
                         ));
                     };
-                    self.ambitos[idx].get_mut(&nombre).unwrap().valor = ajustado;
+                    let slot = &mut self.ambitos[idx].get_mut(&nombre).unwrap().valor;
+                    match slot {
+                        Valor::Celda(c) => {
+                            *c.lock().unwrap() = ajustado;
+                        }
+                        _ => {
+                            *slot = ajustado;
+                        }
+                    }
                 }
                 Sentencia::Funcion {
                     nombre,
@@ -2098,6 +2735,7 @@ impl Entorno {
                                 columna,
                             ));
                         }
+                        self.celda_wrap_mutables();
                         let capturado = Arc::new(Mutex::new(self.clone()));
                         self.insertar_variable(
                             nombre.clone(),
@@ -2530,7 +3168,8 @@ impl Entorno {
                     }
                     let idx_usize = i as usize;
                     let nuevo = evaluar_con(&valor, self)?;
-                    let actual = match &info.valor {
+                    let valor_actual = deref_celda_ref(&info.valor);
+                    let actual = match &valor_actual {
                         Valor::Arreglo(v) | Valor::Lista(v) => {
                             if idx_usize >= v.len() {
                                 return Err(error(
@@ -2548,7 +3187,7 @@ impl Entorno {
                             return Err(error(
                                 CausaError::AsignacionIncompatible {
                                     esperado: "arreglo o lista".into(),
-                                    obtenido: info.valor.nombre_tipo().to_string(),
+                                    obtenido: valor_actual.nombre_tipo().to_string(),
                                 },
                                 linea,
                                 columna,
@@ -2565,11 +3204,21 @@ impl Entorno {
                             columna,
                         ));
                     };
-                    if let Some(info_mut) = self.ambitos[idx_amb].get_mut(&var_nombre)
-                        && let Valor::Arreglo(v) | Valor::Lista(v) = &mut info_mut.valor
-                        && idx_usize < v.len()
-                    {
-                        v[idx_usize] = ajustado;
+                    if let Some(info_mut) = self.ambitos[idx_amb].get_mut(&var_nombre) {
+                        match &mut info_mut.valor {
+                            Valor::Celda(c) => {
+                                let mut guard = c.lock().unwrap();
+                                if let Valor::Arreglo(v) | Valor::Lista(v) = &mut *guard
+                                    && idx_usize < v.len()
+                                {
+                                    v[idx_usize] = ajustado;
+                                }
+                            }
+                            Valor::Arreglo(v) | Valor::Lista(v) if idx_usize < v.len() => {
+                                v[idx_usize] = ajustado;
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 Sentencia::Usar {
@@ -2700,14 +3349,34 @@ impl Entorno {
     }
 
     fn buscar(&self, nombre: &str) -> Option<Valor> {
-        self.localizar(nombre).map(|(_, v)| v.valor)
+        self.localizar(nombre).map(|(_, v)| deref_celda(v.valor))
+    }
+}
+
+fn deref_celda(v: Valor) -> Valor {
+    match v {
+        Valor::Celda(c) => c.lock().unwrap().clone(),
+        other => other,
+    }
+}
+
+fn deref_celda_ref(v: &Valor) -> Valor {
+    match v {
+        Valor::Celda(c) => c.lock().unwrap().clone(),
+        other => other.clone(),
     }
 }
 
 /// Convierte y valida un valor contra una anotación de tipo, aplicando las conversiones
 /// implícitas permitidas (entero→decimal, entero→real) y validando el tamaño y los
 /// elementos de arreglos y listas. `None` = incompatible.
-fn convertir_a_tipo_anotado(valor: Valor, tipo: &TipoAnotacion) -> Option<Valor> {
+#[allow(clippy::type_complexity)]
+fn convertir_a_tipo_anotado(
+    valor: Valor,
+    tipo: &TipoAnotacion,
+    nominales: &HashMap<String, (u32, Vec<String>)>,
+    nominales_enum: &HashMap<String, (u32, HashMap<String, (u32, usize)>)>,
+) -> Option<Valor> {
     match tipo {
         TipoAnotacion::Entero => match valor {
             Valor::Entero(_) => Some(valor),
@@ -2741,7 +3410,7 @@ fn convertir_a_tipo_anotado(valor: Valor, tipo: &TipoAnotacion) -> Option<Valor>
             }
             let convertidos = elementos
                 .into_iter()
-                .map(|e| convertir_a_tipo_anotado(e, tipo_elem))
+                .map(|e| convertir_a_tipo_anotado(e, tipo_elem, nominales, nominales_enum))
                 .collect::<Option<Vec<_>>>()?;
             Some(Valor::Arreglo(convertidos))
         }
@@ -2752,7 +3421,7 @@ fn convertir_a_tipo_anotado(valor: Valor, tipo: &TipoAnotacion) -> Option<Valor>
             };
             let convertidos = elementos
                 .into_iter()
-                .map(|e| convertir_a_tipo_anotado(e, tipo_elem))
+                .map(|e| convertir_a_tipo_anotado(e, tipo_elem, nominales, nominales_enum))
                 .collect::<Option<Vec<_>>>()?;
             Some(Valor::Lista(convertidos))
         }
@@ -2762,15 +3431,61 @@ fn convertir_a_tipo_anotado(valor: Valor, tipo: &TipoAnotacion) -> Option<Valor>
         },
         // G2: referencia sintáctica a parámetro de tipo (sin semántica de genéricos).
         TipoAnotacion::Parametro(_) => Some(valor),
+        TipoAnotacion::Nominal(nombre) => match &valor {
+            Valor::EstructuraNominal { tipo_id, .. } => {
+                if let Some((id_esperado, _)) = nominales.get(nombre) {
+                    if *tipo_id == *id_esperado {
+                        Some(valor)
+                    } else {
+                        None
+                    }
+                } else if let Some((id_esperado, _)) = nominales_enum.get(nombre) {
+                    if *tipo_id == *id_esperado {
+                        Some(valor)
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(valor)
+                }
+            }
+            Valor::EnumNominal { tipo_id, .. } => {
+                if let Some((id_esperado, _)) = nominales_enum.get(nombre) {
+                    if *tipo_id == *id_esperado {
+                        Some(valor)
+                    } else {
+                        None
+                    }
+                } else if let Some((id_esperado, _)) = nominales.get(nombre) {
+                    if *tipo_id == *id_esperado {
+                        Some(valor)
+                    } else {
+                        None
+                    }
+                } else {
+                    Some(valor)
+                }
+            }
+            _ => None,
+        },
     }
 }
 
 /// Convierte `nuevo` al tipo de la variable: usa la anotación declarada si existe y,
 /// si no, las conversiones implícitas basadas en el valor actual (ADR-0005 §1.4).
-fn convertir_para_variable(info: &VariableInfo, nuevo: Valor) -> Option<Valor> {
+#[allow(clippy::type_complexity)]
+fn convertir_para_variable(
+    info: &VariableInfo,
+    nuevo: Valor,
+    nominales: &HashMap<String, (u32, Vec<String>)>,
+    nominales_enum: &HashMap<String, (u32, HashMap<String, (u32, usize)>)>,
+) -> Option<Valor> {
     match info.tipo_declarado.as_ref() {
-        Some(tipo) => convertir_a_tipo_anotado(nuevo, tipo),
-        None => convertir_para_tipo(&info.valor, nuevo),
+        Some(tipo) => convertir_a_tipo_anotado(nuevo, tipo, nominales, nominales_enum),
+        None => {
+            let viejo = deref_celda_ref(&info.valor);
+            convertir_para_tipo(&viejo, nuevo)
+        }
     }
 }
 
@@ -2795,8 +3510,221 @@ fn localizar_info_entorno(env: &Entorno, nombre: &str) -> Option<(usize, Variabl
     None
 }
 
+fn patron_enlaza(
+    pat: &crate::parser::Patron,
+    val: &Valor,
+    env: &Entorno,
+    bindings: &mut Vec<(String, Valor)>,
+) -> bool {
+    use crate::parser::Patron;
+    match pat {
+        Patron::Wildcard { .. } => true,
+        Patron::Binding { nombre, .. } => {
+            bindings.push((nombre.clone(), val.clone()));
+            true
+        }
+        Patron::Literal { valor, .. } => val == valor,
+        Patron::Variante {
+            tipo,
+            variante,
+            campos,
+            ..
+        } => {
+            let Valor::EnumNominal {
+                tipo_id,
+                variante: vidx,
+                payload,
+            } = val
+            else {
+                return false;
+            };
+            let Some((tid, vars)) = env.nominales_enum.get(tipo) else {
+                return false;
+            };
+            if *tipo_id != *tid {
+                return false;
+            }
+            let Some((v_idx, _)) = vars.get(variante) else {
+                return false;
+            };
+            if *vidx != *v_idx {
+                return false;
+            }
+            if campos.len() != payload.len() {
+                return false;
+            }
+            for (p, v) in campos.iter().zip(payload.iter()) {
+                if !patron_enlaza(p, v, env, bindings) {
+                    return false;
+                }
+            }
+            true
+        }
+        Patron::Estructura { tipo, campos, .. } => {
+            let Valor::EstructuraNominal {
+                tipo_id,
+                campos: vals,
+            } = val
+            else {
+                return false;
+            };
+            let Some((tid, layout)) = env.nominales.get(tipo) else {
+                return false;
+            };
+            if *tipo_id != *tid {
+                return false;
+            }
+            for (nombre, p) in campos {
+                let Some(idx) = layout.iter().position(|n| n == nombre) else {
+                    return false;
+                };
+                let Some(v) = vals.get(idx) else {
+                    return false;
+                };
+                if !patron_enlaza(p, v, env, bindings) {
+                    return false;
+                }
+            }
+            true
+        }
+    }
+}
+
+fn evaluar_coincidir(
+    scrutinee: &Expresion,
+    brazos: &[crate::parser::BrazoCoincidir],
+    linea: usize,
+    columna: usize,
+    env: &mut Entorno,
+) -> Result<Valor, ErrorEjecucion> {
+    let val = evaluar_con(scrutinee, env)?;
+    for b in brazos {
+        let mut bindings = Vec::new();
+        if patron_enlaza(&b.patron, &val, env, &mut bindings) {
+            env.ambitos.push(std::collections::HashMap::new());
+            for (n, v) in bindings {
+                env.insertar_variable(
+                    n,
+                    VariableInfo {
+                        valor: v,
+                        tipo_declarado: None,
+                        mutable: false,
+                        es_const: false,
+                    },
+                );
+            }
+            let res = env.ejecutar_sentencias(&b.cuerpo);
+            env.ambitos.pop();
+            let opt = res?;
+            return Ok(opt.unwrap_or(Valor::Nulo));
+        }
+    }
+    Err(error(
+        CausaError::MatchNoExhaustivo {
+            detalle: "ningún brazo coincidió en runtime".to_string(),
+        },
+        linea,
+        columna,
+    ))
+}
 fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion> {
     match e {
+        Expresion::ConstruccionEstructura {
+            nombre,
+            campos,
+            linea,
+            columna,
+        } => {
+            let Some((tipo_id, orden)) = env.nominales.get(nombre).cloned() else {
+                return Err(error(
+                    CausaError::TipoNominalDesconocido {
+                        nombre: nombre.clone(),
+                    },
+                    *linea,
+                    *columna,
+                ));
+            };
+            // Evaluar en orden de declaración (R3)
+            let mut provistos: HashMap<String, &Expresion> = HashMap::new();
+            for (n, v) in campos {
+                provistos.insert(n.clone(), v);
+            }
+            let mut valores = Vec::with_capacity(orden.len());
+            for nombre_campo in &orden {
+                if let Some(expr) = provistos.get(nombre_campo) {
+                    valores.push(evaluar_con(expr, env)?);
+                } else {
+                    return Err(error(
+                        CausaError::CampoStructFaltante {
+                            campo: nombre_campo.clone(),
+                            tipo: nombre.clone(),
+                        },
+                        *linea,
+                        *columna,
+                    ));
+                }
+            }
+            Ok(Valor::EstructuraNominal {
+                tipo_id,
+                campos: valores,
+            })
+        }
+        Expresion::Coincidir {
+            scrutinee,
+            brazos,
+            linea,
+            columna,
+        } => evaluar_coincidir(scrutinee, brazos, *linea, *columna, env),
+        Expresion::ConstruccionVariante {
+            tipo,
+            variante,
+            argumentos,
+            linea,
+            columna,
+        } => {
+            let Some((tipo_id, variantes)) = env.nominales_enum.get(tipo).cloned() else {
+                return Err(error(
+                    CausaError::TipoNominalDesconocido {
+                        nombre: tipo.clone(),
+                    },
+                    *linea,
+                    *columna,
+                ));
+            };
+            let Some((variante_idx, aridad)) = variantes.get(variante).cloned() else {
+                return Err(error(
+                    CausaError::VarianteEnumDesconocida {
+                        variante: variante.clone(),
+                        tipo: tipo.clone(),
+                    },
+                    *linea,
+                    *columna,
+                ));
+            };
+            if aridad != argumentos.len() {
+                return Err(error(
+                    CausaError::PayloadVarianteIncompatible {
+                        variante: variante.clone(),
+                        tipo: tipo.clone(),
+                        detalle: format!(
+                            "se esperaban {aridad} argumento(s), se recibieron {}",
+                            argumentos.len()
+                        ),
+                    },
+                    *linea,
+                    *columna,
+                ));
+            }
+            let mut payload = Vec::with_capacity(argumentos.len());
+            for a in argumentos {
+                payload.push(evaluar_con(a, env)?);
+            }
+            Ok(Valor::EnumNominal {
+                tipo_id,
+                variante: variante_idx,
+                payload,
+            })
+        }
         Expresion::Literal { valor, .. } => Ok(valor.clone()),
         Expresion::Lambda {
             parametros,
@@ -2804,6 +3732,7 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             cuerpo,
             ..
         } => {
+            env.celda_wrap_mutables();
             let capturado = Arc::new(Mutex::new(env.clone()));
             Ok(Valor::FuncionClausura {
                 parametros: parametros.clone(),
@@ -3101,6 +4030,38 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
             linea,
             columna,
         } => {
+            // S8.2: construcción de variante unitaria Tipo.Variante
+            if let Expresion::Variable { nombre, .. } = objeto.as_ref()
+                && let Some((tipo_id, variantes)) = env.nominales_enum.get(nombre).cloned()
+            {
+                if let Some((variante_idx, aridad)) = variantes.get(miembro).cloned() {
+                    if aridad != 0 {
+                        return Err(error(
+                            CausaError::ConstruccionVarianteInvalida {
+                                tipo: nombre.clone(),
+                                detalle: format!(
+                                    "la variante '{miembro}' requiere {aridad} argumento(s) de payload"
+                                ),
+                            },
+                            *linea,
+                            *columna,
+                        ));
+                    }
+                    return Ok(Valor::EnumNominal {
+                        tipo_id,
+                        variante: variante_idx,
+                        payload: Vec::new(),
+                    });
+                }
+                return Err(error(
+                    CausaError::VarianteEnumDesconocida {
+                        variante: miembro.clone(),
+                        tipo: nombre.clone(),
+                    },
+                    *linea,
+                    *columna,
+                ));
+            }
             let obj = evaluar_con(objeto, env)?;
             match obj {
                 Valor::Modulo(m) => {
@@ -3159,6 +4120,38 @@ fn evaluar_con(e: &Expresion, env: &mut Entorno) -> Result<Valor, ErrorEjecucion
                             *columna,
                         ))
                     }
+                }
+                Valor::EstructuraNominal { tipo_id, campos } => {
+                    let layout = env
+                        .nominales
+                        .values()
+                        .find(|(id, _)| *id == tipo_id)
+                        .map(|(_, cs)| cs.clone());
+                    if let Some(nombres) = layout {
+                        if let Some(idx) = nombres.iter().position(|n| n == miembro)
+                            && let Some(v) = campos.get(idx)
+                        {
+                            return Ok(v.clone());
+                        }
+                        return Err(error(
+                            CausaError::CampoStructDesconocido {
+                                campo: miembro.clone(),
+                                tipo: "<nominal>".to_string(),
+                            },
+                            *linea,
+                            *columna,
+                        ));
+                    }
+                    Err(error(
+                        CausaError::ConstruccionNominalInvalida {
+                            tipo: "<nominal>".to_string(),
+                            detalle: format!(
+                                "layout nominal no encontrado para acceso '{miembro}'"
+                            ),
+                        },
+                        *linea,
+                        *columna,
+                    ))
                 }
                 _ => Err(error(
                     CausaError::AsignacionIncompatible {
@@ -3279,22 +4272,28 @@ fn evaluar_llamada_directa(
         cargador: env.cargador.clone(),
         archivo: env.archivo.clone(),
         en_funcion: false,
+        nominales: env.nominales.clone(),
+        nominales_enum: env.nominales_enum.clone(),
+        siguiente_nominal_id: env.siguiente_nominal_id,
+        metodos_inherentes: env.metodos_inherentes.clone(),
+        metodos_rasgo: env.metodos_rasgo.clone(),
     };
     for ((nombre_param, tipo_param), valor) in fdef.parametros.iter().zip(vals.iter()) {
         let valor_parametro = if let Some(tipo) = tipo_param {
             let obtenido = valor.nombre_tipo().to_string();
-            convertir_a_tipo_anotado(valor.clone(), tipo).ok_or_else(|| {
-                error(
-                    CausaError::TipoParametroIncompatible {
-                        funcion: nombre.to_string(),
-                        parametro: nombre_param.clone(),
-                        esperado: tipo.nombre(),
-                        obtenido,
-                    },
-                    linea,
-                    columna,
-                )
-            })?
+            convertir_a_tipo_anotado(valor.clone(), tipo, &env.nominales, &env.nominales_enum)
+                .ok_or_else(|| {
+                    error(
+                        CausaError::TipoParametroIncompatible {
+                            funcion: nombre.to_string(),
+                            parametro: nombre_param.clone(),
+                            esperado: tipo.nombre(),
+                            obtenido,
+                        },
+                        linea,
+                        columna,
+                    )
+                })?
         } else {
             valor.clone()
         };
@@ -3327,7 +4326,13 @@ fn evaluar_llamada_directa(
 
     if let Some(tipo_esperado) = fdef.tipo_retorno_anotado.as_ref() {
         let obtenido = resultado.nombre_tipo().to_string();
-        resultado = convertir_a_tipo_anotado(resultado, tipo_esperado).ok_or_else(|| {
+        resultado = convertir_a_tipo_anotado(
+            resultado,
+            tipo_esperado,
+            &nuevo_env.nominales,
+            &nuevo_env.nominales_enum,
+        )
+        .ok_or_else(|| {
             error(
                 CausaError::RetornoIncompatibleConAnotacion {
                     funcion: nombre.to_string(),
@@ -3358,6 +4363,99 @@ fn evaluar_llamada_directa(
     Ok(Some(resultado))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn llamar_metodo_nominal(
+    env: &mut Entorno,
+    tipo_id: u32,
+    tipo_nombre: &str,
+    miembro: &str,
+    receptor_val: Option<Valor>,
+    argumentos: &[Expresion],
+    linea: usize,
+    columna: usize,
+) -> Result<Option<Option<Valor>>, ErrorEjecucion> {
+    let es_instancia = receptor_val.is_some();
+    let mut metodo: Option<MetodoNominalDef> = None;
+    if let Some(mapa) = env.metodos_inherentes.get(&tipo_id)
+        && let Some(m) = mapa.get(miembro)
+    {
+        let ok = match m.receptor {
+            crate::parser::ReceptorMetodo::Ninguno => !es_instancia,
+            crate::parser::ReceptorMetodo::Yo { .. } => es_instancia,
+        };
+        if ok {
+            metodo = Some(m.clone());
+        }
+    }
+    if metodo.is_none()
+        && let Some(mapa) = env.metodos_rasgo.get(&tipo_id)
+        && let Some(m) = mapa.get(miembro)
+    {
+        let ok = match m.receptor {
+            crate::parser::ReceptorMetodo::Ninguno => !es_instancia,
+            crate::parser::ReceptorMetodo::Yo { .. } => es_instancia,
+        };
+        if ok {
+            metodo = Some(m.clone());
+        }
+    }
+    let Some(m) = metodo else {
+        return Ok(None);
+    };
+
+    let mut vals = Vec::new();
+    for a in argumentos {
+        vals.push(evaluar_con(a, env)?);
+    }
+    if vals.len() != m.parametros.len() {
+        return Err(error(
+            CausaError::FirmaInvalida {
+                funcion: format!("{}.{}", tipo_nombre, miembro),
+                esperado: m.parametros.len(),
+                obtenido: vals.len(),
+            },
+            linea,
+            columna,
+        ));
+    }
+
+    let prev_en_funcion = env.en_funcion;
+    env.ambitos.push(HashMap::new());
+    env.en_funcion = true;
+    if let Some(recv) = receptor_val {
+        let mutable = matches!(
+            m.receptor,
+            crate::parser::ReceptorMetodo::Yo { mutable: true }
+        );
+        env.insertar_variable(
+            "yo".to_string(),
+            VariableInfo {
+                valor: recv,
+                tipo_declarado: None,
+                mutable,
+                es_const: false,
+            },
+        );
+    }
+    for ((pn, _pt), val) in m.parametros.iter().zip(vals) {
+        env.insertar_variable(
+            pn.clone(),
+            VariableInfo {
+                valor: val,
+                tipo_declarado: None,
+                mutable: true,
+                es_const: false,
+            },
+        );
+    }
+    let resultado =
+        env.ejecutar_funcion_sentencias(&m.cuerpo, &format!("{}.{}", tipo_nombre, miembro));
+    env.ambitos.pop();
+    env.en_funcion = prev_en_funcion;
+    let r = resultado?;
+    Ok(Some(r))
+}
+
 fn evaluar_llamada_indirecta(
     callee: &Expresion,
     argumentos: &[Expresion],
@@ -3365,6 +4463,48 @@ fn evaluar_llamada_indirecta(
     columna: usize,
     env: &mut Entorno,
 ) -> Result<Option<Valor>, ErrorEjecucion> {
+    // S8.2: construcción de variante con payload Tipo.Variante(args)
+    if let Expresion::Acceso {
+        objeto, miembro, ..
+    } = callee
+        && let Expresion::Variable { nombre, .. } = objeto.as_ref()
+        && let Some((tipo_id, variantes)) = env.nominales_enum.get(nombre).cloned()
+    {
+        if let Some((variante_idx, aridad)) = variantes.get(miembro).cloned() {
+            if aridad != argumentos.len() {
+                return Err(error(
+                    CausaError::PayloadVarianteIncompatible {
+                        variante: miembro.clone(),
+                        tipo: nombre.clone(),
+                        detalle: format!(
+                            "se esperaban {aridad} argumento(s), se recibieron {}",
+                            argumentos.len()
+                        ),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let mut payload = Vec::with_capacity(argumentos.len());
+            for a in argumentos {
+                payload.push(evaluar_con(a, env)?);
+            }
+            return Ok(Some(Valor::EnumNominal {
+                tipo_id,
+                variante: variante_idx,
+                payload,
+            }));
+        }
+        return Err(error(
+            CausaError::VarianteEnumDesconocida {
+                variante: miembro.clone(),
+                tipo: nombre.clone(),
+            },
+            linea,
+            columna,
+        ));
+    }
+
     if !matches!(callee, Expresion::Acceso { .. }) {
         let callee_val = evaluar_con(callee, env)?;
         if matches!(
@@ -3379,11 +4519,186 @@ fn evaluar_llamada_indirecta(
         }
     }
 
-    let (modulo, miembro) = match callee {
-        Expresion::Acceso {
-            objeto, miembro, ..
-        } => match evaluar_con(objeto, env)? {
-            Valor::Modulo(modulo) => (modulo, miembro.clone()),
+    if let Expresion::Acceso {
+        objeto, miembro, ..
+    } = callee
+    {
+        // S8.4: método asociado Tipo.metodo(...)
+        if let Expresion::Variable { nombre, .. } = objeto.as_ref()
+            && let Some(tipo_id) = env.buscar_tipo_id_nominal(nombre)
+        {
+            if let Some(ret) = llamar_metodo_nominal(
+                env, tipo_id, nombre, miembro, None, argumentos, linea, columna,
+            )? {
+                return Ok(ret);
+            }
+            // Si es tipo nominal conocido y no es método asociado, no caer a VariableNoDefinida.
+            // (Construcciones de variante enum ya fueron manejadas arriba)
+            if env.nominales_enum.contains_key(nombre) {
+                // variante desconocida ya manejada arriba; nada que hacer
+            } else {
+                return Err(error(
+                    CausaError::MetodoNoEncontrado {
+                        metodo: miembro.clone(),
+                        tipo: nombre.clone(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+        }
+        // Evaluar objeto; si es nominal, método de instancia. Si es módulo, dispatch módulo.
+        let obj_val = evaluar_con(objeto, env)?;
+        match obj_val {
+            Valor::EstructuraNominal {
+                tipo_id,
+                ref campos,
+            } => {
+                let tipo_nombre = env
+                    .nombre_tipo_nominal_por_id(tipo_id)
+                    .unwrap_or_else(|| "<nominal>".to_string());
+                // Si hay campo con ese nombre, puede ser un valor invocable; no tratar como método.
+                let es_campo = env
+                    .nominales
+                    .values()
+                    .any(|(id, nombres)| *id == tipo_id && nombres.iter().any(|n| n == miembro));
+                if !es_campo {
+                    if let Some(ret) = llamar_metodo_nominal(
+                        env,
+                        tipo_id,
+                        &tipo_nombre,
+                        miembro,
+                        Some(obj_val.clone()),
+                        argumentos,
+                        linea,
+                        columna,
+                    )? {
+                        return Ok(ret);
+                    }
+                    return Err(error(
+                        CausaError::MetodoNoEncontrado {
+                            metodo: miembro.clone(),
+                            tipo: tipo_nombre,
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+                // campo invocable
+                let idx = env
+                    .nominales
+                    .values()
+                    .find(|(id, _)| *id == tipo_id)
+                    .and_then(|(_, nombres)| nombres.iter().position(|n| n == miembro));
+                if let Some(i) = idx {
+                    let callee_val = campos[i].clone();
+                    if matches!(
+                        callee_val,
+                        Valor::Funcion(_) | Valor::FuncionClausura { .. }
+                    ) {
+                        let mut vals = Vec::new();
+                        for argumento in argumentos {
+                            vals.push(evaluar_con(argumento, env)?);
+                        }
+                        return env.llamar_valor_resultado(callee_val, &vals, linea, columna);
+                    }
+                }
+                return Err(error(
+                    CausaError::MetodoNoEncontrado {
+                        metodo: miembro.clone(),
+                        tipo: tipo_nombre,
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            Valor::EnumNominal { tipo_id, .. } => {
+                let tipo_nombre = env
+                    .nombre_tipo_nominal_por_id(tipo_id)
+                    .unwrap_or_else(|| "<nominal>".to_string());
+                if let Some(ret) = llamar_metodo_nominal(
+                    env,
+                    tipo_id,
+                    &tipo_nombre,
+                    miembro,
+                    Some(obj_val.clone()),
+                    argumentos,
+                    linea,
+                    columna,
+                )? {
+                    return Ok(ret);
+                }
+                return Err(error(
+                    CausaError::MetodoNoEncontrado {
+                        metodo: miembro.clone(),
+                        tipo: tipo_nombre,
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            Valor::Modulo(modulo) => {
+                let miembro = miembro.clone();
+                let fdef = if let Some(SimbodoExportado::Funcion(f)) =
+                    modulo.exportaciones.get(&miembro)
+                {
+                    f.clone()
+                } else if modulo.entorno.lock().unwrap().funcion(&miembro).is_some() {
+                    return Err(error(
+                        CausaError::SimbodoPrivado {
+                            nombre: miembro.clone(),
+                            modulo: modulo.ruta.display().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                } else {
+                    return Err(error(
+                        CausaError::SimbodoNoExportado {
+                            nombre: miembro.clone(),
+                            modulo: modulo.ruta.display().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                };
+                let mut vals = Vec::new();
+                for argumento in argumentos {
+                    vals.push(evaluar_con(argumento, env)?);
+                }
+                if vals.len() != fdef.parametros.len() {
+                    return Err(error(
+                        CausaError::FirmaInvalida {
+                            funcion: miembro.clone(),
+                            esperado: fdef.parametros.len(),
+                            obtenido: vals.len(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+                let mut env_func = modulo.entorno.lock().unwrap().clone();
+                if env_func.cargador.is_none() {
+                    env_func.cargador = env.cargador.clone();
+                }
+                env_func.archivo = Some(modulo.ruta.display().to_string());
+                env_func.en_funcion = true;
+                env_func.ambitos.push(HashMap::new());
+                for ((param, _), arg) in fdef.parametros.iter().zip(vals) {
+                    env_func.insertar_variable(
+                        param.clone(),
+                        VariableInfo {
+                            valor: arg,
+                            tipo_declarado: None,
+                            mutable: true,
+                            es_const: false,
+                        },
+                    );
+                }
+                let resultado = env_func.ejecutar_funcion_sentencias(&fdef.cuerpo, &miembro);
+                env_func.ambitos.pop();
+                return resultado;
+            }
             otro => {
                 return Err(error(
                     CausaError::AsignacionIncompatible {
@@ -3394,100 +4709,16 @@ fn evaluar_llamada_indirecta(
                     columna,
                 ));
             }
+        }
+    }
+    Err(error(
+        CausaError::AsignacionIncompatible {
+            esperado: "acceso a miembro".into(),
+            obtenido: "expresión".into(),
         },
-        _ => {
-            return Err(error(
-                CausaError::AsignacionIncompatible {
-                    esperado: "acceso a miembro".into(),
-                    obtenido: "expresión".into(),
-                },
-                linea,
-                columna,
-            ));
-        }
-    };
-
-    let fdef = if let Some(SimbodoExportado::Funcion(f)) = modulo.exportaciones.get(&miembro) {
-        f.clone()
-    } else if modulo.entorno.lock().unwrap().funcion(&miembro).is_some() {
-        return Err(error(
-            CausaError::SimbodoPrivado {
-                nombre: miembro.clone(),
-                modulo: modulo.ruta.display().to_string(),
-            },
-            linea,
-            columna,
-        ));
-    } else {
-        return Err(error(
-            CausaError::SimbodoNoExportado {
-                nombre: miembro.clone(),
-                modulo: modulo.ruta.display().to_string(),
-            },
-            linea,
-            columna,
-        ));
-    };
-
-    let mut vals = Vec::new();
-    for argumento in argumentos {
-        vals.push(evaluar_con(argumento, env)?);
-    }
-    if vals.len() != fdef.parametros.len() {
-        return Err(error(
-            CausaError::FirmaInvalida {
-                funcion: miembro.clone(),
-                esperado: fdef.parametros.len(),
-                obtenido: vals.len(),
-            },
-            linea,
-            columna,
-        ));
-    }
-    for ((nombre_param, tipo), valor) in fdef.parametros.iter().zip(vals.iter()) {
-        if let Some(tipo) = tipo
-            && convertir_a_tipo_anotado(valor.clone(), tipo).is_none()
-        {
-            return Err(error(
-                CausaError::TipoParametroIncompatible {
-                    funcion: miembro.clone(),
-                    parametro: nombre_param.clone(),
-                    esperado: tipo.nombre(),
-                    obtenido: valor.nombre_tipo().to_string(),
-                },
-                linea,
-                columna,
-            ));
-        }
-    }
-
-    let mut mod_env = modulo.entorno.lock().unwrap().clone();
-    mod_env.ambitos.push(HashMap::new());
-    for ((nombre_param, _), valor) in fdef.parametros.iter().zip(vals.iter()) {
-        mod_env.insertar_variable(
-            nombre_param.clone(),
-            VariableInfo {
-                valor: valor.clone(),
-                tipo_declarado: None,
-                mutable: true,
-                es_const: false,
-            },
-        );
-    }
-    let resultado = mod_env.ejecutar_funcion_sentencias(&fdef.cuerpo, &miembro);
-    mod_env.ambitos.pop();
-    match resultado? {
-        Some(valor) => Ok(Some(valor)),
-        None if matches!(fdef.tipo_retorno_anotado, Some(TipoAnotacion::Nulo)) => {
-            Ok(Some(Valor::Nulo))
-        }
-        None if fdef.tipo_retorno_anotado.is_some() => Err(error(
-            CausaError::RetornoAusente { funcion: miembro },
-            linea,
-            columna,
-        )),
-        None => Ok(None),
-    }
+        linea,
+        columna,
+    ))
 }
 
 fn nombre_llamada_indirecta(callee: &Expresion, env: &Entorno) -> String {
@@ -3531,9 +4762,11 @@ pub fn evaluar(e: &Expresion) -> Result<Valor, ErrorEjecucion> {
 /// Ubicación aproximada de una expresión (literal o variable más a la izquierda).
 fn ubicacion(e: &Expresion) -> (usize, usize) {
     match e {
-        Expresion::Literal { linea, columna, .. } | Expresion::Variable { linea, columna, .. } => {
-            (*linea, *columna)
-        }
+        Expresion::Literal { linea, columna, .. }
+        | Expresion::Variable { linea, columna, .. }
+        | Expresion::ConstruccionEstructura { linea, columna, .. }
+        | Expresion::ConstruccionVariante { linea, columna, .. }
+        | Expresion::Coincidir { linea, columna, .. } => (*linea, *columna),
         Expresion::Suma(a, _)
         | Expresion::Resta(a, _)
         | Expresion::Multiplicacion(a, _)
@@ -3583,6 +4816,28 @@ fn comparar(
     let va = evaluar_con(a, env)?;
     let vb = evaluar_con(b, env)?;
     let (linea, columna) = ubicacion(a);
+    if matches!(
+        va,
+        Valor::EstructuraNominal { .. } | Valor::EnumNominal { .. }
+    ) || matches!(
+        vb,
+        Valor::EstructuraNominal { .. } | Valor::EnumNominal { .. }
+    ) {
+        let tipo = match (&va, &vb) {
+            (Valor::EstructuraNominal { .. } | Valor::EnumNominal { .. }, _) => {
+                va.nombre_tipo().to_string()
+            }
+            (_, Valor::EstructuraNominal { .. } | Valor::EnumNominal { .. }) => {
+                vb.nombre_tipo().to_string()
+            }
+            _ => "nominal".to_string(),
+        };
+        return Err(error(
+            CausaError::IgualdadNominalNoSoportada { tipo },
+            linea,
+            columna,
+        ));
+    }
     if matches!(va, Valor::Nulo) || matches!(vb, Valor::Nulo) {
         if permitir_igualdad_nulo && matches!((&va, &vb), (Valor::Nulo, Valor::Nulo)) {
             return Ok(Valor::Logico(pred(std::cmp::Ordering::Equal)));
@@ -3597,7 +4852,9 @@ fn comparar(
         ));
     }
     if matches!(va, Valor::Logico(_)) || matches!(vb, Valor::Logico(_)) {
-        // No se permite comparar lógicos con ==/!= arbitrarios entre numéricos aquí; tipos incompatibles
+        if permitir_igualdad_nulo && let (Valor::Logico(x), Valor::Logico(y)) = (&va, &vb) {
+            return Ok(Valor::Logico(pred(x.cmp(y))));
+        }
         return Err(error(
             CausaError::TiposIncompatibles {
                 izquierdo: va.nombre_tipo(),
@@ -3709,6 +4966,7 @@ fn es_builtin(nombre: &str) -> bool {
             | "crear_canal"
             | "enviar"
             | "recibir"
+            | "cerrar_canal"
             | "cargar_ffi"
             | "llamar_ffi"
             | "descargar_ffi"
@@ -4686,8 +5944,15 @@ fn evaluar_builtin(
                     ));
                 }
             };
-            crate::http::http_get(&url)
-                .map_err(|detalle| err_builtin(CausaError::FFIInvalido { detalle }, linea, columna))
+            crate::http::http_get(&url).map_err(|detalle| {
+                err_builtin(
+                    CausaError::FFIInvalido {
+                        causa: crate::ffi::CausaFfi::ErrorInvocacion { detalle },
+                    },
+                    linea,
+                    columna,
+                )
+            })
         }
         "http_post" => {
             if args.len() != 2 {
@@ -4727,8 +5992,15 @@ fn evaluar_builtin(
                     ));
                 }
             };
-            crate::http::http_post(&url, &cuerpo)
-                .map_err(|detalle| err_builtin(CausaError::FFIInvalido { detalle }, linea, columna))
+            crate::http::http_post(&url, &cuerpo).map_err(|detalle| {
+                err_builtin(
+                    CausaError::FFIInvalido {
+                        causa: crate::ffi::CausaFfi::ErrorInvocacion { detalle },
+                    },
+                    linea,
+                    columna,
+                )
+            })
         }
         "abs" => {
             if args.len() != 1 {
@@ -4904,6 +6176,133 @@ fn evaluar_builtin(
                     };
                     Ok(Valor::Real(base.powf(exp)))
                 }
+            }
+        }
+        "piso" | "techo" | "redondear" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let n: i64 = match &args[0] {
+                Valor::Entero(v) => *v,
+                Valor::Decimal(v) => {
+                    let s = FACTOR_ESCALA;
+                    let base = *v / s;
+                    let rem = *v % s;
+                    let res = match nombre {
+                        "piso" => {
+                            if rem != 0 && *v < 0 {
+                                base - 1
+                            } else {
+                                base
+                            }
+                        }
+                        "techo" => {
+                            if rem != 0 && *v > 0 {
+                                base + 1
+                            } else {
+                                base
+                            }
+                        }
+                        _ => {
+                            // half away from zero
+                            let sign: i128 = if *v < 0 { -1 } else { 1 };
+                            let av = v.abs();
+                            let abase = av / s;
+                            let arem = av % s;
+                            let arred = if arem * 2 >= s { abase + 1 } else { abase };
+                            sign * arred
+                        }
+                    };
+                    i64::try_from(res).map_err(|_| {
+                        err_builtin(
+                            CausaError::Aritmetica(MotivoAritmetico::DesbordamientoEntero),
+                            linea,
+                            columna,
+                        )
+                    })?
+                }
+                Valor::Real(v) => {
+                    if !v.is_finite() {
+                        return Err(err_builtin(
+                            CausaError::Aritmetica(MotivoAritmetico::DesbordamientoEntero),
+                            linea,
+                            columna,
+                        ));
+                    }
+                    let n = match nombre {
+                        "piso" => v.floor(),
+                        "techo" => v.ceil(),
+                        _ => v.round(), // half away from zero
+                    };
+                    // Intervalo válido i64: [-2^63, 2^63). No usar i64::MAX as f64 (redondea a 2^63).
+                    const LIMITE_SUP_EXCLUSIVO: f64 = 9223372036854775808.0_f64; // 2^63
+                    if n < i64::MIN as f64 || n >= LIMITE_SUP_EXCLUSIVO {
+                        return Err(err_builtin(
+                            CausaError::Aritmetica(MotivoAritmetico::DesbordamientoEntero),
+                            linea,
+                            columna,
+                        ));
+                    }
+                    // Safe: bounds checked above; dentro de [-2^63, 2^63).
+                    n as i64
+                }
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "número".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            Ok(Valor::Entero(n))
+        }
+        "posicion" => {
+            if args.len() != 2 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            match (&args[0], &args[1]) {
+                (Valor::Texto(t), Valor::Texto(sub)) => {
+                    let idx = t
+                        .find(sub.as_str())
+                        .map(|b| t[..b].chars().count() as i64)
+                        .unwrap_or(-1);
+                    Ok(Valor::Entero(idx))
+                }
+                (Valor::Arreglo(xs), v) | (Valor::Lista(xs), v) => {
+                    let idx = xs
+                        .iter()
+                        .position(|x| x == v)
+                        .map(|i| i as i64)
+                        .unwrap_or(-1);
+                    Ok(Valor::Entero(idx))
+                }
+                (otro, _) => Err(err_builtin(
+                    CausaError::AsignacionIncompatible {
+                        esperado: "texto, arreglo o lista".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    },
+                    linea,
+                    columna,
+                )),
             }
         }
         "agregar" => {
@@ -5454,7 +6853,9 @@ fn evaluar_builtin(
             };
             if !entorno.funciones.contains_key(&func_name) {
                 return Err(err_builtin(
-                    CausaError::VariableNoDefinida(func_name),
+                    CausaError::NoSoportado {
+                        mensaje: format!("tarea: función no encontrada: {func_name}"),
+                    },
                     linea,
                     columna,
                 ));
@@ -5510,7 +6911,9 @@ fn evaluar_builtin(
                 let mut tareas = reg_tareas.lock().unwrap();
                 if id >= tareas.len() {
                     return Err(err_builtin(
-                        CausaError::VariableNoDefinida(format!("tarea {}", id)),
+                        CausaError::NoSoportado {
+                            mensaje: format!("tarea inexistente: {id}"),
+                        },
                         linea,
                         columna,
                     ));
@@ -5521,26 +6924,23 @@ fn evaluar_builtin(
                 Some(h) => match h.join() {
                     Ok(Ok(v)) => Ok(v),
                     Ok(Err(e)) => Err(err_builtin(
-                        CausaError::ErrorDeArchivo {
-                            ruta: "<tarea>".to_string(),
-                            detalle: e,
+                        CausaError::NoSoportado {
+                            mensaje: format!("tarea falló: {e}"),
                         },
                         linea,
                         columna,
                     )),
                     Err(_) => Err(err_builtin(
-                        CausaError::ErrorDeArchivo {
-                            ruta: "<tarea>".to_string(),
-                            detalle: "la tarea entró en pánico".to_string(),
+                        CausaError::NoSoportado {
+                            mensaje: format!("tarea falló: pánico en tarea {id}"),
                         },
                         linea,
                         columna,
                     )),
                 },
                 None => Err(err_builtin(
-                    CausaError::ErrorDeArchivo {
-                        ruta: "<tarea>".to_string(),
-                        detalle: "la tarea ya fue esperada".to_string(),
+                    CausaError::NoSoportado {
+                        mensaje: format!("tarea ya esperada: {id}"),
                     },
                     linea,
                     columna,
@@ -5551,10 +6951,7 @@ fn evaluar_builtin(
             let reg = canales_actual();
             let mut canales = reg.lock().unwrap();
             let id = canales.len();
-            canales.push((
-                std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                std::sync::Arc::new(std::sync::Condvar::new()),
-            ));
+            canales.push(crear_canal_nuevo());
             Ok(Valor::Entero(id as i64))
         }
         "enviar" => {
@@ -5587,16 +6984,27 @@ fn evaluar_builtin(
             let canales = reg.lock().unwrap();
             if id >= canales.len() {
                 return Err(err_builtin(
-                    CausaError::VariableNoDefinida(format!("canal {}", id)),
+                    CausaError::NoSoportado {
+                        mensaje: format!("canal inexistente: {id}"),
+                    },
                     linea,
                     columna,
                 ));
             }
-            let (buf, cv) = &canales[id];
-            let buf = std::sync::Arc::clone(buf);
-            let cv = std::sync::Arc::clone(cv);
+            let canal = Arc::clone(&canales[id]);
             drop(canales);
-            buf.lock().unwrap().push(valor);
+            let (lock, cv) = &*canal;
+            let mut estado = lock.lock().unwrap();
+            if estado.cerrado {
+                return Err(err_builtin(
+                    CausaError::NoSoportado {
+                        mensaje: format!("canal cerrado: {id}"),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            estado.buffer.push(valor);
             cv.notify_one();
             Ok(Valor::Nulo)
         }
@@ -5629,20 +7037,76 @@ fn evaluar_builtin(
             let canales = reg.lock().unwrap();
             if id >= canales.len() {
                 return Err(err_builtin(
-                    CausaError::VariableNoDefinida(format!("canal {}", id)),
+                    CausaError::NoSoportado {
+                        mensaje: format!("canal inexistente: {id}"),
+                    },
                     linea,
                     columna,
                 ));
             }
-            let (buf, cv) = &canales[id];
-            let buf = std::sync::Arc::clone(buf);
-            let cv = std::sync::Arc::clone(cv);
+            let canal = Arc::clone(&canales[id]);
             drop(canales);
-            let mut guard = buf.lock().unwrap();
-            while guard.is_empty() {
-                guard = cv.wait(guard).unwrap();
+            let (lock, cv) = &*canal;
+            let mut estado = lock.lock().unwrap();
+            loop {
+                if !estado.buffer.is_empty() {
+                    return Ok(estado.buffer.remove(0));
+                }
+                if estado.cerrado {
+                    return Err(err_builtin(
+                        CausaError::NoSoportado {
+                            mensaje: format!("canal cerrado y vacío: {id}"),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+                estado = cv.wait(estado).unwrap();
             }
-            Ok(guard.remove(0))
+        }
+        "cerrar_canal" => {
+            if args.len() != 1 {
+                return Err(err_builtin(
+                    CausaError::FirmaInvalida {
+                        funcion: nombre.to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let id = match &args[0] {
+                Valor::Entero(v) => *v as usize,
+                otro => {
+                    return Err(err_builtin(
+                        CausaError::AsignacionIncompatible {
+                            esperado: "entero (id de canal)".to_string(),
+                            obtenido: otro.nombre_tipo().to_string(),
+                        },
+                        linea,
+                        columna,
+                    ));
+                }
+            };
+            let reg = canales_actual();
+            let canales = reg.lock().unwrap();
+            if id >= canales.len() {
+                return Err(err_builtin(
+                    CausaError::NoSoportado {
+                        mensaje: format!("canal inexistente: {id}"),
+                    },
+                    linea,
+                    columna,
+                ));
+            }
+            let canal = Arc::clone(&canales[id]);
+            drop(canales);
+            let (lock, cv) = &*canal;
+            let mut estado = lock.lock().unwrap();
+            estado.cerrado = true;
+            cv.notify_all();
+            Ok(Valor::Nulo)
         }
         "cargar_ffi" => {
             if args.len() != 1 {
@@ -5669,9 +7133,8 @@ fn evaluar_builtin(
                     ));
                 }
             };
-            let id = crate::ffi::cargar_libreria(&ruta).map_err(|detalle| {
-                err_builtin(CausaError::FFIInvalido { detalle }, linea, columna)
-            })?;
+            let id = crate::ffi::cargar_libreria(&ruta)
+                .map_err(|causa| err_builtin(CausaError::FFIInvalido { causa }, linea, columna))?;
             Ok(Valor::Entero(id))
         }
         "descargar_ffi" => {
@@ -5699,9 +7162,8 @@ fn evaluar_builtin(
                     ));
                 }
             };
-            crate::ffi::descargar_libreria(id).map_err(|detalle| {
-                err_builtin(CausaError::FFIInvalido { detalle }, linea, columna)
-            })?;
+            crate::ffi::descargar_libreria(id)
+                .map_err(|causa| err_builtin(CausaError::FFIInvalido { causa }, linea, columna))?;
             Ok(Valor::Nulo)
         }
         "llamar_ffi" => {
@@ -5778,9 +7240,7 @@ fn evaluar_builtin(
             };
 
             let resultado = crate::ffi::llamar_funcion(id, &simbolo, &argumentos, &retorno)
-                .map_err(|detalle| {
-                    err_builtin(CausaError::FFIInvalido { detalle }, linea, columna)
-                })?;
+                .map_err(|causa| err_builtin(CausaError::FFIInvalido { causa }, linea, columna))?;
             Ok(resultado)
         }
 
@@ -6673,5 +8133,105 @@ mod tests {
             causa_programa("funcion f() { retornar 1 }\nfuncion f() { retornar 2 }"),
             CausaError::DeclaracionDuplicada("f".into())
         );
+    }
+
+    #[test]
+    fn f10_tarea_sobrevive_fin_main_vm() {
+        let _g = instalar_contexto_ejecucion();
+        let reg = canales_actual();
+        reg.lock().unwrap().push(crear_canal_nuevo());
+        let src = r#"
+funcion worker() -> entero {
+    sea i = 0
+    mientras i < 50000 { i = i + 1 }
+    enviar(0, 77)
+    retornar 0
+}
+funcion main() -> entero {
+    iniciar_tarea("worker")
+    retornar 1
+}
+"#;
+        let tokens = crate::Lexer::nuevo(src).tokenizar().unwrap();
+        let ss = crate::Parser::nuevo(tokens).parsear_programa().unwrap();
+        let mut ctx = crate::semantico::ContextoSemantico::nuevo();
+        let _ = ctx.analizar_programa(&ss);
+        let (ss, _) = ctx.monomorfizar_programa(&ss);
+        let hir_p = crate::hir::lower_programa(&ss, &ctx).unwrap();
+        let mir_p = crate::mir::lower_programa(&hir_p);
+        let mut maquina = crate::vm::MaquinaVirtual::nuevo(mir_p);
+        maquina.registrar_stdlib();
+        let r = maquina.ejecutar("main", &[]).unwrap();
+        assert_eq!(r, Some(Valor::Entero(1)));
+        let canal = reg.lock().unwrap()[0].clone();
+        let (lock, cv) = &*canal;
+        let mut estado = lock.lock().unwrap();
+        let mut ok = false;
+        for _ in 0..200 {
+            if !estado.buffer.is_empty() {
+                ok = true;
+                break;
+            }
+            let (s, _) = cv
+                .wait_timeout(estado, std::time::Duration::from_millis(25))
+                .unwrap();
+            estado = s;
+        }
+        assert!(ok, "tarea VM debe completar tras fin de main");
+        assert_eq!(estado.buffer[0], Valor::Entero(77));
+    }
+
+    #[test]
+    fn f10_tarea_sobrevive_fin_main_tw() {
+        let _g = instalar_contexto_ejecucion();
+        let reg = canales_actual();
+        reg.lock().unwrap().push(crear_canal_nuevo());
+        let src = r#"
+funcion worker() -> entero {
+    sea i = 0
+    mientras i < 50000 { i = i + 1 }
+    enviar(0, 88)
+    retornar 0
+}
+funcion main() -> entero {
+    iniciar_tarea("worker")
+    retornar 1
+}
+"#;
+        let tokens = crate::Lexer::nuevo(src).tokenizar().unwrap();
+        let ss = crate::Parser::nuevo(tokens).parsear_programa().unwrap();
+        let mut ctx = crate::semantico::ContextoSemantico::nuevo();
+        let _ = ctx.analizar_programa(&ss);
+        let (ss, _) = ctx.monomorfizar_programa(&ss);
+        let mut env = Entorno::nueva();
+        env.registrar_nominales(&ss);
+        env.izar_funciones(&ss).unwrap();
+        let main_call = Sentencia::Expresion(Expresion::Llamada {
+            nombre: "main".into(),
+            argumentos: vec![],
+            argumentos_tipo: vec![],
+            linea: 0,
+            columna: 0,
+        });
+        let mut prog = ss.clone();
+        prog.push(main_call);
+        let r = env.ejecutar_sentencias(&prog).unwrap();
+        assert_eq!(r, Some(Valor::Entero(1)));
+        let canal = reg.lock().unwrap()[0].clone();
+        let (lock, cv) = &*canal;
+        let mut estado = lock.lock().unwrap();
+        let mut ok = false;
+        for _ in 0..200 {
+            if !estado.buffer.is_empty() {
+                ok = true;
+                break;
+            }
+            let (s, _) = cv
+                .wait_timeout(estado, std::time::Duration::from_millis(25))
+                .unwrap();
+            estado = s;
+        }
+        assert!(ok, "tarea TW debe completar tras fin de main");
+        assert_eq!(estado.buffer[0], Valor::Entero(88));
     }
 }

@@ -4,17 +4,109 @@ use crate::parser::{Expresion, Sentencia, TipoAnotacion};
 use crate::valor::Valor;
 
 pub fn formatear(fuente: &str) -> Result<String, String> {
-    let tokens = crate::Lexer::nuevo(fuente)
-        .tokenizar()
-        .map_err(|e| e.to_string())?;
+    let mut lx = crate::Lexer::nuevo(fuente);
+    let tokens = lx.tokenizar().map_err(|e| e.to_string())?;
+    let comentarios = lx.comentarios().to_vec();
     let sentencias = crate::Parser::nuevo(tokens)
         .parsear_programa()
         .map_err(|e| e.to_string())?;
     let mut salida = String::new();
-    for s in &sentencias {
-        formatear_sentencia(s, 0, &mut salida);
+    let mut ci = 0usize;
+    let lineas_src: Vec<&str> = fuente.lines().collect();
+    for (i, s) in sentencias.iter().enumerate() {
+        let next_line = sentencias
+            .get(i + 1)
+            .map(linea_sentencia)
+            .unwrap_or(usize::MAX);
+        emitir_comentarios_antes(&comentarios, &mut ci, linea_sentencia(s), 0, &mut salida);
+        formatear_sentencia(
+            s,
+            0,
+            &mut salida,
+            &comentarios,
+            &mut ci,
+            next_line,
+            &lineas_src,
+        );
     }
+    emitir_comentarios_restantes(&comentarios, &mut ci, 0, &mut salida);
     Ok(salida)
+}
+
+fn linea_sentencia(s: &Sentencia) -> usize {
+    match s {
+        Sentencia::Declaracion { linea, .. }
+        | Sentencia::Asignacion { linea, .. }
+        | Sentencia::AsignacionIndice { linea, .. }
+        | Sentencia::Si { linea, .. }
+        | Sentencia::Mientras { linea, .. }
+        | Sentencia::ParaCada { linea, .. }
+        | Sentencia::Funcion { linea, .. }
+        | Sentencia::Retorno { linea, .. }
+        | Sentencia::IntentarRescatar { linea, .. }
+        | Sentencia::Usar { linea, .. }
+        | Sentencia::Importar { linea, .. }
+        | Sentencia::Exportar { linea, .. }
+        | Sentencia::Mostrar { linea, .. }
+        | Sentencia::MostrarSinSalto { linea, .. }
+        | Sentencia::Romper { linea, .. }
+        | Sentencia::Continuar { linea, .. } => *linea,
+        Sentencia::Expresion(e) => linea_expresion(e),
+        Sentencia::Bloque(_) => usize::MAX,
+        _ => usize::MAX,
+    }
+}
+
+fn linea_expresion(e: &Expresion) -> usize {
+    match e {
+        Expresion::Literal { linea, .. }
+        | Expresion::Variable { linea, .. }
+        | Expresion::Llamada { linea, .. }
+        | Expresion::ArregloLiteral { linea, .. }
+        | Expresion::Indice { linea, .. }
+        | Expresion::Acceso { linea, .. }
+        | Expresion::LlamadaIndirecta { linea, .. }
+        | Expresion::Lambda { linea, .. }
+        | Expresion::Rango { linea, .. }
+        | Expresion::ConstruccionEstructura { linea, .. }
+        | Expresion::ConstruccionVariante { linea, .. }
+        | Expresion::Coincidir { linea, .. } => *linea,
+        _ => usize::MAX,
+    }
+}
+
+fn emitir_comentarios_antes(
+    comentarios: &[(usize, String)],
+    ci: &mut usize,
+    linea_siguiente: usize,
+    nivel: usize,
+    salida: &mut String,
+) {
+    while *ci < comentarios.len() {
+        let (linea, texto) = &comentarios[*ci];
+        if linea_siguiente != usize::MAX && *linea > linea_siguiente {
+            break;
+        }
+        salida.push_str(&indent(nivel));
+        salida.push_str(texto);
+        salida.push('\n');
+        *ci += 1;
+    }
+}
+
+fn emitir_comentarios_restantes(
+    comentarios: &[(usize, String)],
+    ci: &mut usize,
+    nivel: usize,
+    salida: &mut String,
+) {
+    while *ci < comentarios.len() {
+        let (_, texto) = &comentarios[*ci];
+        salida.push_str(&indent(nivel));
+        salida.push_str(texto);
+        salida.push('\n');
+        *ci += 1;
+    }
 }
 
 fn indent(n: usize) -> String {
@@ -36,6 +128,7 @@ fn tipo_str(t: &TipoAnotacion) -> String {
             format!("lista<{}>", tipo_str(elemento))
         }
         TipoAnotacion::Parametro(n) => n.clone(),
+        TipoAnotacion::Nominal(n) => n.clone(),
     }
 }
 
@@ -152,6 +245,33 @@ fn expr_str(e: &Expresion) -> String {
             let op = if *inclusivo { "..=" } else { ".." };
             format!("{}{}{}", expr_str(inicio), op, expr_str(fin))
         }
+        Expresion::ConstruccionEstructura { nombre, campos, .. } => {
+            if campos.is_empty() {
+                format!("{nombre} {{}}")
+            } else {
+                let inner: Vec<String> = campos
+                    .iter()
+                    .map(|(n, v)| format!("{n}: {}", expr_str(v)))
+                    .collect();
+                format!("{nombre} {{ {} }}", inner.join(", "))
+            }
+        }
+        Expresion::ConstruccionVariante {
+            tipo,
+            variante,
+            argumentos,
+            ..
+        } => {
+            if argumentos.is_empty() {
+                format!("{tipo}.{variante}")
+            } else {
+                let args: Vec<String> = argumentos.iter().map(expr_str).collect();
+                format!("{tipo}.{variante}({})", args.join(", "))
+            }
+        }
+        Expresion::Coincidir { scrutinee, .. } => {
+            format!("coincidir {} {{ ... }}", expr_str(scrutinee))
+        }
     }
 }
 
@@ -169,13 +289,66 @@ fn bin_str(a: &Expresion, b: &Expresion, op: &str, p: u8) -> String {
     format!("{} {} {}", left, op, right)
 }
 
-fn formatear_bloque(sentencias: &[Sentencia], nivel: usize, out: &mut String) {
-    for s in sentencias {
-        formatear_sentencia(s, nivel, out);
+fn comentario_pertenece_bloque(linea_com: usize, nivel: usize, lineas_src: &[&str]) -> bool {
+    // Heurística: si la línea original del comentario tiene indentación >= 2*nivel espacios,
+    // lo consideramos dentro del bloque. Comentarios en col 0 son top-level.
+    if nivel == 0 {
+        return true;
+    }
+    let Some(src_line) = lineas_src.get(linea_com.saturating_sub(1)) else {
+        return false;
+    };
+    let indent_chars = src_line
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .count();
+    indent_chars >= nivel * 2
+        || src_line.trim_start().starts_with('#') && indent_chars >= nivel.saturating_sub(1) * 2
+}
+
+fn formatear_bloque(
+    sentencias: &[Sentencia],
+    nivel: usize,
+    out: &mut String,
+    comentarios: &[(usize, String)],
+    ci: &mut usize,
+    limite_linea: usize,
+    lineas_src: &[&str],
+) {
+    for (i, s) in sentencias.iter().enumerate() {
+        let next_line = sentencias
+            .get(i + 1)
+            .map(linea_sentencia)
+            .unwrap_or(limite_linea);
+        emitir_comentarios_antes(comentarios, ci, linea_sentencia(s), nivel, out);
+        formatear_sentencia(s, nivel, out, comentarios, ci, next_line, lineas_src);
+    }
+    // Comentarios finales dentro del bloque (antes de '}') - no robar comentarios del padre.
+    while *ci < comentarios.len() {
+        let (linea, _) = &comentarios[*ci];
+        if *linea >= limite_linea {
+            break;
+        }
+        if !comentario_pertenece_bloque(*linea, nivel, lineas_src) {
+            break;
+        }
+        let (_, texto) = &comentarios[*ci];
+        out.push_str(&indent(nivel));
+        out.push_str(texto);
+        out.push('\n');
+        *ci += 1;
     }
 }
 
-fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
+fn formatear_sentencia(
+    s: &Sentencia,
+    nivel: usize,
+    out: &mut String,
+    comentarios: &[(usize, String)],
+    ci: &mut usize,
+    limite_linea: usize,
+    lineas_src: &[&str],
+) {
     let ind = indent(nivel);
     match s {
         Sentencia::Declaracion {
@@ -235,6 +408,229 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
             ));
             out.push('\n');
         }
+        Sentencia::AsignacionCampo {
+            objeto,
+            campo,
+            valor,
+            ..
+        } => {
+            out.push_str(&ind);
+            out.push_str(&format!(
+                "{}.{} = {}",
+                expr_str(objeto),
+                campo,
+                expr_str(valor)
+            ));
+            out.push('\n');
+        }
+        Sentencia::Estructura {
+            nombre,
+            campos,
+            publico,
+            ..
+        } => {
+            out.push_str(&ind);
+            if *publico {
+                out.push_str("publico ");
+            }
+            out.push_str("estructura ");
+            out.push_str(nombre);
+            if campos.is_empty() {
+                out.push_str(" {}\n");
+            } else {
+                out.push_str(" {\n");
+                for c in campos {
+                    out.push_str(&indent(nivel + 1));
+                    if c.publico {
+                        out.push_str("publico ");
+                    }
+                    out.push_str(&c.nombre);
+                    out.push_str(": ");
+                    out.push_str(&tipo_str(&c.tipo));
+                    out.push('\n');
+                }
+                out.push_str(&ind);
+                out.push_str("}\n");
+            }
+        }
+        Sentencia::Enumeracion {
+            nombre,
+            variantes,
+            publico,
+            ..
+        } => {
+            out.push_str(&ind);
+            if *publico {
+                out.push_str("publico ");
+            }
+            out.push_str("enumeracion ");
+            out.push_str(nombre);
+            if variantes.is_empty() {
+                out.push_str(" {}\n");
+            } else {
+                out.push_str(" {\n");
+                for v in variantes {
+                    out.push_str(&indent(nivel + 1));
+                    out.push_str(&v.nombre);
+                    if !v.payload.is_empty() {
+                        out.push('(');
+                        let tipos: Vec<String> = v.payload.iter().map(tipo_str).collect();
+                        out.push_str(&tipos.join(", "));
+                        out.push(')');
+                    }
+                    out.push('\n');
+                }
+                out.push_str(&ind);
+                out.push_str("}\n");
+            }
+        }
+        Sentencia::Rasgo {
+            nombre,
+            publico,
+            metodos,
+            ..
+        } => {
+            let vis = if *publico { "publico " } else { "" };
+            out.push_str(&format!("{ind}{vis}rasgo {nombre} {{\n"));
+            let ind2 = indent(nivel + 1);
+            for m in metodos {
+                let rec = match m.receptor {
+                    crate::parser::ReceptorMetodo::Ninguno => "".to_string(),
+                    crate::parser::ReceptorMetodo::Yo { mutable } => {
+                        if mutable {
+                            "yo var".to_string()
+                        } else {
+                            "yo".to_string()
+                        }
+                    }
+                };
+                let mut params: Vec<String> = Vec::new();
+                if !rec.is_empty() {
+                    params.push(rec);
+                }
+                for (n, t) in &m.parametros {
+                    if let Some(t) = t {
+                        params.push(format!("{n}: {}", tipo_str(t)));
+                    } else {
+                        params.push(n.clone());
+                    }
+                }
+                let ret = m
+                    .tipo_retorno
+                    .as_ref()
+                    .map(|t| format!(" -> {}", tipo_str(t)))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "{ind2}funcion {}({}){ret}\n",
+                    m.nombre,
+                    params.join(", ")
+                ));
+            }
+            out.push_str(&format!("{ind}}}\n"));
+        }
+        Sentencia::ImplementacionInherente { tipo, metodos, .. } => {
+            out.push_str(&format!("{ind}implementar {tipo} {{\n"));
+            let ind2 = indent(nivel + 1);
+            for m in metodos {
+                let rec = match m.receptor {
+                    crate::parser::ReceptorMetodo::Ninguno => "".to_string(),
+                    crate::parser::ReceptorMetodo::Yo { mutable } => {
+                        if mutable {
+                            "yo var".to_string()
+                        } else {
+                            "yo".to_string()
+                        }
+                    }
+                };
+                let mut params: Vec<String> = Vec::new();
+                if !rec.is_empty() {
+                    params.push(rec);
+                }
+                for (n, t) in &m.parametros {
+                    if let Some(t) = t {
+                        params.push(format!("{n}: {}", tipo_str(t)));
+                    } else {
+                        params.push(n.clone());
+                    }
+                }
+                let ret = m
+                    .tipo_retorno
+                    .as_ref()
+                    .map(|t| format!(" -> {}", tipo_str(t)))
+                    .unwrap_or_default();
+                let vis_m = if m.publico { "publico " } else { "" };
+                out.push_str(&format!(
+                    "{ind2}{vis_m}funcion {}({}){ret} {{\n",
+                    m.nombre,
+                    params.join(", ")
+                ));
+                formatear_bloque(
+                    &m.cuerpo,
+                    nivel + 2,
+                    out,
+                    comentarios,
+                    ci,
+                    limite_linea,
+                    lineas_src,
+                );
+                out.push_str(&format!("{ind2}}}\n"));
+            }
+            out.push_str(&format!("{ind}}}\n"));
+        }
+        Sentencia::ImplementacionRasgo {
+            rasgo,
+            tipo,
+            metodos,
+            ..
+        } => {
+            out.push_str(&format!("{ind}implementar {rasgo} para {tipo} {{\n"));
+            let ind2 = indent(nivel + 1);
+            for m in metodos {
+                let rec = match m.receptor {
+                    crate::parser::ReceptorMetodo::Ninguno => "".to_string(),
+                    crate::parser::ReceptorMetodo::Yo { mutable } => {
+                        if mutable {
+                            "yo var".to_string()
+                        } else {
+                            "yo".to_string()
+                        }
+                    }
+                };
+                let mut params: Vec<String> = Vec::new();
+                if !rec.is_empty() {
+                    params.push(rec);
+                }
+                for (n, t) in &m.parametros {
+                    if let Some(t) = t {
+                        params.push(format!("{n}: {}", tipo_str(t)));
+                    } else {
+                        params.push(n.clone());
+                    }
+                }
+                let ret = m
+                    .tipo_retorno
+                    .as_ref()
+                    .map(|t| format!(" -> {}", tipo_str(t)))
+                    .unwrap_or_default();
+                let vis_m = if m.publico { "publico " } else { "" };
+                out.push_str(&format!(
+                    "{ind2}{vis_m}funcion {}({}){ret} {{\n",
+                    m.nombre,
+                    params.join(", ")
+                ));
+                formatear_bloque(
+                    &m.cuerpo,
+                    nivel + 2,
+                    out,
+                    comentarios,
+                    ci,
+                    limite_linea,
+                    lineas_src,
+                );
+                out.push_str(&format!("{ind2}}}\n"));
+            }
+            out.push_str(&format!("{ind}}}\n"));
+        }
         Sentencia::Si {
             condicion,
             rama_si,
@@ -245,7 +641,15 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
             out.push_str("si ");
             out.push_str(&expr_str(condicion));
             out.push_str(" {\n");
-            formatear_bloque(rama_si, nivel + 1, out);
+            formatear_bloque(
+                rama_si,
+                nivel + 1,
+                out,
+                comentarios,
+                ci,
+                limite_linea,
+                lineas_src,
+            );
             out.push_str(&ind);
             out.push('}');
             if let Some(sino) = rama_sino {
@@ -256,14 +660,30 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
                     out.push_str(" sino ");
                     // formatear el si anidado sin indentación inicial extra
                     let mut tmp = String::new();
-                    formatear_sentencia(&sino[0], 0, &mut tmp);
+                    formatear_sentencia(
+                        &sino[0],
+                        0,
+                        &mut tmp,
+                        comentarios,
+                        ci,
+                        limite_linea,
+                        lineas_src,
+                    );
                     // quitar indentación inicial
                     let trimmed = tmp.trim_start();
                     out.push_str(trimmed);
                     return;
                 }
                 out.push_str(" sino {\n");
-                formatear_bloque(sino, nivel + 1, out);
+                formatear_bloque(
+                    sino,
+                    nivel + 1,
+                    out,
+                    comentarios,
+                    ci,
+                    limite_linea,
+                    lineas_src,
+                );
                 out.push_str(&ind);
                 out.push('}');
             }
@@ -276,14 +696,30 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
             out.push_str("mientras ");
             out.push_str(&expr_str(condicion));
             out.push_str(" {\n");
-            formatear_bloque(cuerpo, nivel + 1, out);
+            formatear_bloque(
+                cuerpo,
+                nivel + 1,
+                out,
+                comentarios,
+                ci,
+                limite_linea,
+                lineas_src,
+            );
             out.push_str(&ind);
             out.push_str("}\n");
         }
         Sentencia::Bloque(sentencias) => {
             out.push_str(&ind);
             out.push_str("{\n");
-            formatear_bloque(sentencias, nivel + 1, out);
+            formatear_bloque(
+                sentencias,
+                nivel + 1,
+                out,
+                comentarios,
+                ci,
+                limite_linea,
+                lineas_src,
+            );
             out.push_str(&ind);
             out.push_str("}\n");
         }
@@ -325,7 +761,15 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
                 out.push_str(&tipo_str(t));
             }
             out.push_str(" {\n");
-            formatear_bloque(cuerpo, nivel + 1, out);
+            formatear_bloque(
+                cuerpo,
+                nivel + 1,
+                out,
+                comentarios,
+                ci,
+                limite_linea,
+                lineas_src,
+            );
             out.push_str(&ind);
             out.push_str("}\n");
         }
@@ -362,7 +806,15 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
             out.push_str(" en ");
             out.push_str(&expr_str(iterable));
             out.push_str(" {\n");
-            formatear_bloque(cuerpo, nivel + 1, out);
+            formatear_bloque(
+                cuerpo,
+                nivel + 1,
+                out,
+                comentarios,
+                ci,
+                limite_linea,
+                lineas_src,
+            );
             out.push_str(&ind);
             out.push_str("}\n");
         }
@@ -382,7 +834,15 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
         } => {
             out.push_str(&ind);
             out.push_str("intentar {\n");
-            formatear_bloque(cuerpo_intentar, nivel + 1, out);
+            formatear_bloque(
+                cuerpo_intentar,
+                nivel + 1,
+                out,
+                comentarios,
+                ci,
+                limite_linea,
+                lineas_src,
+            );
             out.push_str(&ind);
             out.push('}');
             out.push_str(" rescatar");
@@ -391,7 +851,15 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
                 out.push_str(v);
             }
             out.push_str(" {\n");
-            formatear_bloque(cuerpo_rescatar, nivel + 1, out);
+            formatear_bloque(
+                cuerpo_rescatar,
+                nivel + 1,
+                out,
+                comentarios,
+                ci,
+                limite_linea,
+                lineas_src,
+            );
             out.push_str(&ind);
             out.push_str("}\n");
         }
@@ -431,7 +899,15 @@ fn formatear_sentencia(s: &Sentencia, nivel: usize, out: &mut String) {
             out.push_str("exportar ");
             // formatear sentencia interna sin indentación inicial
             let mut tmp = String::new();
-            formatear_sentencia(sentencia, 0, &mut tmp);
+            formatear_sentencia(
+                sentencia,
+                0,
+                &mut tmp,
+                comentarios,
+                ci,
+                limite_linea,
+                lineas_src,
+            );
             out.push_str(tmp.trim_start());
         }
         Sentencia::Expresion(e) => {

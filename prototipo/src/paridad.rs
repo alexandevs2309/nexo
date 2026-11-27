@@ -47,6 +47,15 @@ pub enum ValorNormalizado {
         detalle: String,
         identidad_comprobable: bool,
     },
+    EstructuraNominal {
+        tipo_id: u32,
+        campos: Vec<ValorNormalizado>,
+    },
+    EnumNominal {
+        tipo_id: u32,
+        variante: u32,
+        payload: Vec<ValorNormalizado>,
+    },
 }
 
 /// Categoría de error normalizada.
@@ -99,6 +108,34 @@ pub enum CategoriaError {
     IndiceFueraDeRango,
     CampoInexistente,
     ConversionInvalido,
+    // Fase 08 nominal
+    TipoNominalDesconocido,
+    TipoNominalDuplicadoOSombreado,
+    CampoStructDesconocido,
+    CampoStructDuplicado,
+    CampoStructFaltante,
+    CampoStructSobrante,
+    TipoCampoIncompatible,
+    ConstruccionNominalInvalida,
+    VarianteEnumDesconocida,
+    PayloadVarianteIncompatible,
+    ConstruccionVarianteInvalida,
+    PatronIncompatible,
+    MatchNoExhaustivo,
+    PatronInalcanzable,
+    BindingPatronInvalido,
+    UsoPatronInvalido,
+    MetodoNoEncontrado,
+    FirmaMetodoIncompatibleOColision,
+    TraitNoEncontrado,
+    TraitNoImplementado,
+    ImplIncompleta,
+    ImplDuplicadaOCoherencia,
+    CapacidadNominalNoSoportadaBackend,
+    GenericoNominalNoSoportado,
+    IgualdadNominalNoSoportada,
+    MiembroNoVisible,
+    RecursividadNominalPorValor,
     NoSoportado,
     Desconocido,
 }
@@ -181,6 +218,19 @@ pub fn normalizar_valor(v: &Valor) -> ValorNormalizado {
         Valor::Logico(b) => ValorNormalizado::Logico(*b),
         Valor::Texto(s) => ValorNormalizado::Texto(s.clone()),
         Valor::Nulo => ValorNormalizado::Nulo,
+        Valor::EstructuraNominal { tipo_id, campos } => ValorNormalizado::EstructuraNominal {
+            tipo_id: *tipo_id,
+            campos: campos.iter().map(normalizar_valor).collect(),
+        },
+        Valor::EnumNominal {
+            tipo_id,
+            variante,
+            payload,
+        } => ValorNormalizado::EnumNominal {
+            tipo_id: *tipo_id,
+            variante: *variante,
+            payload: payload.iter().map(normalizar_valor).collect(),
+        },
         Valor::Arreglo(elems) => ValorNormalizado::Secuencia {
             clase: "arreglo",
             elementos: elems.iter().map(normalizar_valor).collect(),
@@ -239,6 +289,42 @@ fn subcausa_arit(m: &MotivoAritmetico) -> &'static str {
         MotivoAritmetico::ExcesoRangoDecimal => "exceso_rango_decimal",
         MotivoAritmetico::ConversionIlegal => "conversion_ilegal",
         MotivoAritmetico::TiposIncompatibles => "tipos_incompatibles",
+    }
+}
+
+fn normalizar_detalle_ffi(s: &str) -> String {
+    // Los ids de biblioteca son detalles de runtime, no semántica observable.
+    let mut out = s.to_string();
+    for prefix in [
+        "biblioteca FFI descargada: id ",
+        "id de biblioteca FFI inválido: ",
+    ] {
+        if let Some(pos) = out.find(prefix) {
+            let before = &out[..pos + prefix.len()];
+            let after = &out[pos + prefix.len()..];
+            let rest: String = after.chars().skip_while(|c| c.is_ascii_digit()).collect();
+            out = format!("{}<id>{}", before, rest);
+        }
+    }
+    out
+}
+fn subcausa_concurrencia_nosoportado(mensaje: &str) -> Option<String> {
+    if mensaje.starts_with("tarea inexistente:") {
+        Some("tarea_inexistente".into())
+    } else if mensaje.starts_with("tarea ya esperada:") {
+        Some("tarea_ya_esperada".into())
+    } else if mensaje.starts_with("tarea falló:") {
+        Some("tarea_fallida".into())
+    } else if mensaje.starts_with("tarea: función no encontrada:") {
+        Some("tarea_funcion_no_encontrada".into())
+    } else if mensaje.starts_with("canal inexistente:") {
+        Some("canal_inexistente".into())
+    } else if mensaje.starts_with("canal cerrado y vacío:") {
+        Some("canal_cerrado_vacio".into())
+    } else if mensaje.starts_with("canal cerrado:") {
+        Some("canal_cerrado".into())
+    } else {
+        None
     }
 }
 
@@ -414,9 +500,226 @@ pub fn normalizar_error_tw(e: &ErrorEjecucion) -> ErrorNormalizado {
             datos.insert("sentencia".into(), sentencia.clone());
             (CategoriaError::SentenciaNoPermitidaEnModulo, None)
         }
-        CausaError::FFIInvalido { detalle } => {
+        CausaError::FFIInvalido { causa } => {
+            let detalle = normalizar_detalle_ffi(&causa.to_string());
+            datos.insert("detalle".into(), detalle);
+            datos.insert("codigo".into(), causa.codigo().to_string());
+            (
+                CategoriaError::FfiInvalido,
+                Some(causa.codigo().to_string()),
+            )
+        }
+        CausaError::TipoNominalDesconocido { nombre } => {
+            datos.insert("nombre".into(), nombre.clone());
+            (
+                CategoriaError::TipoNominalDesconocido,
+                Some("BAS-7101".into()),
+            )
+        }
+        CausaError::TipoNominalDuplicadoOSombreado { nombre, detalle } => {
+            datos.insert("nombre".into(), nombre.clone());
             datos.insert("detalle".into(), detalle.clone());
-            (CategoriaError::FfiInvalido, None)
+            (
+                CategoriaError::TipoNominalDuplicadoOSombreado,
+                Some("BAS-7102".into()),
+            )
+        }
+        CausaError::CampoStructDesconocido { campo, tipo } => {
+            datos.insert("campo".into(), campo.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            (
+                CategoriaError::CampoStructDesconocido,
+                Some("BAS-7103".into()),
+            )
+        }
+        CausaError::CampoStructDuplicado { campo, tipo } => {
+            datos.insert("campo".into(), campo.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            (
+                CategoriaError::CampoStructDuplicado,
+                Some("BAS-7104".into()),
+            )
+        }
+        CausaError::CampoStructFaltante { campo, tipo } => {
+            datos.insert("campo".into(), campo.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            (CategoriaError::CampoStructFaltante, Some("BAS-7105".into()))
+        }
+        CausaError::CampoStructSobrante { campo, tipo } => {
+            datos.insert("campo".into(), campo.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            (CategoriaError::CampoStructSobrante, Some("BAS-7106".into()))
+        }
+        CausaError::TipoCampoIncompatible {
+            campo,
+            tipo,
+            esperado,
+            obtenido,
+        } => {
+            datos.insert("campo".into(), campo.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            datos.insert("esperado".into(), esperado.clone());
+            datos.insert("obtenido".into(), obtenido.clone());
+            (
+                CategoriaError::TipoCampoIncompatible,
+                Some("BAS-7107".into()),
+            )
+        }
+        CausaError::ConstruccionNominalInvalida { tipo, detalle } => {
+            datos.insert("tipo".into(), tipo.clone());
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::ConstruccionNominalInvalida,
+                Some("BAS-7108".into()),
+            )
+        }
+        CausaError::VarianteEnumDesconocida { variante, tipo } => {
+            datos.insert("variante".into(), variante.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            (
+                CategoriaError::VarianteEnumDesconocida,
+                Some("BAS-7109".into()),
+            )
+        }
+        CausaError::PayloadVarianteIncompatible {
+            variante,
+            tipo,
+            detalle,
+        } => {
+            datos.insert("variante".into(), variante.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::PayloadVarianteIncompatible,
+                Some("BAS-7110".into()),
+            )
+        }
+        CausaError::ConstruccionVarianteInvalida { tipo, detalle } => {
+            datos.insert("tipo".into(), tipo.clone());
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::ConstruccionVarianteInvalida,
+                Some("BAS-7111".into()),
+            )
+        }
+        CausaError::VarianteEnumDuplicada { variante, tipo } => {
+            datos.insert("variante".into(), variante.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            (
+                CategoriaError::ConstruccionVarianteInvalida,
+                Some("BAS-7111".into()),
+            )
+        }
+        CausaError::PatronIncompatible { detalle } => {
+            datos.insert("detalle".into(), detalle.clone());
+            (CategoriaError::PatronIncompatible, Some("BAS-7112".into()))
+        }
+        CausaError::MatchNoExhaustivo { detalle } => {
+            datos.insert("detalle".into(), detalle.clone());
+            (CategoriaError::MatchNoExhaustivo, Some("BAS-7113".into()))
+        }
+        CausaError::PatronInalcanzable { detalle } => {
+            datos.insert("detalle".into(), detalle.clone());
+            (CategoriaError::PatronInalcanzable, Some("BAS-7114".into()))
+        }
+        CausaError::BindingPatronInvalido { detalle } => {
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::BindingPatronInvalido,
+                Some("BAS-7115".into()),
+            )
+        }
+        CausaError::UsoPatronInvalido { detalle } => {
+            datos.insert("detalle".into(), detalle.clone());
+            (CategoriaError::UsoPatronInvalido, Some("BAS-7116".into()))
+        }
+        CausaError::MetodoNoEncontrado { metodo, tipo } => {
+            datos.insert("metodo".into(), metodo.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            (CategoriaError::MetodoNoEncontrado, Some("BAS-7117".into()))
+        }
+        CausaError::FirmaMetodoIncompatibleOColision { detalle } => {
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::FirmaMetodoIncompatibleOColision,
+                Some("BAS-7118".into()),
+            )
+        }
+        CausaError::TraitNoEncontrado { nombre } => {
+            datos.insert("nombre".into(), nombre.clone());
+            (CategoriaError::TraitNoEncontrado, Some("BAS-7119".into()))
+        }
+        CausaError::TraitNoImplementado { rasgo, tipo } => {
+            datos.insert("rasgo".into(), rasgo.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            (CategoriaError::TraitNoImplementado, Some("BAS-7120".into()))
+        }
+        CausaError::ImplIncompleta {
+            rasgo,
+            tipo,
+            detalle,
+        } => {
+            datos.insert("rasgo".into(), rasgo.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            datos.insert("detalle".into(), detalle.clone());
+            (CategoriaError::ImplIncompleta, Some("BAS-7121".into()))
+        }
+        CausaError::ImplDuplicadaOCoherencia { detalle } => {
+            datos.insert("detalle".into(), detalle.clone());
+            (
+                CategoriaError::ImplDuplicadaOCoherencia,
+                Some("BAS-7122".into()),
+            )
+        }
+        CausaError::CapacidadNominalNoSoportadaBackend {
+            capacidad,
+            backend,
+            capa,
+        } => {
+            datos.insert("capacidad".into(), capacidad.clone());
+            datos.insert("backend".into(), backend.clone());
+            datos.insert("capa".into(), capa.clone());
+            (
+                CategoriaError::CapacidadNominalNoSoportadaBackend,
+                Some("BAS-7124".into()),
+            )
+        }
+        CausaError::GenericoNominalNoSoportado { tipo } => {
+            datos.insert("tipo".into(), tipo.clone());
+            (
+                CategoriaError::GenericoNominalNoSoportado,
+                Some("BAS-7125".into()),
+            )
+        }
+        CausaError::IgualdadNominalNoSoportada { tipo } => {
+            datos.insert("tipo".into(), tipo.clone());
+            (
+                CategoriaError::IgualdadNominalNoSoportada,
+                Some("BAS-7126".into()),
+            )
+        }
+        CausaError::MiembroNoVisible { miembro, tipo } => {
+            datos.insert("miembro".into(), miembro.clone());
+            datos.insert("tipo".into(), tipo.clone());
+            (CategoriaError::MiembroNoVisible, Some("BAS-7128".into()))
+        }
+        CausaError::RecursividadNominalPorValor { tipo, ciclo } => {
+            datos.insert("tipo".into(), tipo.clone());
+            datos.insert("ciclo".into(), ciclo.clone());
+            (
+                CategoriaError::RecursividadNominalPorValor,
+                Some("BAS-7130".into()),
+            )
+        }
+        CausaError::NoSoportado { mensaje } => {
+            let sub = subcausa_concurrencia_nosoportado(mensaje);
+            let detalle = if sub.as_deref() == Some("tarea_fallida") {
+                "tarea falló".to_string()
+            } else {
+                mensaje.clone()
+            };
+            datos.insert("detalle".into(), detalle);
+            (CategoriaError::NoSoportado, sub)
         }
         CausaError::InferenciaArgumentosTipoNoDisponible { funcion } => {
             datos.insert("funcion".into(), funcion.clone());
@@ -600,6 +903,16 @@ pub fn normalizar_error_vm(e: &ErrorVm) -> ErrorNormalizado {
             datos.insert("faltantes".into(), faltantes.to_string());
             (CategoriaError::ArgumentosInsuficientes, None)
         }
+        ErrorVm::FirmaInvalida {
+            funcion,
+            esperado,
+            obtenido,
+        } => {
+            datos.insert("funcion".into(), funcion.clone());
+            datos.insert("esperado".into(), esperado.to_string());
+            datos.insert("obtenido".into(), obtenido.to_string());
+            (CategoriaError::FirmaInvalida, None)
+        }
         ErrorVm::LimitePasosExcedido => (CategoriaError::LimitePasosExcedido, None),
         ErrorVm::ProfundidadExcedida => (CategoriaError::ProfundidadExcedida, None),
         ErrorVm::BloqueInalcanzable => (CategoriaError::BloqueInalcanzable, None),
@@ -670,9 +983,32 @@ pub fn normalizar_error_vm(e: &ErrorVm) -> ErrorNormalizado {
             datos.insert("obtenido".into(), obtenido.clone());
             (CategoriaError::RetornoIncompatibleConAnotacion, None)
         }
-        ErrorVm::FfiInvalido { detalle } => {
-            datos.insert("detalle".into(), detalle.clone());
-            (CategoriaError::FfiInvalido, None)
+        ErrorVm::FfiInvalido(causa) => {
+            let detalle = normalizar_detalle_ffi(&causa.to_string());
+            datos.insert("detalle".into(), detalle);
+            datos.insert("codigo".into(), causa.codigo().to_string());
+            (
+                CategoriaError::FfiInvalido,
+                Some(causa.codigo().to_string()),
+            )
+        }
+        ErrorVm::NoSoportado(m) => {
+            if m.contains("BAS-7126") {
+                datos.insert("tipo".into(), "nominal".into());
+                (
+                    CategoriaError::IgualdadNominalNoSoportada,
+                    Some("BAS-7126".into()),
+                )
+            } else {
+                let sub = subcausa_concurrencia_nosoportado(m);
+                let detalle = if sub.as_deref() == Some("tarea_fallida") {
+                    "tarea falló".to_string()
+                } else {
+                    m.clone()
+                };
+                datos.insert("detalle".into(), detalle);
+                (CategoriaError::NoSoportado, sub)
+            }
         }
     };
     ErrorNormalizado {

@@ -79,7 +79,20 @@ El prototipo asigna códigos estables `E1xxx` a `CausaError`:
 | E1036 | RutaNoPermitida |
 | E1037 | SentenciaNoPermitidaEnModulo |
 | E1038 | ImportacionesNoDisponibles |
-| E1040 | FFIInvalido |
+| E1040 | FFIInvalido (legado/genérico; Fase 11 desagrega en E1070-E1082) |
+| E1070 | FfiBibliotecaNoEncontrada |
+| E1071 | FfiBibliotecaNoCargable |
+| E1072 | FfiSimboloNoEncontrado |
+| E1073 | FfiIdBibliotecaInvalido |
+| E1074 | FfiBibliotecaDescargada |
+| E1075 | FfiFirmaInvalida |
+| E1076 | FfiAridadIncompatible |
+| E1077 | FfiTipoArgumentoIncompatible |
+| E1078 | FfiConversionFueraDeRango |
+| E1079 | FfiResultadoIncompatible |
+| E1080 | FfiErrorInvocacion |
+| E1081 | FfiEstadoRecursoInvalido |
+| E1082 | FfiMemoria |
 
 Los códigos se emiten en el mensaje de `ErrorEjecucion` como `[E1xxx]`.
 

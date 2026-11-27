@@ -23,6 +23,93 @@ pub struct TipoParamId {
     pub nombre: String,
 }
 
+/// Identificador estable de tipo nominal (Fase 08 S8.1, D8-01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TipoNominalId(pub u32);
+
+/// Clase de tipo nominal (Fase 08).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClaseNominal {
+    Estructura,
+    Enumeracion,
+    Rasgo,
+}
+
+/// Información de campo nominal (Fase 08 S8.1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CampoNominalInfo {
+    pub nombre: String,
+    pub tipo: TipoSem,
+    pub publico: bool,
+    pub indice: usize,
+}
+
+/// Información de variante de enumeración nominal (Fase 08 S8.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VarianteNominalInfo {
+    pub nombre: String,
+    pub payload: Vec<TipoSem>,
+    pub indice: u32,
+}
+
+/// Receptor de método (Fase 08 S8.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReceptorMetodoSem {
+    Ninguno,
+    Yo { mutable: bool },
+}
+
+/// Firma de método de rasgo (Fase 08 S8.4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FirmaMetodoRasgoSem {
+    pub nombre: String,
+    pub receptor: ReceptorMetodoSem,
+    pub parametros: Vec<(String, TipoSem)>,
+    pub retorno: TipoSem,
+    pub publico: bool,
+    pub linea: usize,
+    pub columna: usize,
+}
+
+/// Método implementado (Fase 08 S8.4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetodoImplSem {
+    pub nombre: String,
+    pub receptor: ReceptorMetodoSem,
+    pub parametros: Vec<(String, TipoSem)>,
+    pub retorno: TipoSem,
+    pub publico: bool,
+    pub cuerpo: Vec<Sentencia>,
+    pub linea: usize,
+    pub columna: usize,
+}
+
+/// Implementación de rasgo para tipo (Fase 08 S8.4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImplRasgoSem {
+    pub rasgo: TipoNominalId,
+    pub tipo: TipoNominalId,
+    pub metodos: Vec<MetodoImplSem>,
+    pub linea: usize,
+    pub columna: usize,
+    pub modulo: Option<String>,
+}
+
+/// Información de tipo nominal registrado.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TipoNominalInfo {
+    pub id: TipoNominalId,
+    pub nombre: String,
+    pub modulo: Option<String>,
+    pub clase: ClaseNominal,
+    pub campos: Vec<CampoNominalInfo>,
+    pub variantes: Vec<VarianteNominalInfo>,
+    pub metodos_rasgo: Vec<FirmaMetodoRasgoSem>,
+    pub publico: bool,
+    pub linea: usize,
+    pub columna: usize,
+}
+
 /// Tipo semántico determinado estáticamente.
 /// `Desconocido` representa información no disponible.
 /// `Param` representa un parámetro de tipo genérico declarado (identidad conocida,
@@ -38,7 +125,8 @@ pub enum TipoSem {
     Lista(Box<TipoSem>),
     /// Tipo estático aproximado para literales `[...]` cuyo contenedor
     /// concreto (arreglo o lista) se resuelve en ejecución.
-    Coleccion(Box<TipoSem>),
+    /// El segundo campo conserva el tamaño literal conocido para validación.
+    Coleccion(Box<TipoSem>, usize),
     Funcion {
         params: Vec<TipoSem>,
         retorno: Box<TipoSem>,
@@ -47,6 +135,8 @@ pub enum TipoSem {
     Nulo,
     /// Parámetro de tipo genérico declarado (G2.2), opaco.
     Param(TipoParamId),
+    /// Tipo nominal de usuario (Fase 08 S8.1).
+    Nominal(TipoNominalId),
     Desconocido,
 }
 
@@ -60,7 +150,7 @@ impl TipoSem {
             TipoSem::Texto => "texto".to_string(),
             TipoSem::Arreglo(t, n) => format!("arreglo<{}, {}>", t.nombre(), n),
             TipoSem::Lista(t) => format!("lista<{}>", t.nombre()),
-            TipoSem::Coleccion(t) => format!("colección<{}>", t.nombre()),
+            TipoSem::Coleccion(t, n) => format!("colección<{}, {}>", t.nombre(), n),
             TipoSem::Funcion {
                 params,
                 retorno,
@@ -81,6 +171,7 @@ impl TipoSem {
             }
             TipoSem::Nulo => "nulo".to_string(),
             TipoSem::Param(id) => id.nombre.clone(),
+            TipoSem::Nominal(id) => format!("nominal#{}", id.0),
             TipoSem::Desconocido => "desconocido".to_string(),
         }
     }
@@ -93,6 +184,7 @@ impl TipoSem {
             TipoSem::Logico => "lógico",
             TipoSem::Texto => "texto",
             TipoSem::Nulo => "nulo",
+            TipoSem::Nominal(_) => "nominal",
             TipoSem::Param(_) => "parámetro de tipo",
             _ => "desconocido",
         }
@@ -129,6 +221,7 @@ pub(crate) struct FuncionSig {
 enum ExportadoSem {
     Variable(TipoSem),
     Funcion(FuncionSig),
+    TipoNominal(TipoNominalInfo),
 }
 
 #[derive(Clone)]
@@ -158,12 +251,44 @@ pub(crate) struct SolicitudInstanciaG4 {
     pub(crate) columna: usize,
 }
 
+/// Definición semántica lateral para consumo LSP (Fase 13).
+#[derive(Debug, Clone)]
+pub struct DefinicionSemantica {
+    pub id: SimbodoId,
+    pub nombre: String,
+    pub linea: usize,
+    pub columna: usize,
+    pub linea_fin: usize,
+    pub columna_fin: usize,
+    pub tipo: TipoSem,
+    pub ambito: AmbitoId,
+    pub categoria: CategoriaSimbodo,
+    pub mutable: bool,
+    pub visibilidad: Option<String>,
+    /// URI o ruta del documento origen, cuando está disponible.
+    pub archivo: Option<String>,
+}
+
+/// Referencia semántica resuelta para consumo LSP (Fase 13).
+#[derive(Debug, Clone)]
+pub struct ReferenciaSemantica {
+    pub linea: usize,
+    pub columna: usize,
+    pub linea_fin: usize,
+    pub columna_fin: usize,
+    pub id: SimbodoId,
+    /// URI o ruta del documento origen, cuando está disponible.
+    pub archivo: Option<String>,
+}
+
 /// Analizador semántico. Independiente del evaluador: no ejecuta código.
 pub struct ContextoSemantico {
     pub archivo: Option<String>,
     cargador: Option<Arc<Mutex<CargadorModulos>>>,
     archivo_actual: Option<PathBuf>,
     scopes: Vec<HashMap<String, VarInfo>>,
+    /// Alias de módulo por ámbito (`usar "ruta" como alias`). Paralelo a `scopes`.
+    modulos_alias_scopes: Vec<HashMap<String, PathBuf>>,
     tabla: TablaSimbodo,
     gestor: GestorAmbitos,
     pub(crate) funciones: HashMap<String, FuncionSig>,
@@ -195,15 +320,88 @@ pub struct ContextoSemantico {
     g3_v3_en_progreso: BTreeSet<String>,
     // G4: solicitudes de instanciación concreta recolectadas (seeds y dependencias).
     pub(crate) g4_solicitudes: Vec<SolicitudInstanciaG4>,
+    // S8.1: registro nominal.
+    tipos_nominales: HashMap<TipoNominalId, TipoNominalInfo>,
+    nominales_por_nombre: HashMap<String, TipoNominalId>,
+    nominales_visibles: std::collections::HashSet<TipoNominalId>,
+    siguiente_nominal_id: u32,
+    // S8.4: impls y métodos.
+    impls_inherentes: HashMap<TipoNominalId, Vec<MetodoImplSem>>,
+    impls_rasgo: Vec<ImplRasgoSem>,
+    // Tipos persistentes para lowering HIR (sobreviven a pop de scopes).
+    tipos_vars_persistentes: HashMap<String, TipoSem>,
+    // Side tables Fase 13: identidad semántica para LSP.
+    pub(crate) def_simbodo: HashMap<SimbodoId, DefinicionSemantica>,
+    pub(crate) ref_simbodo: Vec<ReferenciaSemantica>,
+    registrar_semantica_lsp: bool,
 }
 
 impl ContextoSemantico {
+    pub fn tabla_simbodo(&self) -> &TablaSimbodo {
+        &self.tabla
+    }
+    pub fn gestor_ambitos(&self) -> &GestorAmbitos {
+        &self.gestor
+    }
+    pub fn definiciones_semanticas(&self) -> &HashMap<SimbodoId, DefinicionSemantica> {
+        &self.def_simbodo
+    }
+    pub fn referencias_semanticas(&self) -> &[ReferenciaSemantica] {
+        &self.ref_simbodo
+    }
+    pub fn habilitar_registro_semantico_lsp(&mut self) {
+        self.registrar_semantica_lsp = true;
+    }
+
+    pub(crate) fn registrar_def_simbodo(&mut self, mut def: DefinicionSemantica) {
+        if !self.registrar_semantica_lsp {
+            return;
+        }
+        def.linea_fin = def.linea;
+        def.columna_fin = def.columna + def.nombre.chars().count();
+        if def.archivo.is_none() {
+            def.archivo = self
+                .archivo_actual
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .or_else(|| self.archivo.clone());
+        }
+        self.def_simbodo.insert(def.id, def);
+    }
+
+    pub(crate) fn registrar_ref_simbodo(
+        &mut self,
+        id: SimbodoId,
+        nombre: &str,
+        linea: usize,
+        columna: usize,
+    ) {
+        if !self.registrar_semantica_lsp {
+            return;
+        }
+        let fin_col = columna + nombre.chars().count();
+        let archivo = self
+            .archivo_actual
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .or_else(|| self.archivo.clone());
+        self.ref_simbodo.push(ReferenciaSemantica {
+            linea,
+            columna,
+            linea_fin: linea,
+            columna_fin: fin_col,
+            id,
+            archivo,
+        });
+    }
+
     pub fn nuevo() -> Self {
         Self {
             archivo: None,
             cargador: None,
             archivo_actual: None,
             scopes: vec![HashMap::new()],
+            modulos_alias_scopes: vec![HashMap::new()],
             tabla: TablaSimbodo::nuevo(),
             gestor: GestorAmbitos::nuevo(),
             funciones: HashMap::new(),
@@ -223,6 +421,16 @@ impl ContextoSemantico {
             g3_v3_depth: 0,
             g3_v3_en_progreso: BTreeSet::new(),
             g4_solicitudes: Vec::new(),
+            tipos_nominales: HashMap::new(),
+            nominales_por_nombre: HashMap::new(),
+            nominales_visibles: std::collections::HashSet::new(),
+            siguiente_nominal_id: 0,
+            impls_inherentes: HashMap::new(),
+            impls_rasgo: Vec::new(),
+            tipos_vars_persistentes: HashMap::new(),
+            def_simbodo: HashMap::new(),
+            ref_simbodo: Vec::new(),
+            registrar_semantica_lsp: false,
         }
     }
 
@@ -235,11 +443,23 @@ impl ContextoSemantico {
     }
 
     pub fn analizar_programa(&mut self, sentencias: &[Sentencia]) -> Vec<ErrorEjecucion> {
+        // S8.1: pre-pass nominal - registrar tipos nominales antes de análisis de cuerpos.
+        self.registrar_nominales(sentencias);
+        self.resolver_campos_nominales(sentencias, false);
+        self.resolver_rasgos_e_impls(sentencias, false);
         // Primer pase: registrar funciones (permite llamadas anticipadas y recursión).
         self.registrar_funciones(sentencias);
         for s in sentencias {
             self.analizar_sentencia(s.clone());
         }
+        // Segunda pasada: resolver campos nominales que dependan de imports.
+        self.resolver_campos_nominales(sentencias, true);
+        self.resolver_rasgos_e_impls(sentencias, true);
+        let actual_mod = self
+            .archivo_actual
+            .as_ref()
+            .map(|p| p.display().to_string());
+        self.analizar_cuerpos_impls(actual_mod.as_deref());
         let mut errs = self.errores.clone();
         for e in &mut errs {
             if e.archivo.is_none() {
@@ -262,6 +482,1499 @@ impl ContextoSemantico {
         self.errores.push(e);
     }
 
+    fn registrar_nominales(&mut self, sentencias: &[Sentencia]) {
+        for s in sentencias {
+            self.registrar_nominal_en_sentencia(s, false);
+        }
+    }
+
+    fn registrar_nominal_en_sentencia(&mut self, s: &Sentencia, exportado: bool) {
+        match s {
+            Sentencia::Estructura {
+                nombre,
+                campos,
+                linea,
+                columna,
+                publico,
+            } => {
+                if self.nominales_por_nombre.contains_key(nombre) {
+                    self.error(
+                        CausaError::TipoNominalDuplicadoOSombreado {
+                            nombre: nombre.clone(),
+                            detalle: "declaración nominal duplicada".to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    return;
+                }
+                // S8.1 v1: sombreado nominal prohibido en mismo módulo/espacio.
+                if self.funciones.contains_key(nombre) || self.scopes[0].contains_key(nombre) {
+                    self.error(
+                        CausaError::TipoNominalDuplicadoOSombreado {
+                            nombre: nombre.clone(),
+                            detalle: "conflicto con nombre existente en el módulo".to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    return;
+                }
+                let id = TipoNominalId(self.siguiente_nominal_id);
+                self.siguiente_nominal_id = self.siguiente_nominal_id.saturating_add(1);
+                let info = TipoNominalInfo {
+                    id,
+                    nombre: nombre.clone(),
+                    modulo: self
+                        .archivo_actual
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .or(self.archivo.clone()),
+                    clase: ClaseNominal::Estructura,
+                    campos: campos
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| CampoNominalInfo {
+                            nombre: c.nombre.clone(),
+                            tipo: TipoSem::Desconocido,
+                            publico: c.publico,
+                            indice: i,
+                        })
+                        .collect(),
+                    variantes: Vec::new(),
+                    metodos_rasgo: Vec::new(),
+                    publico: *publico || exportado,
+                    linea: *linea,
+                    columna: *columna,
+                };
+                self.nominales_por_nombre.insert(nombre.clone(), id);
+                self.nominales_visibles.insert(id);
+                self.tipos_nominales.insert(id, info);
+            }
+            Sentencia::Enumeracion {
+                nombre,
+                variantes,
+                linea,
+                columna,
+                publico,
+            } => {
+                if self.nominales_por_nombre.contains_key(nombre) {
+                    self.error(
+                        CausaError::TipoNominalDuplicadoOSombreado {
+                            nombre: nombre.clone(),
+                            detalle: "declaración nominal duplicada".to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    return;
+                }
+                if self.funciones.contains_key(nombre) || self.scopes[0].contains_key(nombre) {
+                    self.error(
+                        CausaError::TipoNominalDuplicadoOSombreado {
+                            nombre: nombre.clone(),
+                            detalle: "conflicto con nombre existente en el módulo".to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    return;
+                }
+                let id = TipoNominalId(self.siguiente_nominal_id);
+                self.siguiente_nominal_id = self.siguiente_nominal_id.saturating_add(1);
+                let mut vistos_var = std::collections::HashSet::new();
+                let mut vars_info = Vec::new();
+                for (i, v) in variantes.iter().enumerate() {
+                    if !vistos_var.insert(v.nombre.clone()) {
+                        self.error(
+                            CausaError::VarianteEnumDuplicada {
+                                variante: v.nombre.clone(),
+                                tipo: nombre.clone(),
+                            },
+                            v.linea,
+                            v.columna,
+                        );
+                        continue;
+                    }
+                    vars_info.push(VarianteNominalInfo {
+                        nombre: v.nombre.clone(),
+                        payload: vec![TipoSem::Desconocido; v.payload.len()],
+                        indice: i as u32,
+                    });
+                }
+                let info = TipoNominalInfo {
+                    id,
+                    nombre: nombre.clone(),
+                    modulo: self
+                        .archivo_actual
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .or(self.archivo.clone()),
+                    clase: ClaseNominal::Enumeracion,
+                    campos: Vec::new(),
+                    variantes: vars_info,
+                    metodos_rasgo: Vec::new(),
+                    publico: *publico || exportado,
+                    linea: *linea,
+                    columna: *columna,
+                };
+                self.nominales_por_nombre.insert(nombre.clone(), id);
+                self.nominales_visibles.insert(id);
+                self.tipos_nominales.insert(id, info);
+            }
+            Sentencia::Rasgo {
+                nombre,
+                metodos,
+                linea,
+                columna,
+                publico,
+            } => {
+                if self.nominales_por_nombre.contains_key(nombre) {
+                    self.error(
+                        CausaError::TipoNominalDuplicadoOSombreado {
+                            nombre: nombre.clone(),
+                            detalle: "declaración nominal duplicada".to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    return;
+                }
+                if self.funciones.contains_key(nombre) || self.scopes[0].contains_key(nombre) {
+                    self.error(
+                        CausaError::TipoNominalDuplicadoOSombreado {
+                            nombre: nombre.clone(),
+                            detalle: "conflicto con nombre existente en el módulo".to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    return;
+                }
+                let id = TipoNominalId(self.siguiente_nominal_id);
+                self.siguiente_nominal_id = self.siguiente_nominal_id.saturating_add(1);
+                let info = TipoNominalInfo {
+                    id,
+                    nombre: nombre.clone(),
+                    modulo: self
+                        .archivo_actual
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .or(self.archivo.clone()),
+                    clase: ClaseNominal::Rasgo,
+                    campos: Vec::new(),
+                    variantes: Vec::new(),
+                    metodos_rasgo: metodos
+                        .iter()
+                        .map(|m| FirmaMetodoRasgoSem {
+                            nombre: m.nombre.clone(),
+                            receptor: match m.receptor {
+                                crate::parser::ReceptorMetodo::Ninguno => {
+                                    ReceptorMetodoSem::Ninguno
+                                }
+                                crate::parser::ReceptorMetodo::Yo { mutable } => {
+                                    ReceptorMetodoSem::Yo { mutable }
+                                }
+                            },
+                            parametros: Vec::new(),
+                            retorno: TipoSem::Desconocido,
+                            publico: true,
+                            linea: m.linea,
+                            columna: m.columna,
+                        })
+                        .collect(),
+                    publico: *publico || exportado,
+                    linea: *linea,
+                    columna: *columna,
+                };
+                self.nominales_por_nombre.insert(nombre.clone(), id);
+                self.nominales_visibles.insert(id);
+                self.tipos_nominales.insert(id, info);
+            }
+            Sentencia::Exportar { sentencia, .. } => {
+                self.registrar_nominal_en_sentencia(sentencia, true);
+            }
+            Sentencia::Bloque(ss) => {
+                for st in ss {
+                    self.registrar_nominal_en_sentencia(st, exportado);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn resolver_campos_nominales(&mut self, sentencias: &[Sentencia], emitir_errores: bool) {
+        // Resolver tipos de campos
+        let mut actualizaciones: Vec<(TipoNominalId, Vec<CampoNominalInfo>)> = Vec::new();
+        let mut actualizaciones_vars: Vec<(TipoNominalId, Vec<VarianteNominalInfo>)> = Vec::new();
+        for s in sentencias {
+            self.recolectar_campos_nominales_sentencia(s, &mut actualizaciones, emitir_errores);
+            self.recolectar_variantes_nominales_sentencia(
+                s,
+                &mut actualizaciones_vars,
+                emitir_errores,
+            );
+        }
+        for (id, campos) in actualizaciones {
+            if let Some(info) = self.tipos_nominales.get_mut(&id) {
+                info.campos = campos;
+            }
+        }
+        for (id, variantes) in actualizaciones_vars {
+            if let Some(info) = self.tipos_nominales.get_mut(&id) {
+                info.variantes = variantes;
+            }
+        }
+        if emitir_errores {
+            self.validar_recursividad_nominal();
+        }
+    }
+
+    fn recolectar_campos_nominales_sentencia(
+        &mut self,
+        s: &Sentencia,
+        actualizaciones: &mut Vec<(TipoNominalId, Vec<CampoNominalInfo>)>,
+        emitir_errores: bool,
+    ) {
+        match s {
+            Sentencia::Estructura {
+                nombre,
+                campos,
+                linea,
+                columna,
+                ..
+            } => {
+                let Some(&id) = self.nominales_por_nombre.get(nombre) else {
+                    return;
+                };
+                let mut vistos = std::collections::HashSet::new();
+                let mut campos_resueltos = Vec::new();
+                for (i, c) in campos.iter().enumerate() {
+                    if !vistos.insert(c.nombre.clone()) {
+                        if emitir_errores {
+                            self.error(
+                                CausaError::CampoStructDuplicado {
+                                    campo: c.nombre.clone(),
+                                    tipo: nombre.clone(),
+                                },
+                                c.linea,
+                                c.columna,
+                            );
+                        }
+                        continue;
+                    }
+                    let tipo = self.resolver_tipo_anotacion_nominal(&c.tipo);
+                    // Validar tipo inexistente/desconocido nominal
+                    if emitir_errores
+                        && matches!(tipo, TipoSem::Desconocido)
+                        && let TipoAnotacion::Nominal(n) = &c.tipo
+                        && !self.nominales_por_nombre.contains_key(n)
+                    {
+                        self.error(
+                            CausaError::TipoNominalDesconocido { nombre: n.clone() },
+                            c.linea,
+                            c.columna,
+                        );
+                    }
+                    campos_resueltos.push(CampoNominalInfo {
+                        nombre: c.nombre.clone(),
+                        tipo,
+                        publico: c.publico,
+                        indice: i,
+                    });
+                }
+                let _ = (linea, columna);
+                actualizaciones.push((id, campos_resueltos));
+            }
+            Sentencia::Exportar { sentencia, .. } => {
+                self.recolectar_campos_nominales_sentencia(
+                    sentencia,
+                    actualizaciones,
+                    emitir_errores,
+                );
+            }
+            Sentencia::Bloque(ss) => {
+                for st in ss {
+                    self.recolectar_campos_nominales_sentencia(st, actualizaciones, emitir_errores);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn recolectar_variantes_nominales_sentencia(
+        &mut self,
+        s: &Sentencia,
+        actualizaciones: &mut Vec<(TipoNominalId, Vec<VarianteNominalInfo>)>,
+        emitir_errores: bool,
+    ) {
+        match s {
+            Sentencia::Enumeracion {
+                nombre, variantes, ..
+            } => {
+                let Some(&id) = self.nominales_por_nombre.get(nombre) else {
+                    return;
+                };
+                let mut vistos = std::collections::HashSet::new();
+                let mut vars_resueltas = Vec::new();
+                for (i, v) in variantes.iter().enumerate() {
+                    if !vistos.insert(v.nombre.clone()) {
+                        if emitir_errores {
+                            self.error(
+                                CausaError::VarianteEnumDuplicada {
+                                    variante: v.nombre.clone(),
+                                    tipo: nombre.clone(),
+                                },
+                                v.linea,
+                                v.columna,
+                            );
+                        }
+                        continue;
+                    }
+                    let mut payload = Vec::new();
+                    for t in &v.payload {
+                        let tipo = self.resolver_tipo_anotacion_nominal(t);
+                        if emitir_errores
+                            && matches!(tipo, TipoSem::Desconocido)
+                            && let TipoAnotacion::Nominal(n) = t
+                            && !self.nominales_por_nombre.contains_key(n)
+                        {
+                            self.error(
+                                CausaError::TipoNominalDesconocido { nombre: n.clone() },
+                                v.linea,
+                                v.columna,
+                            );
+                        }
+                        payload.push(tipo);
+                    }
+                    vars_resueltas.push(VarianteNominalInfo {
+                        nombre: v.nombre.clone(),
+                        payload,
+                        indice: i as u32,
+                    });
+                }
+                actualizaciones.push((id, vars_resueltas));
+            }
+            Sentencia::Exportar { sentencia, .. } => {
+                self.recolectar_variantes_nominales_sentencia(
+                    sentencia,
+                    actualizaciones,
+                    emitir_errores,
+                );
+            }
+            Sentencia::Bloque(ss) => {
+                for st in ss {
+                    self.recolectar_variantes_nominales_sentencia(
+                        st,
+                        actualizaciones,
+                        emitir_errores,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn resolver_tipo_anotacion_nominal(&self, t: &TipoAnotacion) -> TipoSem {
+        match t {
+            TipoAnotacion::Nominal(n) => {
+                if let Some(id) = self.nominales_por_nombre.get(n) {
+                    TipoSem::Nominal(*id)
+                } else {
+                    TipoSem::Desconocido
+                }
+            }
+            TipoAnotacion::Lista(te) => {
+                TipoSem::Lista(Box::new(self.resolver_tipo_anotacion_nominal(te)))
+            }
+            TipoAnotacion::Arreglo(te, n) => {
+                TipoSem::Arreglo(Box::new(self.resolver_tipo_anotacion_nominal(te)), *n)
+            }
+            TipoAnotacion::Parametro(n) => {
+                self.tipo_param_actual(n).unwrap_or(TipoSem::Desconocido)
+            }
+            _ => crate::semantico::tipo_anotacion_a_sem(t),
+        }
+    }
+
+    fn validar_recursividad_nominal(&mut self) {
+        // Detección de ciclos por valor en grafo de layout nominal.
+        let ids: Vec<TipoNominalId> = self.tipos_nominales.keys().copied().collect();
+        for id in ids {
+            let mut stack = Vec::new();
+            let mut visit = std::collections::HashSet::new();
+            if self.nominal_tiene_ciclo_valor(id, &mut stack, &mut visit) {
+                let nombre = self
+                    .tipos_nominales
+                    .get(&id)
+                    .map(|i| i.nombre.clone())
+                    .unwrap_or_else(|| format!("#{}", id.0));
+                let ciclo = stack
+                    .iter()
+                    .map(|x| {
+                        self.tipos_nominales
+                            .get(x)
+                            .map(|i| i.nombre.as_str())
+                            .unwrap_or("?")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" -> ");
+                let (linea, columna) = self
+                    .tipos_nominales
+                    .get(&id)
+                    .map(|i| (i.linea, i.columna))
+                    .unwrap_or((0, 0));
+                self.error(
+                    CausaError::RecursividadNominalPorValor {
+                        tipo: nombre,
+                        ciclo,
+                    },
+                    linea,
+                    columna,
+                );
+            }
+        }
+    }
+
+    fn nominal_tiene_ciclo_valor(
+        &self,
+        id: TipoNominalId,
+        stack: &mut Vec<TipoNominalId>,
+        visit: &mut std::collections::HashSet<TipoNominalId>,
+    ) -> bool {
+        if stack.contains(&id) {
+            stack.push(id);
+            return true;
+        }
+        if visit.contains(&id) {
+            return false;
+        }
+        visit.insert(id);
+        stack.push(id);
+        let Some(info) = self.tipos_nominales.get(&id) else {
+            stack.pop();
+            return false;
+        };
+        for c in &info.campos.clone() {
+            if self.tipo_contiene_nominal_por_valor(&c.tipo, id, stack, visit) {
+                return true;
+            }
+        }
+        for v in &info.variantes.clone() {
+            for pt in &v.payload {
+                if self.tipo_contiene_nominal_por_valor(pt, id, stack, visit) {
+                    return true;
+                }
+            }
+        }
+        stack.pop();
+        false
+    }
+
+    fn tipo_contiene_nominal_por_valor(
+        &self,
+        t: &TipoSem,
+        objetivo: TipoNominalId,
+        stack: &mut Vec<TipoNominalId>,
+        visit: &mut std::collections::HashSet<TipoNominalId>,
+    ) -> bool {
+        match t {
+            TipoSem::Nominal(nid) => {
+                if *nid == objetivo || stack.contains(nid) {
+                    stack.push(*nid);
+                    return true;
+                }
+                self.nominal_tiene_ciclo_valor(*nid, stack, visit)
+            }
+            // Indirección por lista/arreglo rompe ciclo por valor (S8.0 R3).
+            TipoSem::Lista(_) | TipoSem::Arreglo(_, _) | TipoSem::Coleccion(_, _) => false,
+            _ => false,
+        }
+    }
+
+    fn resolver_rasgos_e_impls(&mut self, sentencias: &[Sentencia], emitir_errores: bool) {
+        let actual = self
+            .archivo_actual
+            .as_ref()
+            .map(|p| p.display().to_string());
+        let actual_ref = actual.as_deref();
+        self.impls_inherentes.retain(|tid, _| {
+            self.tipos_nominales
+                .get(tid)
+                .and_then(|i| i.modulo.as_deref())
+                != actual_ref
+        });
+        self.impls_rasgo
+            .retain(|ir| ir.modulo.as_deref() != actual_ref);
+
+        // 1) Resolver firmas de métodos en rasgos.
+        let nombres_rasgos: Vec<String> = self
+            .tipos_nominales
+            .values()
+            .filter(|i| i.clase == ClaseNominal::Rasgo)
+            .map(|i| i.nombre.clone())
+            .collect();
+        for nombre_rasgo in nombres_rasgos {
+            let Some(&id) = self.nominales_por_nombre.get(&nombre_rasgo) else {
+                continue;
+            };
+            // Encontrar la sentencia rasgo en AST
+            if let Some(metodos_ast) = self.buscar_metodos_rasgo_ast(sentencias, &nombre_rasgo) {
+                let mut vistos: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                let mut firmas: Vec<FirmaMetodoRasgoSem> = Vec::new();
+                for m in &metodos_ast {
+                    if !vistos.insert(m.nombre.clone()) {
+                        if emitir_errores {
+                            self.error(
+                                CausaError::FirmaMetodoIncompatibleOColision {
+                                    detalle: format!(
+                                        "método '{}' duplicado en rasgo '{}'",
+                                        m.nombre, nombre_rasgo
+                                    ),
+                                },
+                                m.linea,
+                                m.columna,
+                            );
+                        }
+                        continue;
+                    }
+                    let receptor = match m.receptor {
+                        crate::parser::ReceptorMetodo::Ninguno => ReceptorMetodoSem::Ninguno,
+                        crate::parser::ReceptorMetodo::Yo { mutable } => {
+                            ReceptorMetodoSem::Yo { mutable }
+                        }
+                    };
+                    let mut params = Vec::new();
+                    for (pn, pt) in &m.parametros {
+                        let t = pt
+                            .as_ref()
+                            .map(|a| self.resolver_tipo_anotacion_nominal(a))
+                            .unwrap_or(TipoSem::Desconocido);
+                        if emitir_errores {
+                            self.validar_tipo_nominal_conocido_anotacion(
+                                pt.as_ref(),
+                                m.linea,
+                                m.columna,
+                            );
+                        }
+                        params.push((pn.clone(), t));
+                    }
+                    let retorno = m
+                        .tipo_retorno
+                        .as_ref()
+                        .map(|a| self.resolver_tipo_anotacion_nominal(a))
+                        .unwrap_or(TipoSem::Nulo);
+                    if emitir_errores {
+                        self.validar_tipo_nominal_conocido_anotacion(
+                            m.tipo_retorno.as_ref(),
+                            m.linea,
+                            m.columna,
+                        );
+                    }
+                    firmas.push(FirmaMetodoRasgoSem {
+                        nombre: m.nombre.clone(),
+                        receptor,
+                        parametros: params,
+                        retorno,
+                        publico: true,
+                        linea: m.linea,
+                        columna: m.columna,
+                    });
+                }
+                if let Some(info) = self.tipos_nominales.get_mut(&id) {
+                    info.metodos_rasgo = firmas;
+                }
+            }
+        }
+
+        // 2) Recolectar impls.
+        let mut impls_inh: Vec<(TipoNominalId, MetodoImplSem, usize, usize)> = Vec::new();
+        let mut impls_rasgo: Vec<ImplRasgoSem> = Vec::new();
+        self.recolectar_impls_sentencias(
+            sentencias,
+            &mut impls_inh,
+            &mut impls_rasgo,
+            emitir_errores,
+        );
+
+        // 3) Registrar impls inherentes, validando colisiones.
+        for (tipo_id, metodo, linea, columna) in impls_inh {
+            let entrada = self.impls_inherentes.entry(tipo_id).or_default();
+            if entrada.iter().any(|m| m.nombre == metodo.nombre) {
+                if emitir_errores {
+                    let tipo_nombre = self
+                        .tipos_nominales
+                        .get(&tipo_id)
+                        .map(|i| i.nombre.clone())
+                        .unwrap_or_else(|| "?".to_string());
+                    self.error(
+                        CausaError::FirmaMetodoIncompatibleOColision {
+                            detalle: format!(
+                                "método '{}' duplicado en implementación inherente de '{}'",
+                                metodo.nombre, tipo_nombre
+                            ),
+                        },
+                        linea,
+                        columna,
+                    );
+                }
+                continue;
+            }
+            // colisión campo/método
+            if emitir_errores
+                && let Some(info) = self.tipos_nominales.get(&tipo_id)
+                && info.campos.iter().any(|c| c.nombre == metodo.nombre)
+            {
+                self.error(
+                    CausaError::FirmaMetodoIncompatibleOColision {
+                        detalle: format!(
+                            "colisión entre campo y método '{}' en tipo '{}'",
+                            metodo.nombre, info.nombre
+                        ),
+                    },
+                    linea,
+                    columna,
+                );
+                continue;
+            }
+            entrada.push(metodo);
+        }
+
+        // Colisión inherente/trait: si un método inherente tiene el mismo nombre que
+        // un método de trait implementado para el mismo tipo -> BAS-7118.
+        // Se valida después de registrar impls_rasgo.
+
+        // 4) Validar impls de rasgo.
+        let mut pares_vistos: std::collections::HashSet<(TipoNominalId, TipoNominalId)> =
+            std::collections::HashSet::new();
+        for impl_r in &impls_rasgo {
+            let par = (impl_r.rasgo, impl_r.tipo);
+            if !pares_vistos.insert(par) {
+                if emitir_errores {
+                    let rasgo_nombre = self
+                        .tipos_nominales
+                        .get(&impl_r.rasgo)
+                        .map(|i| i.nombre.clone())
+                        .unwrap_or_else(|| "?".to_string());
+                    let tipo_nombre = self
+                        .tipos_nominales
+                        .get(&impl_r.tipo)
+                        .map(|i| i.nombre.clone())
+                        .unwrap_or_else(|| "?".to_string());
+                    self.error(
+                        CausaError::ImplDuplicadaOCoherencia {
+                            detalle: format!(
+                                "implementación duplicada de '{}' para '{}'",
+                                rasgo_nombre, tipo_nombre
+                            ),
+                        },
+                        impl_r.linea,
+                        impl_r.columna,
+                    );
+                }
+                continue;
+            }
+
+            let rasgo_info = self.tipos_nominales.get(&impl_r.rasgo).cloned();
+            let tipo_info = self.tipos_nominales.get(&impl_r.tipo).cloned();
+            let (Some(rasgo_info), Some(tipo_info)) = (rasgo_info, tipo_info) else {
+                continue;
+            };
+            if rasgo_info.clase != ClaseNominal::Rasgo {
+                if emitir_errores {
+                    self.error(
+                        CausaError::TraitNoEncontrado {
+                            nombre: rasgo_info.nombre.clone(),
+                        },
+                        impl_r.linea,
+                        impl_r.columna,
+                    );
+                }
+                continue;
+            }
+
+            // Coherencia local v1
+            let modulo_impl = impl_r.modulo.as_deref();
+            let modulo_rasgo = rasgo_info.modulo.as_deref();
+            let modulo_tipo = tipo_info.modulo.as_deref();
+            let coherente = modulo_impl == modulo_rasgo || modulo_impl == modulo_tipo;
+            if !coherente {
+                if emitir_errores {
+                    self.error(
+                        CausaError::ImplDuplicadaOCoherencia {
+                            detalle: format!(
+                                "coherencia: impl de '{}' para '{}' debe estar en el módulo del rasgo o del tipo",
+                                rasgo_info.nombre, tipo_info.nombre
+                            ),
+                        },
+                        impl_r.linea,
+                        impl_r.columna,
+                    );
+                }
+                continue;
+            }
+
+            // Completitud y firmas
+            let mut metodos_impl_nombres: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for m in &impl_r.metodos {
+                if !metodos_impl_nombres.insert(m.nombre.clone()) && emitir_errores {
+                    self.error(
+                        CausaError::FirmaMetodoIncompatibleOColision {
+                            detalle: format!(
+                                "método '{}' duplicado en impl de '{}' para '{}'",
+                                m.nombre, rasgo_info.nombre, tipo_info.nombre
+                            ),
+                        },
+                        m.linea,
+                        m.columna,
+                    );
+                }
+                if let Some(req) = rasgo_info
+                    .metodos_rasgo
+                    .iter()
+                    .find(|r| r.nombre == m.nombre)
+                {
+                    if !self.firma_metodo_compatible(req, m, impl_r.tipo) && emitir_errores {
+                        self.error(
+                            CausaError::FirmaMetodoIncompatibleOColision {
+                                detalle: format!(
+                                    "firma incompatible para '{}' en impl de '{}' para '{}'",
+                                    m.nombre, rasgo_info.nombre, tipo_info.nombre
+                                ),
+                            },
+                            m.linea,
+                            m.columna,
+                        );
+                    }
+                } else if emitir_errores {
+                    self.error(
+                        CausaError::FirmaMetodoIncompatibleOColision {
+                            detalle: format!(
+                                "método '{}' no pertenece al rasgo '{}' en impl para '{}'",
+                                m.nombre, rasgo_info.nombre, tipo_info.nombre
+                            ),
+                        },
+                        m.linea,
+                        m.columna,
+                    );
+                }
+            }
+            for req in &rasgo_info.metodos_rasgo {
+                if !metodos_impl_nombres.contains(&req.nombre) && emitir_errores {
+                    self.error(
+                        CausaError::ImplIncompleta {
+                            rasgo: rasgo_info.nombre.clone(),
+                            tipo: tipo_info.nombre.clone(),
+                            detalle: format!("falta método '{}'", req.nombre),
+                        },
+                        impl_r.linea,
+                        impl_r.columna,
+                    );
+                }
+            }
+
+            self.impls_rasgo.push(impl_r.clone());
+        }
+
+        // 5) Colisión inherente/trait
+        if emitir_errores {
+            let impls_rasgo_snapshot = self.impls_rasgo.clone();
+            let impls_inh_snapshot = self.impls_inherentes.clone();
+            for (tipo_id, metodos_inh) in &impls_inh_snapshot {
+                let tipo_nombre = self
+                    .tipos_nominales
+                    .get(tipo_id)
+                    .map(|i| i.nombre.clone())
+                    .unwrap_or_else(|| "?".to_string());
+                for m in metodos_inh {
+                    for ir in &impls_rasgo_snapshot {
+                        if ir.tipo != *tipo_id {
+                            continue;
+                        }
+                        if ir.metodos.iter().any(|tm| tm.nombre == m.nombre) {
+                            let rasgo_nombre = self
+                                .tipos_nominales
+                                .get(&ir.rasgo)
+                                .map(|i| i.nombre.clone())
+                                .unwrap_or_else(|| "?".to_string());
+                            self.error(
+                                CausaError::FirmaMetodoIncompatibleOColision {
+                                    detalle: format!(
+                                        "colisión entre método inherente y de rasgo '{}' en tipo '{}' (rasgo '{}')",
+                                        m.nombre, tipo_nombre, rasgo_nombre
+                                    ),
+                                },
+                                m.linea,
+                                m.columna,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn intentar_resolver_metodo_nominal(
+        &mut self,
+        callee: &Expresion,
+        argumentos: &[Expresion],
+        linea: usize,
+        columna: usize,
+    ) -> Option<TipoSem> {
+        let Expresion::Acceso {
+            objeto, miembro, ..
+        } = callee
+        else {
+            return None;
+        };
+
+        // Caso asociado: Tipo.metodo(...)
+        if let Expresion::Variable { nombre, .. } = objeto.as_ref()
+            && let Some(info) = self.buscar_nominal(nombre).cloned()
+        {
+            // Si es enum, la construcción de variante ya se manejó antes.
+            if info.clase == ClaseNominal::Enumeracion {
+                // Puede ser método asociado en enum - permitido si existe impl.
+            }
+            // Intentar resolución como método asociado (sin receptor) en tipo nominal.
+            if let Some(ret) =
+                self.resolver_metodo_en_tipo(info.id, miembro, false, argumentos, linea, columna)
+            {
+                return Some(ret);
+            }
+            // Si no es método, pero el nombre es un tipo nominal, no caigas al Acceso normal
+            // que daría "campo desconocido" confuso; solo si realmente parece método asociado.
+            // Si hay impls inherentes/rasgo para este tipo, y el método no existe, reportar BAS-7117.
+            let tiene_impls = self.impls_inherentes.contains_key(&info.id)
+                || self.impls_rasgo.iter().any(|ir| ir.tipo == info.id);
+            if tiene_impls {
+                // Podría ser acceso a variante enum mal formado ya manejado; o método inexistente.
+                // Solo reportar si no es variante enum conocida.
+                let es_variante_enum = info.clase == ClaseNominal::Enumeracion
+                    && info.variantes.iter().any(|v| v.nombre == *miembro);
+                if !es_variante_enum {
+                    self.error(
+                        CausaError::MetodoNoEncontrado {
+                            metodo: miembro.clone(),
+                            tipo: info.nombre.clone(),
+                        },
+                        linea,
+                        columna,
+                    );
+                    for a in argumentos {
+                        self.analizar_expresion(a);
+                    }
+                    return Some(TipoSem::Desconocido);
+                }
+            }
+            return None;
+        }
+
+        // Caso instancia: obj.metodo(...)
+        let tipo_obj = self.analizar_expresion(objeto);
+        let TipoSem::Nominal(tipo_id) = tipo_obj else {
+            return None;
+        };
+        // Si el miembro es un campo, no es una llamada a método - dejar que el flujo normal maneje
+        // (Acceso devolverá el tipo del campo y luego LlamadaIndirecta intentará llamarlo si es función).
+        if let Some(info) = self.tipos_nominales.get(&tipo_id)
+            && info.campos.iter().any(|c| c.nombre == *miembro)
+        {
+            return None;
+        }
+        if let Some(ret) =
+            self.resolver_metodo_en_tipo(tipo_id, miembro, true, argumentos, linea, columna)
+        {
+            return Some(ret);
+        }
+        // Si no hay método, pero es nominal, reportar BAS-7117 (es más útil que "campo desconocido").
+        let tipo_nombre = self
+            .tipos_nominales
+            .get(&tipo_id)
+            .map(|i| i.nombre.clone())
+            .unwrap_or_else(|| "?".to_string());
+        self.error(
+            CausaError::MetodoNoEncontrado {
+                metodo: miembro.clone(),
+                tipo: tipo_nombre,
+            },
+            linea,
+            columna,
+        );
+        for a in argumentos {
+            self.analizar_expresion(a);
+        }
+        Some(TipoSem::Desconocido)
+    }
+
+    fn resolver_metodo_en_tipo(
+        &mut self,
+        tipo_id: TipoNominalId,
+        miembro: &str,
+        es_instancia: bool,
+        argumentos: &[Expresion],
+        linea: usize,
+        columna: usize,
+    ) -> Option<TipoSem> {
+        let tipo_info = self.tipos_nominales.get(&tipo_id).cloned()?;
+        let mut candidatos: Vec<(MetodoImplSem, bool)> = Vec::new(); // (metodo, es_inherente)
+
+        // Inherentes
+        if let Some(mets) = self.impls_inherentes.get(&tipo_id).cloned() {
+            for m in mets {
+                if m.nombre != miembro {
+                    continue;
+                }
+                let receptor_ok = match m.receptor {
+                    ReceptorMetodoSem::Ninguno => !es_instancia,
+                    ReceptorMetodoSem::Yo { .. } => es_instancia,
+                };
+                if receptor_ok {
+                    candidatos.push((m, true));
+                }
+            }
+        }
+
+        // Traits
+        let impls_rasgo = self.impls_rasgo.clone();
+        for ir in &impls_rasgo {
+            if ir.tipo != tipo_id {
+                continue;
+            }
+            for m in &ir.metodos {
+                if m.nombre != miembro {
+                    continue;
+                }
+                let receptor_ok = match m.receptor {
+                    ReceptorMetodoSem::Ninguno => !es_instancia,
+                    ReceptorMetodoSem::Yo { .. } => es_instancia,
+                };
+                if receptor_ok {
+                    // verificar visibilidad: rasgo debe ser visible si es llamada de método de rasgo?
+                    candidatos.push((m.clone(), false));
+                }
+            }
+        }
+
+        if candidatos.is_empty() {
+            // S8.4: si existe método en algún rasgo conocido pero el tipo no lo implementa, BAS-7120.
+            let mut rasgos_coincidentes: Vec<String> = Vec::new();
+            for info_r in self.tipos_nominales.values() {
+                if info_r.clase != ClaseNominal::Rasgo {
+                    continue;
+                }
+                if info_r.metodos_rasgo.iter().any(|mr| mr.nombre == miembro) {
+                    let implementado = self
+                        .impls_rasgo
+                        .iter()
+                        .any(|ir| ir.rasgo == info_r.id && ir.tipo == tipo_id);
+                    if !implementado {
+                        rasgos_coincidentes.push(info_r.nombre.clone());
+                    }
+                }
+            }
+            if rasgos_coincidentes.len() == 1 {
+                self.error(
+                    CausaError::TraitNoImplementado {
+                        rasgo: rasgos_coincidentes[0].clone(),
+                        tipo: tipo_info.nombre.clone(),
+                    },
+                    linea,
+                    columna,
+                );
+                for a in argumentos {
+                    self.analizar_expresion(a);
+                }
+                return Some(TipoSem::Desconocido);
+            }
+            return None;
+        }
+
+        // Preferir inherente (spec: inherente antes que trait visible). Colisión inherente/trait ya detectada en validación.
+        let hay_inherente = candidatos.iter().any(|(_, inh)| *inh);
+        let elegidos: Vec<_> = if hay_inherente {
+            candidatos.into_iter().filter(|(_, inh)| *inh).collect()
+        } else {
+            candidatos
+        };
+
+        if elegidos.len() > 1 {
+            self.error(
+                CausaError::FirmaMetodoIncompatibleOColision {
+                    detalle: format!(
+                        "llamada ambigua al método '{}' para el tipo '{}'",
+                        miembro, tipo_info.nombre
+                    ),
+                },
+                linea,
+                columna,
+            );
+            for a in argumentos {
+                self.analizar_expresion(a);
+            }
+            return Some(TipoSem::Desconocido);
+        }
+
+        let (m, _inh) = &elegidos[0];
+        // Visibilidad
+        let mismo_modulo = tipo_info.modulo.as_deref()
+            == self
+                .archivo_actual
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .as_deref()
+                .or(self.archivo.as_deref());
+        if !m.publico && !mismo_modulo {
+            self.error(
+                CausaError::MiembroNoVisible {
+                    miembro: miembro.to_string(),
+                    tipo: tipo_info.nombre.clone(),
+                },
+                linea,
+                columna,
+            );
+        }
+
+        // Verificar args
+        let mut arg_types = Vec::new();
+        for a in argumentos {
+            arg_types.push(self.analizar_expresion(a));
+        }
+        if m.parametros.len() != arg_types.len() {
+            self.error(
+                CausaError::FirmaInvalida {
+                    funcion: format!("{}.{}", tipo_info.nombre, miembro),
+                    esperado: m.parametros.len(),
+                    obtenido: arg_types.len(),
+                },
+                linea,
+                columna,
+            );
+        } else {
+            for (i, ((_, pt), at)) in m.parametros.iter().zip(arg_types.iter()).enumerate() {
+                if !compatible(pt, at)
+                    && !matches!(pt, TipoSem::Desconocido)
+                    && !matches!(at, TipoSem::Desconocido)
+                {
+                    self.error(
+                        CausaError::TipoParametroIncompatible {
+                            funcion: format!("{}.{}", tipo_info.nombre, miembro),
+                            parametro: format!("arg{}", i),
+                            esperado: pt.nombre(),
+                            obtenido: at.nombre(),
+                        },
+                        linea,
+                        columna,
+                    );
+                }
+            }
+        }
+        Some(m.retorno.clone())
+    }
+
+    fn analizar_cuerpos_impls(&mut self, modulo: Option<&str>) {
+        let inherentes: Vec<(TipoNominalId, Vec<MetodoImplSem>)> = self
+            .impls_inherentes
+            .iter()
+            .filter(|(tid, _)| {
+                modulo.is_none_or(|m| {
+                    self.tipos_nominales
+                        .get(*tid)
+                        .and_then(|i| i.modulo.as_deref())
+                        == Some(m)
+                })
+            })
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        for (tipo_id, metodos) in inherentes {
+            for m in metodos {
+                self.analizar_cuerpo_metodo(tipo_id, &m);
+            }
+        }
+        let rasgo_impls: Vec<ImplRasgoSem> = self
+            .impls_rasgo
+            .iter()
+            .filter(|ir| modulo.is_none_or(|m| ir.modulo.as_deref() == Some(m)))
+            .cloned()
+            .collect();
+        for ir in rasgo_impls {
+            for m in &ir.metodos {
+                self.analizar_cuerpo_metodo(ir.tipo, m);
+            }
+        }
+    }
+
+    fn analizar_cuerpo_metodo(&mut self, tipo_id: TipoNominalId, m: &MetodoImplSem) {
+        self.scopes.push(HashMap::new());
+        self.modulos_alias_scopes.push(HashMap::new());
+        let prev_en_funcion = self.en_funcion;
+        let prev_retorno = self.retorno_esperado.clone();
+        let prev_funcion = self.funcion_actual.clone();
+        self.en_funcion = true;
+        self.funcion_actual = Some(m.nombre.clone());
+        self.retorno_esperado = Some(m.retorno.clone());
+        // vincular yo
+        if let ReceptorMetodoSem::Yo { mutable } = m.receptor {
+            self.scopes.last_mut().unwrap().insert(
+                "yo".to_string(),
+                VarInfo {
+                    tipo: TipoSem::Nominal(tipo_id),
+                    mutable,
+                },
+            );
+            let _ = self.tabla.registrar(
+                "yo".to_string(),
+                self.gestor.actual(),
+                CategoriaSimbodo::Variable,
+                mutable,
+            );
+        }
+        for (pn, pt) in &m.parametros {
+            self.scopes.last_mut().unwrap().insert(
+                pn.clone(),
+                VarInfo {
+                    tipo: pt.clone(),
+                    mutable: false,
+                },
+            );
+            let _ = self.tabla.registrar(
+                pn.clone(),
+                self.gestor.actual(),
+                CategoriaSimbodo::Variable,
+                false,
+            );
+        }
+        for s in &m.cuerpo {
+            self.analizar_sentencia(s.clone());
+        }
+        self.modulos_alias_scopes.pop();
+        self.scopes.pop();
+        self.en_funcion = prev_en_funcion;
+        self.retorno_esperado = prev_retorno;
+        self.funcion_actual = prev_funcion;
+    }
+
+    fn buscar_metodos_rasgo_ast(
+        &self,
+        sentencias: &[Sentencia],
+        nombre: &str,
+    ) -> Option<Vec<crate::parser::FirmaMetodo>> {
+        for s in sentencias {
+            match s {
+                Sentencia::Rasgo {
+                    nombre: n, metodos, ..
+                } if n == nombre => return Some(metodos.clone()),
+                Sentencia::Exportar { sentencia, .. } => {
+                    if let Some(m) =
+                        self.buscar_metodos_rasgo_ast(std::slice::from_ref(sentencia), nombre)
+                    {
+                        return Some(m);
+                    }
+                }
+                Sentencia::Bloque(ss) => {
+                    if let Some(m) = self.buscar_metodos_rasgo_ast(ss, nombre) {
+                        return Some(m);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn recolectar_impls_sentencias(
+        &mut self,
+        sentencias: &[Sentencia],
+        impls_inh: &mut Vec<(TipoNominalId, MetodoImplSem, usize, usize)>,
+        impls_rasgo: &mut Vec<ImplRasgoSem>,
+        emitir_errores: bool,
+    ) {
+        for s in sentencias {
+            match s {
+                Sentencia::ImplementacionInherente {
+                    tipo,
+                    metodos,
+                    linea,
+                    columna,
+                    ..
+                } => {
+                    let Some(&tipo_id) = self.nominales_por_nombre.get(tipo) else {
+                        if emitir_errores {
+                            self.error(
+                                CausaError::TipoNominalDesconocido {
+                                    nombre: tipo.clone(),
+                                },
+                                *linea,
+                                *columna,
+                            );
+                        }
+                        continue;
+                    };
+                    if let Some(info) = self.tipos_nominales.get(&tipo_id)
+                        && info.clase == ClaseNominal::Rasgo
+                        && emitir_errores
+                    {
+                        self.error(
+                            CausaError::FirmaMetodoIncompatibleOColision {
+                                detalle: format!(
+                                    "no se puede implementar métodos inherentes para el rasgo '{}'",
+                                    tipo
+                                ),
+                            },
+                            *linea,
+                            *columna,
+                        );
+                        continue;
+                    }
+                    for m in metodos {
+                        if let Some(mi) = self.resolver_metodo_impl(m, tipo_id, emitir_errores) {
+                            impls_inh.push((tipo_id, mi, m.linea, m.columna));
+                        }
+                    }
+                }
+                Sentencia::ImplementacionRasgo {
+                    rasgo,
+                    tipo,
+                    metodos,
+                    linea,
+                    columna,
+                    ..
+                } => {
+                    let Some(&rasgo_id) = self.nominales_por_nombre.get(rasgo) else {
+                        if emitir_errores {
+                            self.error(
+                                CausaError::TraitNoEncontrado {
+                                    nombre: rasgo.clone(),
+                                },
+                                *linea,
+                                *columna,
+                            );
+                        }
+                        continue;
+                    };
+                    if let Some(info) = self.tipos_nominales.get(&rasgo_id)
+                        && info.clase != ClaseNominal::Rasgo
+                        && emitir_errores
+                    {
+                        self.error(
+                            CausaError::TraitNoEncontrado {
+                                nombre: rasgo.clone(),
+                            },
+                            *linea,
+                            *columna,
+                        );
+                    }
+                    let Some(&tipo_id) = self.nominales_por_nombre.get(tipo) else {
+                        if emitir_errores {
+                            self.error(
+                                CausaError::TipoNominalDesconocido {
+                                    nombre: tipo.clone(),
+                                },
+                                *linea,
+                                *columna,
+                            );
+                        }
+                        continue;
+                    };
+                    let mut mets = Vec::new();
+                    for m in metodos {
+                        if let Some(mi) = self.resolver_metodo_impl(m, tipo_id, emitir_errores) {
+                            mets.push(mi);
+                        }
+                    }
+                    impls_rasgo.push(ImplRasgoSem {
+                        rasgo: rasgo_id,
+                        tipo: tipo_id,
+                        metodos: mets,
+                        linea: *linea,
+                        columna: *columna,
+                        modulo: self
+                            .archivo_actual
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .or(self.archivo.clone()),
+                    });
+                }
+                Sentencia::Exportar { sentencia, .. } => {
+                    self.recolectar_impls_sentencias(
+                        std::slice::from_ref(sentencia),
+                        impls_inh,
+                        impls_rasgo,
+                        emitir_errores,
+                    );
+                }
+                Sentencia::Bloque(ss) => {
+                    self.recolectar_impls_sentencias(ss, impls_inh, impls_rasgo, emitir_errores);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn resolver_metodo_impl(
+        &mut self,
+        m: &crate::parser::Metodo,
+        _tipo_id: TipoNominalId,
+        emitir_errores: bool,
+    ) -> Option<MetodoImplSem> {
+        let receptor = match m.receptor {
+            crate::parser::ReceptorMetodo::Ninguno => ReceptorMetodoSem::Ninguno,
+            crate::parser::ReceptorMetodo::Yo { mutable } => ReceptorMetodoSem::Yo { mutable },
+        };
+        let mut params = Vec::new();
+        for (pn, pt) in &m.parametros {
+            let t = pt
+                .as_ref()
+                .map(|a| self.resolver_tipo_anotacion_nominal(a))
+                .unwrap_or(TipoSem::Desconocido);
+            if emitir_errores {
+                self.validar_tipo_nominal_conocido_anotacion(pt.as_ref(), m.linea, m.columna);
+            }
+            params.push((pn.clone(), t));
+        }
+        let retorno = m
+            .tipo_retorno
+            .as_ref()
+            .map(|a| self.resolver_tipo_anotacion_nominal(a))
+            .unwrap_or(TipoSem::Nulo);
+        if emitir_errores {
+            self.validar_tipo_nominal_conocido_anotacion(
+                m.tipo_retorno.as_ref(),
+                m.linea,
+                m.columna,
+            );
+        }
+        Some(MetodoImplSem {
+            nombre: m.nombre.clone(),
+            receptor,
+            parametros: params,
+            retorno,
+            publico: m.publico,
+            cuerpo: m.cuerpo.clone(),
+            linea: m.linea,
+            columna: m.columna,
+        })
+    }
+
+    fn validar_tipo_nominal_conocido_anotacion(
+        &mut self,
+        ann: Option<&TipoAnotacion>,
+        linea: usize,
+        columna: usize,
+    ) {
+        let Some(ann) = ann else {
+            return;
+        };
+        match ann {
+            TipoAnotacion::Nominal(n) => {
+                if !self.nominales_por_nombre.contains_key(n) {
+                    self.error(
+                        CausaError::TipoNominalDesconocido { nombre: n.clone() },
+                        linea,
+                        columna,
+                    );
+                }
+            }
+            TipoAnotacion::Lista(t) | TipoAnotacion::Arreglo(t, _) => {
+                self.validar_tipo_nominal_conocido_anotacion(Some(t), linea, columna)
+            }
+            _ => {}
+        }
+    }
+
+    fn firma_metodo_compatible(
+        &self,
+        req: &FirmaMetodoRasgoSem,
+        imp: &MetodoImplSem,
+        tipo_impl: TipoNominalId,
+    ) -> bool {
+        if req.receptor != imp.receptor {
+            return false;
+        }
+        if req.parametros.len() != imp.parametros.len() {
+            return false;
+        }
+        for (rp, ip) in req.parametros.iter().zip(imp.parametros.iter()) {
+            if !self.tipos_sem_equivalentes(&rp.1, &ip.1, tipo_impl) {
+                return false;
+            }
+        }
+        self.tipos_sem_equivalentes(&req.retorno, &imp.retorno, tipo_impl)
+    }
+
+    fn tipos_sem_equivalentes(&self, a: &TipoSem, b: &TipoSem, _tipo_impl: TipoNominalId) -> bool {
+        match (a, b) {
+            (TipoSem::Desconocido, _) | (_, TipoSem::Desconocido) => true,
+            (TipoSem::Entero, TipoSem::Entero)
+            | (TipoSem::Decimal, TipoSem::Decimal)
+            | (TipoSem::Real, TipoSem::Real)
+            | (TipoSem::Logico, TipoSem::Logico)
+            | (TipoSem::Texto, TipoSem::Texto)
+            | (TipoSem::Nulo, TipoSem::Nulo) => true,
+            (TipoSem::Nominal(x), TipoSem::Nominal(y)) => x == y,
+            (TipoSem::Lista(x), TipoSem::Lista(y)) => self.tipos_sem_equivalentes(x, y, _tipo_impl),
+            (TipoSem::Arreglo(x, n1), TipoSem::Arreglo(y, n2)) => {
+                n1 == n2 && self.tipos_sem_equivalentes(x, y, _tipo_impl)
+            }
+            (TipoSem::Coleccion(x, nx), TipoSem::Coleccion(y, ny)) => {
+                if nx != ny {
+                    return false;
+                }
+                self.tipos_sem_equivalentes(x, y, _tipo_impl)
+            }
+            _ => a == b,
+        }
+    }
+
+    pub(crate) fn impls_inherentes(&self) -> &HashMap<TipoNominalId, Vec<MetodoImplSem>> {
+        &self.impls_inherentes
+    }
+
+    pub(crate) fn impls_rasgo(&self) -> &[ImplRasgoSem] {
+        &self.impls_rasgo
+    }
+
+    pub fn buscar_nominal(&self, nombre: &str) -> Option<&TipoNominalInfo> {
+        let id = self.nominales_por_nombre.get(nombre)?;
+        self.tipos_nominales.get(id)
+    }
+
+    pub fn nominal_por_id(&self, id: TipoNominalId) -> Option<&TipoNominalInfo> {
+        self.tipos_nominales.get(&id)
+    }
+
+    pub fn tipo_var_persistente(&self, nombre: &str) -> Option<&TipoSem> {
+        self.tipos_vars_persistentes.get(nombre)
+    }
+
+    fn importar_nominal(&mut self, info: &TipoNominalInfo) -> TipoNominalId {
+        if let Some(id) = self.nominales_por_nombre.get(&info.nombre).copied() {
+            self.nominales_visibles.insert(id);
+            return id;
+        }
+        // Reutilizar ID global si el nominal ya existe (mismo módulo + nombre).
+        if let Some((id, _)) = self
+            .tipos_nominales
+            .iter()
+            .find(|(_, n)| n.modulo == info.modulo && n.nombre == info.nombre)
+        {
+            let id = *id;
+            self.nominales_por_nombre.insert(info.nombre.clone(), id);
+            self.nominales_visibles.insert(id);
+            return id;
+        }
+        let id = TipoNominalId(self.siguiente_nominal_id);
+        self.siguiente_nominal_id = self.siguiente_nominal_id.saturating_add(1);
+        let mut imported = info.clone();
+        imported.id = id;
+        self.nominales_por_nombre.insert(info.nombre.clone(), id);
+        self.nominales_visibles.insert(id);
+        self.tipos_nominales.insert(id, imported);
+        id
+    }
+
     fn registrar_funciones(&mut self, sentencias: &[Sentencia]) {
         for s in sentencias {
             match s {
@@ -271,6 +1984,8 @@ impl ContextoSemantico {
                     parametros,
                     tipo_retorno,
                     cuerpo,
+                    linea,
+                    columna,
                     ..
                 } => {
                     let decl_id = if let Some(id) = self.tabla.buscar(AmbitoId(0), nombre) {
@@ -289,14 +2004,43 @@ impl ContextoSemantico {
                     if !scope_tp.is_empty() {
                         self.parametros_tipo_scope.push(scope_tp);
                     }
-                    let params = parametros
+                    let params: Vec<(String, Option<TipoSem>)> = parametros
                         .iter()
-                        .map(|(n, t)| (n.clone(), self.resolver_tipo_anotacion_opt(t)))
+                        .map(|(n, t)| {
+                            (
+                                n.clone(),
+                                self.resolver_tipo_anotacion_opt(t, *linea, *columna),
+                            )
+                        })
                         .collect();
                     let retorno_anotado = tipo_retorno.is_some();
-                    let retorno = self.resolver_tipo_anotacion_opt(tipo_retorno);
+                    let retorno = self.resolver_tipo_anotacion_opt(tipo_retorno, *linea, *columna);
                     self.parametros_tipo_scope = prev_scope;
                     let parametros_nombres = parametros.iter().map(|(n, _)| n.clone()).collect();
+                    let tipo_func = TipoSem::Funcion {
+                        params: params
+                            .iter()
+                            .map(|(_, t)| t.clone().unwrap_or(TipoSem::Desconocido))
+                            .collect(),
+                        retorno: Box::new(retorno.clone().unwrap_or(TipoSem::Desconocido)),
+                        genericos: decls_tp.iter().map(|p| p.id.clone()).collect(),
+                    };
+                    if self.registrar_semantica_lsp {
+                        self.registrar_def_simbodo(DefinicionSemantica {
+                            id: decl_id,
+                            nombre: nombre.clone(),
+                            linea: *linea,
+                            columna: *columna,
+                            linea_fin: *linea,
+                            columna_fin: *columna,
+                            tipo: tipo_func,
+                            ambito: AmbitoId(0),
+                            categoria: CategoriaSimbodo::Funcion,
+                            mutable: false,
+                            visibilidad: None,
+                            archivo: None,
+                        });
+                    }
                     self.funciones.insert(
                         nombre.clone(),
                         FuncionSig {
@@ -319,6 +2063,118 @@ impl ContextoSemantico {
 
     fn analizar_sentencia(&mut self, s: Sentencia) {
         match s {
+            Sentencia::Rasgo { .. }
+            | Sentencia::ImplementacionInherente { .. }
+            | Sentencia::ImplementacionRasgo { .. } => {}
+            Sentencia::AsignacionCampo {
+                objeto,
+                campo,
+                valor,
+                linea,
+                columna,
+            } => {
+                // C2: parser solo admite id.campo = expr; validar semánticamente.
+                let Expresion::Variable {
+                    nombre: base_nombre,
+                    ..
+                } = objeto.as_ref()
+                else {
+                    self.error(
+                        CausaError::NoSoportado {
+                            mensaje: "forma de lvalue no soportada en Fase 08 v1: se admite solo `id.campo = expr`".to_string(),
+                        },
+                        linea,
+                        columna,
+                    );
+                    self.analizar_expresion(&objeto);
+                    self.analizar_expresion(&valor);
+                    return;
+                };
+                let Some(info_var) = self.buscar_variable(base_nombre) else {
+                    self.error(
+                        CausaError::VariableNoDefinida(base_nombre.clone()),
+                        linea,
+                        columna,
+                    );
+                    self.analizar_expresion(&valor);
+                    return;
+                };
+                if !info_var.mutable {
+                    self.error(
+                        CausaError::ReasignacionInmutable {
+                            nombre: base_nombre.clone(),
+                        },
+                        linea,
+                        columna,
+                    );
+                }
+                let tipo_base = info_var.tipo.clone();
+                let t_val = self.analizar_expresion(&valor);
+                if let TipoSem::Nominal(id) = tipo_base {
+                    if let Some(info_nom) = self.tipos_nominales.get(&id).cloned() {
+                        if let Some(campo_info) =
+                            info_nom.campos.iter().find(|c| c.nombre == *campo)
+                        {
+                            let mismo_modulo = info_nom.modulo.as_deref()
+                                == self
+                                    .archivo_actual
+                                    .as_ref()
+                                    .map(|p| p.display().to_string())
+                                    .as_deref()
+                                    .or(self.archivo.as_deref());
+                            if !campo_info.publico && !mismo_modulo {
+                                self.error(
+                                    CausaError::MiembroNoVisible {
+                                        miembro: campo.clone(),
+                                        tipo: info_nom.nombre.clone(),
+                                    },
+                                    linea,
+                                    columna,
+                                );
+                            }
+                            if !compatible(&campo_info.tipo, &t_val)
+                                && !matches!(campo_info.tipo, TipoSem::Desconocido)
+                                && !matches!(t_val, TipoSem::Desconocido)
+                            {
+                                self.error(
+                                    CausaError::TipoCampoIncompatible {
+                                        campo: campo_info.nombre.clone(),
+                                        tipo: info_nom.nombre.clone(),
+                                        esperado: campo_info.tipo.nombre(),
+                                        obtenido: t_val.nombre(),
+                                    },
+                                    linea,
+                                    columna,
+                                );
+                            }
+                        } else {
+                            self.error(
+                                CausaError::CampoStructDesconocido {
+                                    campo: campo.clone(),
+                                    tipo: info_nom.nombre.clone(),
+                                },
+                                linea,
+                                columna,
+                            );
+                        }
+                    }
+                } else if !matches!(tipo_base, TipoSem::Desconocido) {
+                    self.error(
+                        CausaError::ConstruccionNominalInvalida {
+                            tipo: tipo_base.nombre(),
+                            detalle: "acceso de campo sobre tipo no nominal".to_string(),
+                        },
+                        linea,
+                        columna,
+                    );
+                }
+            }
+            Sentencia::Estructura { .. } => {
+                // S8.1: pre-registro nominal pendiente de implementación completa.
+            }
+            Sentencia::Enumeracion { .. } => {
+                // S8.2: declaración nominal, ya registrada/resuelta.
+            }
             Sentencia::Declaracion {
                 nombre,
                 linea,
@@ -346,7 +2202,7 @@ impl ContextoSemantico {
                 }
                 let valor_tipo = self.analizar_expresion(&valor);
                 let tipo_final = if let Some(ta) = tipo_anotacion {
-                    let t = self.resolver_tipo_anotacion(&ta);
+                    let t = self.resolver_tipo_anotacion(&ta, linea, columna);
                     if !compatible(&t, &valor_tipo) && !matches!(valor_tipo, TipoSem::Desconocido) {
                         self.error(
                             CausaError::AsignacionIncompatible {
@@ -362,12 +2218,31 @@ impl ContextoSemantico {
                     valor_tipo
                 };
                 if !self.existe_en_ambito_actual(&nombre) {
-                    self.tabla.registrar(
+                    let amb = self.gestor.actual();
+                    let sid = self.tabla.registrar(
                         nombre.clone(),
-                        self.gestor.actual(),
+                        amb,
                         CategoriaSimbodo::Variable,
                         mutable,
                     );
+                    if self.registrar_semantica_lsp {
+                        self.registrar_def_simbodo(DefinicionSemantica {
+                            id: sid,
+                            nombre: nombre.clone(),
+                            linea,
+                            columna,
+                            linea_fin: linea,
+                            columna_fin: columna,
+                            tipo: tipo_final.clone(),
+                            ambito: amb,
+                            categoria: CategoriaSimbodo::Variable,
+                            mutable,
+                            visibilidad: None,
+                            archivo: None,
+                        });
+                    }
+                    self.tipos_vars_persistentes
+                        .insert(nombre.clone(), tipo_final.clone());
                     self.scopes.last_mut().unwrap().insert(
                         nombre,
                         VarInfo {
@@ -394,6 +2269,11 @@ impl ContextoSemantico {
                         self.analizar_expresion(&valor);
                     }
                     Some(info) => {
+                        if self.registrar_semantica_lsp
+                            && let Some(sid) = self.resolver_simbodo(&nombre)
+                        {
+                            self.registrar_ref_simbodo(sid, &nombre, linea, columna);
+                        }
                         if !info.mutable {
                             self.error(
                                 CausaError::ReasignacionInmutable {
@@ -539,7 +2419,33 @@ impl ContextoSemantico {
                 }
                 let tipo_elemento = tipo_elemento_iterable(&tipo_iterable);
                 self.scopes.push(HashMap::new());
+                self.modulos_alias_scopes.push(HashMap::new());
                 self.gestor.entrar();
+                let amb_pc = self.gestor.actual();
+                let sid_pc = self.tabla.registrar(
+                    variable.clone(),
+                    amb_pc,
+                    CategoriaSimbodo::Variable,
+                    true,
+                );
+                if self.registrar_semantica_lsp {
+                    self.registrar_def_simbodo(DefinicionSemantica {
+                        id: sid_pc,
+                        nombre: variable.clone(),
+                        linea,
+                        columna,
+                        linea_fin: linea,
+                        columna_fin: columna,
+                        tipo: tipo_elemento.clone(),
+                        ambito: amb_pc,
+                        categoria: CategoriaSimbodo::Variable,
+                        mutable: true,
+                        visibilidad: None,
+                        archivo: None,
+                    });
+                }
+                self.tipos_vars_persistentes
+                    .insert(variable.clone(), tipo_elemento.clone());
                 self.scopes.last_mut().unwrap().insert(
                     variable,
                     VarInfo {
@@ -550,6 +2456,7 @@ impl ContextoSemantico {
                 for st in &cuerpo {
                     self.analizar_sentencia(st.clone());
                 }
+                self.modulos_alias_scopes.pop();
                 self.scopes.pop();
                 self.gestor.salir();
             }
@@ -578,12 +2485,11 @@ impl ContextoSemantico {
                         columna,
                     );
                 }
-                let decl_id = self.tabla.registrar(
-                    nombre.clone(),
-                    self.gestor.actual(),
-                    CategoriaSimbodo::Funcion,
-                    false,
-                );
+                let amb_decl = self.gestor.actual();
+                let decl_id = self.tabla.buscar(amb_decl, &nombre).unwrap_or_else(|| {
+                    self.tabla
+                        .registrar(nombre.clone(), amb_decl, CategoriaSimbodo::Funcion, false)
+                });
                 let es_anidada = self.en_funcion;
                 // G2.2: cada declaración tiene su propio conjunto de parámetros de tipo
                 // (sin herencia implícita de funciones exteriores).
@@ -598,12 +2504,17 @@ impl ContextoSemantico {
                 // actual, tal como hace el evaluador al ejecutar la declaración.
                 let params: Vec<(String, Option<TipoSem>)> = parametros
                     .iter()
-                    .map(|(n, t)| (n.clone(), self.resolver_tipo_anotacion_opt(t)))
+                    .map(|(n, t)| {
+                        (
+                            n.clone(),
+                            self.resolver_tipo_anotacion_opt(t, linea, columna),
+                        )
+                    })
                     .collect();
                 // C.1: el retorno conocido en la firma proviene únicamente de la
                 // anotación explícita. No se infiere desde el cuerpo (C.2).
                 let retorno_anotado_flag = tipo_retorno.is_some();
-                let retorno_firma = self.resolver_tipo_anotacion_opt(&tipo_retorno);
+                let retorno_firma = self.resolver_tipo_anotacion_opt(&tipo_retorno, linea, columna);
                 let parametros_nombres = parametros.iter().map(|(n, _)| n.clone()).collect();
                 let firma = FuncionSig {
                     parametros: params.clone(),
@@ -615,23 +2526,39 @@ impl ContextoSemantico {
                 };
                 let firma_previa = self.funciones.get(&nombre).cloned();
                 self.funciones.insert(nombre.clone(), firma.clone());
+                let tipo_func = TipoSem::Funcion {
+                    params: params
+                        .iter()
+                        .map(|(_, t)| t.clone().unwrap_or(TipoSem::Desconocido))
+                        .collect(),
+                    retorno: Box::new(retorno_firma.clone().unwrap_or(TipoSem::Desconocido)),
+                    genericos: firma.parametros_tipo.iter().map(|p| p.id.clone()).collect(),
+                };
+                if self.registrar_semantica_lsp {
+                    self.registrar_def_simbodo(DefinicionSemantica {
+                        id: decl_id,
+                        nombre: nombre.clone(),
+                        linea,
+                        columna,
+                        linea_fin: linea,
+                        columna_fin: columna,
+                        tipo: tipo_func.clone(),
+                        ambito: amb_decl,
+                        categoria: CategoriaSimbodo::Funcion,
+                        mutable: false,
+                        visibilidad: None,
+                        archivo: None,
+                    });
+                }
                 self.scopes.last_mut().unwrap().insert(
                     nombre.clone(),
                     VarInfo {
-                        tipo: TipoSem::Funcion {
-                            params: params
-                                .iter()
-                                .map(|(_, t)| t.clone().unwrap_or(TipoSem::Desconocido))
-                                .collect(),
-                            retorno: Box::new(
-                                retorno_firma.clone().unwrap_or(TipoSem::Desconocido),
-                            ),
-                            genericos: firma.parametros_tipo.iter().map(|p| p.id.clone()).collect(),
-                        },
+                        tipo: tipo_func,
                         mutable: false,
                     },
                 );
                 self.scopes.push(HashMap::new());
+                self.modulos_alias_scopes.push(HashMap::new());
                 self.gestor.entrar();
                 let mut vistos: std::collections::HashSet<&str> = std::collections::HashSet::new();
                 for (pname, pta) in &parametros {
@@ -644,14 +2571,33 @@ impl ContextoSemantico {
                         continue;
                     }
                     let tipo = self
-                        .resolver_tipo_anotacion_opt(pta)
+                        .resolver_tipo_anotacion_opt(pta, linea, columna)
                         .unwrap_or(TipoSem::Desconocido);
-                    self.tabla.registrar(
+                    let amb_p = self.gestor.actual();
+                    let sid_p = self.tabla.registrar(
                         pname.clone(),
-                        self.gestor.actual(),
+                        amb_p,
                         CategoriaSimbodo::Parametro,
                         true,
                     );
+                    if self.registrar_semantica_lsp {
+                        self.registrar_def_simbodo(DefinicionSemantica {
+                            id: sid_p,
+                            nombre: pname.clone(),
+                            linea,
+                            columna,
+                            linea_fin: linea,
+                            columna_fin: columna,
+                            tipo: tipo.clone(),
+                            ambito: amb_p,
+                            categoria: CategoriaSimbodo::Parametro,
+                            mutable: true,
+                            visibilidad: None,
+                            archivo: None,
+                        });
+                    }
+                    self.tipos_vars_persistentes
+                        .insert(pname.clone(), tipo.clone());
                     self.scopes.last_mut().unwrap().insert(
                         pname.clone(),
                         VarInfo {
@@ -698,6 +2644,7 @@ impl ContextoSemantico {
                 self.c2_retorno_tipos = prev_c2_tipos;
                 self.c2_evidencia_insuficiente = prev_c2_insuf;
                 self.c2_activo = prev_c2_activo;
+                self.modulos_alias_scopes.pop();
                 self.scopes.pop();
                 self.gestor.salir();
                 self.parametros_tipo_scope = prev_tp_scope;
@@ -832,6 +2779,7 @@ impl ContextoSemantico {
             } => {
                 self.analizar_bloque(&cuerpo_intentar);
                 self.scopes.push(HashMap::new());
+                self.modulos_alias_scopes.push(HashMap::new());
                 self.gestor.entrar();
                 if let Some(v) = variable_error {
                     self.scopes.last_mut().unwrap().insert(
@@ -845,6 +2793,7 @@ impl ContextoSemantico {
                 for st in &cuerpo_rescatar {
                     self.analizar_sentencia(st.clone());
                 }
+                self.modulos_alias_scopes.pop();
                 self.scopes.pop();
                 self.gestor.salir();
             }
@@ -897,6 +2846,10 @@ impl ContextoSemantico {
                                 mutable: false,
                             },
                         );
+                        self.modulos_alias_scopes
+                            .last_mut()
+                            .unwrap()
+                            .insert(alias.clone(), canonical.clone());
                     }
                 }
 
@@ -917,7 +2870,7 @@ impl ContextoSemantico {
                         }
                         match modulo.exports.get(&nombre) {
                             Some(ExportadoSem::Variable(t)) => {
-                                self.tabla.registrar(
+                                let sid_import = self.tabla.registrar(
                                     nombre.clone(),
                                     self.gestor.actual(),
                                     CategoriaSimbodo::Variable,
@@ -930,15 +2883,54 @@ impl ContextoSemantico {
                                         mutable: false,
                                     },
                                 );
+                                if self.registrar_semantica_lsp {
+                                    let canon_str = canonical.to_string_lossy().to_string();
+                                    let origen = self
+                                        .def_simbodo
+                                        .values()
+                                        .find(|d| {
+                                            d.nombre == nombre
+                                                && d.categoria == CategoriaSimbodo::Variable
+                                                && d.archivo.as_deref() == Some(canon_str.as_str())
+                                        })
+                                        .cloned();
+                                    if let Some(mut def) = origen {
+                                        def.id = sid_import;
+                                        def.ambito = self.gestor.actual();
+                                        def.visibilidad = Some("importado".to_string());
+                                        self.registrar_def_simbodo(def);
+                                    }
+                                }
                             }
                             Some(ExportadoSem::Funcion(sig)) => {
-                                self.tabla.registrar(
+                                let sid_import = self.tabla.registrar(
                                     nombre.clone(),
                                     self.gestor.actual(),
                                     CategoriaSimbodo::Funcion,
                                     false,
                                 );
                                 self.funciones.insert(nombre.clone(), sig.clone());
+                                if self.registrar_semantica_lsp {
+                                    let canon_str = canonical.to_string_lossy().to_string();
+                                    let origen = self
+                                        .def_simbodo
+                                        .values()
+                                        .find(|d| {
+                                            d.nombre == nombre
+                                                && d.categoria == CategoriaSimbodo::Funcion
+                                                && d.archivo.as_deref() == Some(canon_str.as_str())
+                                        })
+                                        .cloned();
+                                    if let Some(mut def) = origen {
+                                        def.id = sid_import;
+                                        def.ambito = self.gestor.actual();
+                                        def.visibilidad = Some("importado".to_string());
+                                        self.registrar_def_simbodo(def);
+                                    }
+                                }
+                            }
+                            Some(ExportadoSem::TipoNominal(info_nom)) => {
+                                self.importar_nominal(info_nom);
                             }
                             None => {
                                 if modulo.nombres.contains(&nombre) {
@@ -1044,28 +3036,73 @@ impl ContextoSemantico {
                     }
                     match exportado {
                         ExportadoSem::Variable(t) => {
-                            self.tabla.registrar(
+                            let sid_import = self.tabla.registrar(
                                 destino.clone(),
                                 self.gestor.actual(),
                                 CategoriaSimbodo::Variable,
                                 false,
                             );
                             self.scopes.last_mut().unwrap().insert(
-                                destino,
+                                destino.clone(),
                                 VarInfo {
                                     tipo: t.clone(),
                                     mutable: false,
                                 },
                             );
+                            if self.registrar_semantica_lsp {
+                                let canon_str = canonical.to_string_lossy().to_string();
+                                let origen = self
+                                    .def_simbodo
+                                    .values()
+                                    .find(|d| {
+                                        d.nombre == *nombre
+                                            && d.categoria == CategoriaSimbodo::Variable
+                                            && d.archivo.as_deref() == Some(canon_str.as_str())
+                                    })
+                                    .cloned();
+                                if let Some(mut def) = origen {
+                                    def.id = sid_import;
+                                    def.nombre = destino;
+                                    def.ambito = self.gestor.actual();
+                                    def.visibilidad = Some("importado".to_string());
+                                    self.registrar_def_simbodo(def);
+                                }
+                            }
                         }
                         ExportadoSem::Funcion(sig) => {
-                            self.tabla.registrar(
+                            let sid_import = self.tabla.registrar(
                                 destino.clone(),
                                 self.gestor.actual(),
                                 CategoriaSimbodo::Funcion,
                                 false,
                             );
-                            self.funciones.insert(destino, sig.clone());
+                            self.funciones.insert(destino.clone(), sig.clone());
+                            if self.registrar_semantica_lsp {
+                                let canon_str = canonical.to_string_lossy().to_string();
+                                let origen = self
+                                    .def_simbodo
+                                    .values()
+                                    .find(|d| {
+                                        d.nombre == *nombre
+                                            && d.categoria == CategoriaSimbodo::Funcion
+                                            && d.archivo.as_deref() == Some(canon_str.as_str())
+                                    })
+                                    .cloned();
+                                if let Some(mut def) = origen {
+                                    def.id = sid_import;
+                                    def.nombre = destino;
+                                    def.ambito = self.gestor.actual();
+                                    def.visibilidad = Some("importado".to_string());
+                                    self.registrar_def_simbodo(def);
+                                }
+                            }
+                        }
+                        ExportadoSem::TipoNominal(info_nom) => {
+                            let mut imported = info_nom.clone();
+                            if let Some(alias) = &alias {
+                                imported.nombre = format!("{}_{}", alias, info_nom.nombre);
+                            }
+                            self.importar_nominal(&imported);
                         }
                     }
                 }
@@ -1075,16 +3112,821 @@ impl ContextoSemantico {
 
     fn analizar_bloque(&mut self, stmts: &[Sentencia]) {
         self.scopes.push(HashMap::new());
+        self.modulos_alias_scopes.push(HashMap::new());
         self.gestor.entrar();
         for s in stmts {
             self.analizar_sentencia(s.clone());
         }
+        self.modulos_alias_scopes.pop();
         self.scopes.pop();
         self.gestor.salir();
     }
 
+    fn analizar_expresion_coincidir(
+        &mut self,
+        scrutinee: &Expresion,
+        brazos: &[crate::parser::BrazoCoincidir],
+        linea: usize,
+        columna: usize,
+    ) -> TipoSem {
+        let ts = self.analizar_expresion(scrutinee);
+        if brazos.is_empty() {
+            self.error(
+                CausaError::MatchNoExhaustivo {
+                    detalle: "coincidir sin brazos".to_string(),
+                },
+                linea,
+                columna,
+            );
+            return TipoSem::Desconocido;
+        }
+        let mut tipos_rama: Vec<TipoSem> = Vec::new();
+        let mut alcanzable = vec![true; brazos.len()];
+        let cubierto_por_prev: Vec<Vec<crate::parser::Patron>> = Vec::new();
+        for (i, b) in brazos.iter().enumerate() {
+            // bindings
+            let mut vistos = std::collections::HashSet::new();
+            self.validar_patron_bindings(&b.patron, &mut vistos, b.linea, b.columna);
+            // tipo del patrón
+            self.validar_patron_tipo(&b.patron, &ts, b.linea, b.columna);
+            // unreachable: si patrones previos cubren completamente, este es inalcanzable
+            if self.patron_cubierto_por_anteriores(&b.patron, &brazos[..i], &ts) {
+                alcanzable[i] = false;
+                self.error(
+                    CausaError::PatronInalcanzable {
+                        detalle: "brazo inalcanzable por cobertura previa".to_string(),
+                    },
+                    b.linea,
+                    b.columna,
+                );
+            }
+            // analizar cuerpo con bindings
+            self.scopes.push(std::collections::HashMap::new());
+            self.modulos_alias_scopes.push(HashMap::new());
+            self.gestor.entrar();
+            self.declarar_bindings_patron(&b.patron, &ts);
+            let mut t_rama = TipoSem::Desconocido;
+            for st in &b.cuerpo {
+                self.analizar_sentencia(st.clone());
+                if let Sentencia::Expresion(e) = st {
+                    t_rama = self.analizar_expresion(e);
+                } else if let Sentencia::Retorno { valor, .. } = st {
+                    if let Some(v) = valor {
+                        t_rama = self.analizar_expresion(v);
+                    } else {
+                        t_rama = TipoSem::Nulo;
+                    }
+                }
+            }
+            self.gestor.salir();
+            self.modulos_alias_scopes.pop();
+            self.scopes.pop();
+            tipos_rama.push(t_rama);
+            let _ = cubierto_por_prev;
+        }
+        // exhaustividad
+        if !self.cobertura_exhaustiva(brazos, &ts) {
+            self.error(
+                CausaError::MatchNoExhaustivo {
+                    detalle: format!("patrones no cubren todos los casos para {}", ts.nombre()),
+                },
+                linea,
+                columna,
+            );
+        }
+        // tipo común
+        let mut comun = TipoSem::Desconocido;
+        for t in &tipos_rama {
+            if matches!(t, TipoSem::Desconocido) {
+                continue;
+            }
+            if matches!(comun, TipoSem::Desconocido) {
+                comun = t.clone();
+                continue;
+            }
+            if !compatible(&comun, t) && !compatible(t, &comun) {
+                // incompatible - reportar pero seguir
+                self.error(
+                    CausaError::PatronIncompatible {
+                        detalle: format!(
+                            "brazos de coincidir con tipos incompatibles: {} vs {}",
+                            comun.nombre(),
+                            t.nombre()
+                        ),
+                    },
+                    linea,
+                    columna,
+                );
+            }
+        }
+        comun
+    }
+
+    fn validar_patron_bindings(
+        &mut self,
+        pat: &crate::parser::Patron,
+        vistos: &mut std::collections::HashSet<String>,
+        linea: usize,
+        columna: usize,
+    ) {
+        use crate::parser::Patron;
+        match pat {
+            Patron::Binding { nombre, .. } => {
+                if nombre != "_" && !vistos.insert(nombre.clone()) {
+                    self.error(
+                        CausaError::BindingPatronInvalido {
+                            detalle: format!("binding '{nombre}' duplicado en el patrón"),
+                        },
+                        linea,
+                        columna,
+                    );
+                }
+            }
+            Patron::Variante { campos, .. } => {
+                for p in campos {
+                    self.validar_patron_bindings(p, vistos, linea, columna);
+                }
+            }
+            Patron::Estructura { campos, .. } => {
+                for (_, p) in campos {
+                    self.validar_patron_bindings(p, vistos, linea, columna);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn validar_patron_tipo(
+        &mut self,
+        pat: &crate::parser::Patron,
+        ts: &TipoSem,
+        linea: usize,
+        columna: usize,
+    ) {
+        use crate::parser::Patron;
+        match pat {
+            Patron::Wildcard { .. } | Patron::Binding { .. } => {}
+            Patron::Literal { valor, .. } => {
+                let tl = valor_a_sem(valor);
+                if !compatible(ts, &tl)
+                    && !matches!(ts, TipoSem::Desconocido)
+                    && !compatible(&tl, ts)
+                {
+                    self.error(
+                        CausaError::PatronIncompatible {
+                            detalle: format!(
+                                "literal {} incompatible con scrutinee {}",
+                                tl.nombre(),
+                                ts.nombre()
+                            ),
+                        },
+                        linea,
+                        columna,
+                    );
+                }
+            }
+            Patron::Variante {
+                tipo,
+                variante,
+                campos,
+                ..
+            } => {
+                let Some(info) = self.buscar_nominal(tipo).cloned() else {
+                    self.error(
+                        CausaError::TipoNominalDesconocido {
+                            nombre: tipo.clone(),
+                        },
+                        linea,
+                        columna,
+                    );
+                    return;
+                };
+                if info.clase != ClaseNominal::Enumeracion {
+                    self.error(
+                        CausaError::PatronIncompatible {
+                            detalle: format!("'{tipo}' no es una enumeración"),
+                        },
+                        linea,
+                        columna,
+                    );
+                    return;
+                }
+                if let TipoSem::Nominal(id) = ts {
+                    if *id != info.id {
+                        self.error(
+                            CausaError::PatronIncompatible {
+                                detalle: format!(
+                                    "patrón de enum '{}' incompatible con scrutinee {}",
+                                    tipo,
+                                    ts.nombre()
+                                ),
+                            },
+                            linea,
+                            columna,
+                        );
+                    }
+                } else if !matches!(ts, TipoSem::Desconocido) {
+                    self.error(
+                        CausaError::PatronIncompatible {
+                            detalle: format!(
+                                "patrón de enum '{}' incompatible con scrutinee {}",
+                                tipo,
+                                ts.nombre()
+                            ),
+                        },
+                        linea,
+                        columna,
+                    );
+                }
+                let Some(vinfo) = info
+                    .variantes
+                    .iter()
+                    .find(|v| &v.nombre == variante)
+                    .cloned()
+                else {
+                    self.error(
+                        CausaError::VarianteEnumDesconocida {
+                            variante: variante.clone(),
+                            tipo: tipo.clone(),
+                        },
+                        linea,
+                        columna,
+                    );
+                    return;
+                };
+                if vinfo.payload.len() != campos.len() {
+                    self.error(CausaError::PatronIncompatible { detalle: format!("aridad de patrón para '{tipo}.{variante}' incorrecta: esperada {}, obtenida {}", vinfo.payload.len(), campos.len()) }, linea, columna);
+                }
+                for (p, pt) in campos.iter().zip(vinfo.payload.iter()) {
+                    self.validar_patron_tipo(p, pt, linea, columna);
+                }
+            }
+            Patron::Estructura { tipo, campos, .. } => {
+                let Some(info) = self.buscar_nominal(tipo).cloned() else {
+                    self.error(
+                        CausaError::TipoNominalDesconocido {
+                            nombre: tipo.clone(),
+                        },
+                        linea,
+                        columna,
+                    );
+                    return;
+                };
+                if info.clase != ClaseNominal::Estructura {
+                    self.error(
+                        CausaError::PatronIncompatible {
+                            detalle: format!("'{tipo}' no es una estructura"),
+                        },
+                        linea,
+                        columna,
+                    );
+                    return;
+                }
+                if let TipoSem::Nominal(id) = ts {
+                    if *id != info.id {
+                        self.error(
+                            CausaError::PatronIncompatible {
+                                detalle: format!(
+                                    "patrón de struct '{}' incompatible con scrutinee {}",
+                                    tipo,
+                                    ts.nombre()
+                                ),
+                            },
+                            linea,
+                            columna,
+                        );
+                    }
+                } else if !matches!(ts, TipoSem::Desconocido) {
+                    self.error(
+                        CausaError::PatronIncompatible {
+                            detalle: format!(
+                                "patrón de struct '{}' incompatible con scrutinee {}",
+                                tipo,
+                                ts.nombre()
+                            ),
+                        },
+                        linea,
+                        columna,
+                    );
+                }
+                // v1: todos los campos requeridos, sin ..
+                for c in &info.campos {
+                    if !campos.iter().any(|(n, _)| n == &c.nombre) {
+                        self.error(
+                            CausaError::PatronIncompatible {
+                                detalle: format!(
+                                    "falta campo '{}' en patrón struct '{}'",
+                                    c.nombre, tipo
+                                ),
+                            },
+                            linea,
+                            columna,
+                        );
+                    }
+                }
+                for (nombre, p) in campos {
+                    let Some(cinfo) = info.campos.iter().find(|c| &c.nombre == nombre) else {
+                        self.error(
+                            CausaError::CampoStructDesconocido {
+                                campo: nombre.clone(),
+                                tipo: tipo.clone(),
+                            },
+                            linea,
+                            columna,
+                        );
+                        continue;
+                    };
+                    self.validar_patron_tipo(p, &cinfo.tipo, linea, columna);
+                }
+            }
+        }
+    }
+
+    fn declarar_bindings_patron(&mut self, pat: &crate::parser::Patron, ts: &TipoSem) {
+        use crate::parser::Patron;
+        match pat {
+            Patron::Binding { nombre, .. } => {
+                if nombre != "_" {
+                    let info = VarInfo {
+                        tipo: ts.clone(),
+                        mutable: false,
+                    };
+                    self.scopes.last_mut().unwrap().insert(nombre.clone(), info);
+                }
+            }
+            Patron::Variante {
+                tipo,
+                variante,
+                campos,
+                ..
+            } => {
+                if let Some(info) = self.buscar_nominal(tipo).cloned()
+                    && let Some(vinfo) = info.variantes.iter().find(|v| &v.nombre == variante)
+                {
+                    for (p, pt) in campos.iter().zip(vinfo.payload.iter()) {
+                        self.declarar_bindings_patron(p, pt);
+                    }
+                }
+            }
+            Patron::Estructura { tipo, campos, .. } => {
+                if let Some(info) = self.buscar_nominal(tipo).cloned() {
+                    for (nombre, p) in campos {
+                        if let Some(cinfo) = info.campos.iter().find(|c| &c.nombre == nombre) {
+                            self.declarar_bindings_patron(p, &cinfo.tipo);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn patron_es_irrefutable(&self, pat: &crate::parser::Patron, _ts: &TipoSem) -> bool {
+        use crate::parser::Patron;
+        match pat {
+            Patron::Wildcard { .. } | Patron::Binding { .. } => true,
+            Patron::Literal { .. } => false,
+            Patron::Variante {
+                tipo,
+                variante,
+                campos,
+                ..
+            } => {
+                let Some(info) = self.buscar_nominal(tipo) else {
+                    return false;
+                };
+                if info.clase != ClaseNominal::Enumeracion {
+                    return false;
+                }
+                if info.variantes.len() != 1 {
+                    return false;
+                }
+                info.variantes
+                    .first()
+                    .map(|v| &v.nombre == variante)
+                    .unwrap_or(false)
+                    && campos
+                        .iter()
+                        .zip(info.variantes[0].payload.iter())
+                        .all(|(p, pt)| self.patron_es_irrefutable(p, pt))
+            }
+            Patron::Estructura { tipo, campos, .. } => {
+                let Some(info) = self.buscar_nominal(tipo) else {
+                    return false;
+                };
+                if info.clase != ClaseNominal::Estructura {
+                    return false;
+                }
+                info.campos.iter().all(|c| {
+                    campos
+                        .iter()
+                        .find(|(n, _)| n == &c.nombre)
+                        .map(|(_, p)| self.patron_es_irrefutable(p, &c.tipo))
+                        .unwrap_or(false)
+                })
+            }
+        }
+    }
+
+    fn cobertura_exhaustiva(&self, brazos: &[crate::parser::BrazoCoincidir], ts: &TipoSem) -> bool {
+        use crate::parser::Patron;
+        if brazos
+            .iter()
+            .any(|b| self.patron_es_irrefutable(&b.patron, ts))
+        {
+            return true;
+        }
+        match ts {
+            TipoSem::Logico => {
+                let mut tiene_true = false;
+                let mut tiene_false = false;
+                for b in brazos {
+                    if let Patron::Literal {
+                        valor: Valor::Logico(v),
+                        ..
+                    } = &b.patron
+                    {
+                        if *v {
+                            tiene_true = true;
+                        } else {
+                            tiene_false = true;
+                        }
+                    }
+                }
+                tiene_true && tiene_false
+            }
+            TipoSem::Nominal(id) => {
+                let Some(info) = self.tipos_nominales.get(id) else {
+                    return false;
+                };
+                if info.clase == ClaseNominal::Enumeracion {
+                    info.variantes
+                        .iter()
+                        .all(|v| self.variante_cubierta(brazos, info, v.indice))
+                } else if info.clase == ClaseNominal::Estructura {
+                    brazos
+                        .iter()
+                        .any(|b| self.patron_cubre_struct(&b.patron, info))
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn variante_cubierta(
+        &self,
+        brazos: &[crate::parser::BrazoCoincidir],
+        info: &TipoNominalInfo,
+        vidx: u32,
+    ) -> bool {
+        use crate::parser::Patron;
+        let Some(vinfo) = info.variantes.iter().find(|v| v.indice == vidx) else {
+            return false;
+        };
+        // any irrefutable arm covers
+        for b in brazos {
+            match &b.patron {
+                Patron::Wildcard { .. } | Patron::Binding { .. } => return true,
+                Patron::Variante {
+                    tipo,
+                    variante,
+                    campos,
+                    ..
+                } if tipo == &info.nombre
+                    && variante == &vinfo.nombre
+                    && campos
+                        .iter()
+                        .zip(vinfo.payload.iter())
+                        .all(|(p, pt)| self.patron_es_irrefutable(p, pt)) =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        // for single-payload, check if union covers payload type
+        if vinfo.payload.len() == 1 {
+            let pt = &vinfo.payload[0];
+            let mut sub_brazos: Vec<crate::parser::BrazoCoincidir> = Vec::new();
+            for b in brazos {
+                if let Patron::Variante {
+                    tipo,
+                    variante,
+                    campos,
+                    ..
+                } = &b.patron
+                    && tipo == &info.nombre
+                    && variante == &vinfo.nombre
+                    && campos.len() == 1
+                {
+                    sub_brazos.push(crate::parser::BrazoCoincidir {
+                        patron: campos[0].clone(),
+                        cuerpo: vec![],
+                        linea: b.linea,
+                        columna: b.columna,
+                    });
+                }
+            }
+            if !sub_brazos.is_empty() && self.cobertura_exhaustiva(&sub_brazos, pt) {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[allow(dead_code)]
+    fn patron_cubre_variante(
+        &self,
+        pat: &crate::parser::Patron,
+        info: &TipoNominalInfo,
+        vidx: u32,
+    ) -> bool {
+        use crate::parser::Patron;
+        match pat {
+            Patron::Wildcard { .. } | Patron::Binding { .. } => true,
+            Patron::Variante {
+                tipo,
+                variante,
+                campos,
+                ..
+            } => {
+                if &info.nombre != tipo {
+                    return false;
+                }
+                let Some(vinfo) = info.variantes.iter().find(|v| &v.nombre == variante) else {
+                    return false;
+                };
+                if vinfo.indice != vidx {
+                    return false;
+                }
+                campos
+                    .iter()
+                    .zip(vinfo.payload.iter())
+                    .all(|(p, pt)| self.patron_es_irrefutable(p, pt))
+            }
+            _ => false,
+        }
+    }
+
+    fn patron_cubre_struct(&self, pat: &crate::parser::Patron, info: &TipoNominalInfo) -> bool {
+        use crate::parser::Patron;
+        match pat {
+            Patron::Wildcard { .. } | Patron::Binding { .. } => true,
+            Patron::Estructura { tipo, campos, .. } => {
+                if &info.nombre != tipo {
+                    return false;
+                }
+                info.campos.iter().all(|c| {
+                    campos
+                        .iter()
+                        .find(|(n, _)| n == &c.nombre)
+                        .map(|(_, p)| self.patron_es_irrefutable(p, &c.tipo))
+                        .unwrap_or(false)
+                })
+            }
+            _ => false,
+        }
+    }
+
+    fn patron_cubierto_por_anteriores(
+        &self,
+        pat: &crate::parser::Patron,
+        previos: &[crate::parser::BrazoCoincidir],
+        ts: &TipoSem,
+    ) -> bool {
+        // v1 simple: inalcanzable si algún previo es irrefutable
+        if previos
+            .iter()
+            .any(|b| self.patron_es_irrefutable(&b.patron, ts))
+        {
+            return true;
+        }
+        // también si mismo patrón literal exacto repetido, o variante exacta con irrefutable subpatrones ya cubierta
+        use crate::parser::Patron;
+        match pat {
+            Patron::Literal { valor, .. } => previos
+                .iter()
+                .any(|b| matches!(&b.patron, Patron::Literal { valor: v2, .. } if v2 == valor)),
+            _ => false,
+        }
+    }
     fn analizar_expresion(&mut self, e: &Expresion) -> TipoSem {
         match e {
+            Expresion::ConstruccionEstructura {
+                nombre,
+                campos,
+                linea,
+                columna,
+            } => {
+                let Some(&id) = self.nominales_por_nombre.get(nombre) else {
+                    self.error(
+                        CausaError::TipoNominalDesconocido {
+                            nombre: nombre.clone(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    for (_, v) in campos {
+                        self.analizar_expresion(v);
+                    }
+                    return TipoSem::Desconocido;
+                };
+                let Some(info) = self.tipos_nominales.get(&id).cloned() else {
+                    return TipoSem::Desconocido;
+                };
+                if info.clase != ClaseNominal::Estructura {
+                    self.error(
+                        CausaError::ConstruccionNominalInvalida {
+                            tipo: nombre.clone(),
+                            detalle: "el tipo no es una estructura".to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    return TipoSem::Desconocido;
+                }
+                // Mapear campos proporcionados
+                let mut provistos: HashMap<String, &Expresion> = HashMap::new();
+                for (cn, cv) in campos {
+                    if provistos.insert(cn.clone(), cv).is_some() {
+                        self.error(
+                            CausaError::CampoStructDuplicado {
+                                campo: cn.clone(),
+                                tipo: nombre.clone(),
+                            },
+                            *linea,
+                            *columna,
+                        );
+                    }
+                }
+                // Validar faltantes y extras
+                for c in &info.campos {
+                    if !provistos.contains_key(&c.nombre) {
+                        self.error(
+                            CausaError::CampoStructFaltante {
+                                campo: c.nombre.clone(),
+                                tipo: nombre.clone(),
+                            },
+                            *linea,
+                            *columna,
+                        );
+                    }
+                }
+                for cn in provistos.keys() {
+                    if !info.campos.iter().any(|c| &c.nombre == cn) {
+                        self.error(
+                            CausaError::CampoStructSobrante {
+                                campo: cn.clone(),
+                                tipo: nombre.clone(),
+                            },
+                            *linea,
+                            *columna,
+                        );
+                    }
+                }
+                // Evaluar en orden de declaración (R3)
+                let mismo_modulo = info.modulo.as_deref()
+                    == self
+                        .archivo_actual
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .as_deref()
+                        .or(self.archivo.as_deref());
+                for c in &info.campos {
+                    if let Some(expr) = provistos.get(&c.nombre) {
+                        if !c.publico && !mismo_modulo {
+                            self.error(
+                                CausaError::MiembroNoVisible {
+                                    miembro: c.nombre.clone(),
+                                    tipo: nombre.clone(),
+                                },
+                                *linea,
+                                *columna,
+                            );
+                        }
+                        let t_val = self.analizar_expresion(expr);
+                        if !compatible(&c.tipo, &t_val)
+                            && !matches!(c.tipo, TipoSem::Desconocido)
+                            && !matches!(t_val, TipoSem::Desconocido)
+                        {
+                            self.error(
+                                CausaError::TipoCampoIncompatible {
+                                    campo: c.nombre.clone(),
+                                    tipo: nombre.clone(),
+                                    esperado: c.tipo.nombre(),
+                                    obtenido: t_val.nombre(),
+                                },
+                                *linea,
+                                *columna,
+                            );
+                        }
+                    }
+                }
+                TipoSem::Nominal(id)
+            }
+            Expresion::Coincidir {
+                scrutinee,
+                brazos,
+                linea,
+                columna,
+            } => self.analizar_expresion_coincidir(scrutinee, brazos, *linea, *columna),
+            Expresion::ConstruccionVariante {
+                tipo,
+                variante,
+                argumentos,
+                linea,
+                columna,
+            } => {
+                let Some(info) = self.buscar_nominal(tipo).cloned() else {
+                    self.error(
+                        CausaError::TipoNominalDesconocido {
+                            nombre: tipo.clone(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    for a in argumentos {
+                        self.analizar_expresion(a);
+                    }
+                    return TipoSem::Desconocido;
+                };
+                if info.clase != ClaseNominal::Enumeracion {
+                    self.error(
+                        CausaError::ConstruccionVarianteInvalida {
+                            tipo: tipo.clone(),
+                            detalle: "el tipo no es una enumeración".to_string(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    for a in argumentos {
+                        self.analizar_expresion(a);
+                    }
+                    return TipoSem::Desconocido;
+                }
+                let Some(vinfo) = info
+                    .variantes
+                    .iter()
+                    .find(|v| &v.nombre == variante)
+                    .cloned()
+                else {
+                    self.error(
+                        CausaError::VarianteEnumDesconocida {
+                            variante: variante.clone(),
+                            tipo: tipo.clone(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    for a in argumentos {
+                        self.analizar_expresion(a);
+                    }
+                    return TipoSem::Desconocido;
+                };
+                let mut arg_types = Vec::new();
+                for a in argumentos {
+                    arg_types.push(self.analizar_expresion(a));
+                }
+                if vinfo.payload.len() != arg_types.len() {
+                    self.error(
+                        CausaError::PayloadVarianteIncompatible {
+                            variante: variante.clone(),
+                            tipo: tipo.clone(),
+                            detalle: format!(
+                                "se esperaban {} argumento(s), se recibieron {}",
+                                vinfo.payload.len(),
+                                arg_types.len()
+                            ),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                } else {
+                    for (i, (pt, at)) in vinfo.payload.iter().zip(arg_types.iter()).enumerate() {
+                        if !compatible(pt, at)
+                            && !matches!(pt, TipoSem::Desconocido)
+                            && !matches!(at, TipoSem::Desconocido)
+                        {
+                            self.error(
+                                CausaError::PayloadVarianteIncompatible {
+                                    variante: variante.clone(),
+                                    tipo: tipo.clone(),
+                                    detalle: format!(
+                                        "campo payload {i}: esperado {}, recibido {}",
+                                        pt.nombre(),
+                                        at.nombre()
+                                    ),
+                                },
+                                *linea,
+                                *columna,
+                            );
+                        }
+                    }
+                }
+                TipoSem::Nominal(info.id)
+            }
             Expresion::Literal { valor, .. } => valor_a_sem(valor),
             Expresion::Variable {
                 nombre,
@@ -1093,8 +3935,18 @@ impl ContextoSemantico {
                 ..
             } => {
                 if let Some(info) = self.buscar_variable(nombre) {
+                    if self.registrar_semantica_lsp
+                        && let Some(sid) = self.resolver_simbodo(nombre)
+                    {
+                        self.registrar_ref_simbodo(sid, nombre, *linea, *columna);
+                    }
                     info.tipo
                 } else if let Some(sig) = self.funciones.get(nombre).cloned() {
+                    if self.registrar_semantica_lsp
+                        && let Some(sid) = self.resolver_simbodo(nombre)
+                    {
+                        self.registrar_ref_simbodo(sid, nombre, *linea, *columna);
+                    }
                     let params: Vec<TipoSem> = sig
                         .parametros
                         .iter()
@@ -1196,6 +4048,13 @@ impl ContextoSemantico {
                         1,
                         1,
                     );
+                } else if matches!(ta, TipoSem::Nominal(_)) || matches!(tb, TipoSem::Nominal(_)) {
+                    let tn = if matches!(ta, TipoSem::Nominal(_)) {
+                        ta.nombre()
+                    } else {
+                        tb.nombre()
+                    };
+                    self.error(CausaError::IgualdadNominalNoSoportada { tipo: tn }, 1, 1);
                 } else if !matches!(ta, TipoSem::Desconocido)
                     && !matches!(tb, TipoSem::Desconocido)
                     && !comparables(&ta, &tb)
@@ -1379,6 +4238,12 @@ impl ContextoSemantico {
                         *linea,
                         *columna,
                     );
+                }
+                if self.registrar_semantica_lsp
+                    && (var_info.is_some() || sig_map.is_some())
+                    && let Some(sid) = self.resolver_simbodo(nombre)
+                {
+                    self.registrar_ref_simbodo(sid, nombre, *linea, *columna);
                 }
 
                 // Analizar argumentos ordinarios primero (necesarios para inferencia).
@@ -1736,16 +4601,152 @@ impl ContextoSemantico {
                 }
                 tipo_elemento_coleccion(&to)
             }
-            Expresion::Acceso { objeto, .. } => {
+            Expresion::Acceso {
+                objeto,
+                miembro,
+                linea,
+                columna,
+            } => {
+                // S8.2: construcción de variante `Tipo.Variante` (unitaria).
+                if let Expresion::Variable { nombre, .. } = objeto.as_ref()
+                    && let Some(info) = self.buscar_nominal(nombre).cloned()
+                    && info.clase == ClaseNominal::Enumeracion
+                {
+                    if let Some(v) = info.variantes.iter().find(|v| v.nombre == *miembro) {
+                        if !v.payload.is_empty() {
+                            self.error(
+                                CausaError::ConstruccionVarianteInvalida {
+                                    tipo: info.nombre.clone(),
+                                    detalle: format!(
+                                        "la variante '{}' requiere {} argumento(s) de payload",
+                                        v.nombre,
+                                        v.payload.len()
+                                    ),
+                                },
+                                *linea,
+                                *columna,
+                            );
+                            return TipoSem::Desconocido;
+                        }
+                        return TipoSem::Nominal(info.id);
+                    }
+                    self.error(
+                        CausaError::VarianteEnumDesconocida {
+                            variante: miembro.clone(),
+                            tipo: info.nombre.clone(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    return TipoSem::Desconocido;
+                }
+                // FE-02: acceso a miembro mediante alias de módulo.
+                if let Expresion::Variable { nombre, .. } = objeto.as_ref()
+                    && let Some(canonical) = self.resolver_alias_modulo(nombre)
+                {
+                    // Preservar side tables LSP / validación de la variable alias.
+                    self.analizar_expresion(objeto);
+                    if let Some(modulo) = self.modulos.get(&canonical).cloned() {
+                        match modulo.exports.get(miembro.as_str()) {
+                            Some(ExportadoSem::Variable(t)) => return t.clone(),
+                            Some(ExportadoSem::Funcion(sig)) => {
+                                return TipoSem::Funcion {
+                                    params: sig
+                                        .parametros
+                                        .iter()
+                                        .map(|(_, t)| t.clone().unwrap_or(TipoSem::Desconocido))
+                                        .collect(),
+                                    retorno: Box::new(
+                                        sig.retorno.clone().unwrap_or(TipoSem::Desconocido),
+                                    ),
+                                    genericos: sig
+                                        .parametros_tipo
+                                        .iter()
+                                        .map(|p| p.id.clone())
+                                        .collect(),
+                                };
+                            }
+                            Some(ExportadoSem::TipoNominal(_)) => return TipoSem::Desconocido,
+                            None => {
+                                if modulo.nombres.contains(miembro.as_str()) {
+                                    self.error(
+                                        CausaError::SimbodoPrivado {
+                                            nombre: miembro.clone(),
+                                            modulo: canonical.display().to_string(),
+                                        },
+                                        *linea,
+                                        *columna,
+                                    );
+                                } else {
+                                    self.error(
+                                        CausaError::SimbodoNoExportado {
+                                            nombre: miembro.clone(),
+                                            modulo: canonical.display().to_string(),
+                                        },
+                                        *linea,
+                                        *columna,
+                                    );
+                                }
+                                return TipoSem::Desconocido;
+                            }
+                        }
+                    } else {
+                        self.error(
+                            CausaError::ModuloNoEncontrado {
+                                ruta: canonical.display().to_string(),
+                            },
+                            *linea,
+                            *columna,
+                        );
+                        return TipoSem::Desconocido;
+                    }
+                }
                 let to = self.analizar_expresion(objeto);
                 if es_param_opaco(&to) {
                     self.error(
                         CausaError::OperacionProhibidaPorOpacidad {
                             detalle: "acceso a miembros sobre parámetro de tipo opaco".to_string(),
                         },
-                        1,
-                        1,
+                        *linea,
+                        *columna,
                     );
+                    return TipoSem::Desconocido;
+                }
+                if let TipoSem::Nominal(id) = to
+                    && let Some(info) = self.tipos_nominales.get(&id).cloned()
+                {
+                    if let Some(campo) = info.campos.iter().find(|c| c.nombre == *miembro) {
+                        if !campo.publico {
+                            // S8.1: visibilidad simplificada mismo-módulo; externo requiere publico.
+                            let mismo_modulo = info.modulo.as_deref()
+                                == self
+                                    .archivo_actual
+                                    .as_ref()
+                                    .map(|p| p.display().to_string())
+                                    .as_deref()
+                                    .or(self.archivo.as_deref());
+                            if !mismo_modulo {
+                                self.error(
+                                    CausaError::MiembroNoVisible {
+                                        miembro: miembro.clone(),
+                                        tipo: info.nombre.clone(),
+                                    },
+                                    *linea,
+                                    *columna,
+                                );
+                            }
+                        }
+                        return campo.tipo.clone();
+                    }
+                    self.error(
+                        CausaError::CampoStructDesconocido {
+                            campo: miembro.clone(),
+                            tipo: info.nombre.clone(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    return TipoSem::Desconocido;
                 }
                 TipoSem::Desconocido
             }
@@ -1755,6 +4756,76 @@ impl ContextoSemantico {
                 linea,
                 columna,
             } => {
+                // S8.2: construcción de variante `Tipo.Variante(args...)`
+                if let Expresion::Acceso {
+                    objeto, miembro, ..
+                } = callee.as_ref()
+                    && let Expresion::Variable { nombre, .. } = objeto.as_ref()
+                    && let Some(info) = self.buscar_nominal(nombre).cloned()
+                    && info.clase == ClaseNominal::Enumeracion
+                {
+                    if let Some(v) = info.variantes.iter().find(|v| v.nombre == *miembro) {
+                        let mut arg_types = Vec::new();
+                        for a in argumentos {
+                            arg_types.push(self.analizar_expresion(a));
+                        }
+                        if v.payload.len() != arg_types.len() {
+                            self.error(
+                                CausaError::PayloadVarianteIncompatible {
+                                    variante: v.nombre.clone(),
+                                    tipo: info.nombre.clone(),
+                                    detalle: format!(
+                                        "se esperaban {} argumento(s), se recibieron {}",
+                                        v.payload.len(),
+                                        arg_types.len()
+                                    ),
+                                },
+                                *linea,
+                                *columna,
+                            );
+                        } else {
+                            for (i, (pt, at)) in v.payload.iter().zip(arg_types.iter()).enumerate()
+                            {
+                                if !compatible(pt, at)
+                                    && !matches!(pt, TipoSem::Desconocido)
+                                    && !matches!(at, TipoSem::Desconocido)
+                                {
+                                    self.error(
+                                        CausaError::PayloadVarianteIncompatible {
+                                            variante: v.nombre.clone(),
+                                            tipo: info.nombre.clone(),
+                                            detalle: format!(
+                                                "campo payload {i}: esperado {}, recibido {}",
+                                                pt.nombre(),
+                                                at.nombre()
+                                            ),
+                                        },
+                                        *linea,
+                                        *columna,
+                                    );
+                                }
+                            }
+                        }
+                        return TipoSem::Nominal(info.id);
+                    }
+                    self.error(
+                        CausaError::VarianteEnumDesconocida {
+                            variante: miembro.clone(),
+                            tipo: info.nombre.clone(),
+                        },
+                        *linea,
+                        *columna,
+                    );
+                    for a in argumentos {
+                        self.analizar_expresion(a);
+                    }
+                    return TipoSem::Desconocido;
+                }
+                if let Some(ret) =
+                    self.intentar_resolver_metodo_nominal(callee, argumentos, *linea, *columna)
+                {
+                    return ret;
+                }
                 let callee_type = self.analizar_expresion(callee);
                 let mut arg_types = Vec::new();
                 for a in argumentos {
@@ -1822,6 +4893,8 @@ impl ContextoSemantico {
                 parametros,
                 tipo_retorno,
                 cuerpo,
+                linea,
+                columna,
                 ..
             } => {
                 // El cuerpo de una lambda es contexto de función: `retornar`
@@ -1831,16 +4904,22 @@ impl ContextoSemantico {
                 let prev_inf = self.retorno_inferido.clone();
                 let prev_en = self.en_funcion;
                 self.funcion_actual = Some("<lambda>".to_string());
-                self.retorno_esperado = self.resolver_tipo_anotacion_opt(tipo_retorno);
+                self.retorno_esperado =
+                    self.resolver_tipo_anotacion_opt(tipo_retorno, *linea, *columna);
                 self.retorno_inferido = None;
                 self.en_funcion = true;
                 self.scopes.push(HashMap::new());
+                self.modulos_alias_scopes.push(HashMap::new());
                 self.gestor.entrar();
                 for (pname, pta) in parametros {
                     let tipo = pta
                         .as_ref()
-                        .map(|ta| self.resolver_tipo_anotacion(ta))
+                        .map(|ta| self.resolver_tipo_anotacion(ta, *linea, *columna))
                         .unwrap_or(TipoSem::Desconocido);
+                    self.tipos_vars_persistentes
+                        .insert(pname.clone(), tipo.clone());
+                    self.tipos_vars_persistentes
+                        .insert(pname.clone(), tipo.clone());
                     self.scopes.last_mut().unwrap().insert(
                         pname.clone(),
                         VarInfo {
@@ -1852,6 +4931,7 @@ impl ContextoSemantico {
                 for st in cuerpo {
                     self.analizar_sentencia(st.clone());
                 }
+                self.modulos_alias_scopes.pop();
                 self.scopes.pop();
                 self.gestor.salir();
                 self.funcion_actual = prev_func;
@@ -1862,13 +4942,13 @@ impl ContextoSemantico {
                     .iter()
                     .map(|(_, t)| {
                         t.as_ref()
-                            .map(|ta| self.resolver_tipo_anotacion(ta))
+                            .map(|ta| self.resolver_tipo_anotacion(ta, *linea, *columna))
                             .unwrap_or(TipoSem::Desconocido)
                     })
                     .collect();
                 let retorno = tipo_retorno
                     .as_ref()
-                    .map(|ta| self.resolver_tipo_anotacion(ta))
+                    .map(|ta| self.resolver_tipo_anotacion(ta, *linea, *columna))
                     .unwrap_or(TipoSem::Desconocido);
                 TipoSem::Funcion {
                     params,
@@ -1888,7 +4968,7 @@ impl ContextoSemantico {
                 // carece de tipo conocido no hay evidencia suficiente; si los tipos
                 // son heterogéneos sin tipo común demostrable se mantiene Desconocido.
                 if tipos.iter().any(|t| matches!(t, TipoSem::Desconocido)) {
-                    return TipoSem::Coleccion(Box::new(TipoSem::Desconocido));
+                    return TipoSem::Coleccion(Box::new(TipoSem::Desconocido), elementos.len());
                 }
                 let mut comun = tipos[0].clone();
                 for t in &tipos[1..] {
@@ -1899,7 +4979,7 @@ impl ContextoSemantico {
                     }
                     comun = siguiente;
                 }
-                TipoSem::Coleccion(Box::new(comun))
+                TipoSem::Coleccion(Box::new(comun), elementos.len())
             }
             Expresion::Rango { inicio, fin, .. } => {
                 self.analizar_expresion(inicio);
@@ -2023,11 +5103,20 @@ impl ContextoSemantico {
             let permitida = match s {
                 Sentencia::Declaracion { .. }
                 | Sentencia::Funcion { .. }
+                | Sentencia::Estructura { .. }
+                | Sentencia::Enumeracion { .. }
+                | Sentencia::Rasgo { .. }
+                | Sentencia::ImplementacionInherente { .. }
+                | Sentencia::ImplementacionRasgo { .. }
                 | Sentencia::Usar { .. }
                 | Sentencia::Importar { .. } => true,
                 Sentencia::Exportar { sentencia, .. } => matches!(
                     sentencia.as_ref(),
-                    Sentencia::Declaracion { .. } | Sentencia::Funcion { .. }
+                    Sentencia::Declaracion { .. }
+                        | Sentencia::Funcion { .. }
+                        | Sentencia::Estructura { .. }
+                        | Sentencia::Enumeracion { .. }
+                        | Sentencia::Rasgo { .. }
                 ),
                 _ => false,
             };
@@ -2075,14 +5164,27 @@ impl ContextoSemantico {
         let prev_archivo = self.archivo_actual.clone();
         let prev_funciones = self.funciones.clone();
         let prev_scopes = self.scopes.clone();
+        let prev_modulos_alias_scopes = self.modulos_alias_scopes.clone();
+        let prev_nominales_por_nombre = self.nominales_por_nombre.clone();
+        let prev_nominales_visibles = self.nominales_visibles.clone();
         self.archivo_actual = Some(path.to_path_buf());
         self.funciones = HashMap::new();
         self.scopes = vec![HashMap::new()];
+        self.modulos_alias_scopes = vec![HashMap::new()];
+        self.nominales_por_nombre = HashMap::new();
+        self.nominales_visibles = std::collections::HashSet::new();
 
+        self.registrar_nominales(ast);
+        self.resolver_campos_nominales(ast, false);
+        self.resolver_rasgos_e_impls(ast, false);
         self.registrar_funciones(ast);
         for s in ast {
             self.analizar_sentencia(s.clone());
         }
+        self.resolver_campos_nominales(ast, true);
+        self.resolver_rasgos_e_impls(ast, true);
+        let mod_path = path.display().to_string();
+        self.analizar_cuerpos_impls(Some(&mod_path));
 
         let mut exports = HashMap::new();
         let mut nombres = HashSet::new();
@@ -2098,6 +5200,9 @@ impl ContextoSemantico {
                 inner,
                 Sentencia::Declaracion { publico: true, .. }
                     | Sentencia::Funcion { publico: true, .. }
+                    | Sentencia::Estructura { publico: true, .. }
+                    | Sentencia::Enumeracion { publico: true, .. }
+                    | Sentencia::Rasgo { publico: true, .. }
             );
             let es_exportado = es_export_wrapper || es_publico;
             match inner {
@@ -2121,6 +5226,18 @@ impl ContextoSemantico {
                         }
                     }
                 }
+                Sentencia::Estructura { nombre, .. }
+                | Sentencia::Enumeracion { nombre, .. }
+                | Sentencia::Rasgo { nombre, .. } => {
+                    nombres.insert(nombre.clone());
+                    if let Some(info) = self.buscar_nominal(nombre).cloned() {
+                        let sym = ExportadoSem::TipoNominal(info);
+                        todos.insert(nombre.clone(), sym.clone());
+                        if es_exportado {
+                            exports.insert(nombre.clone(), sym);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -2133,6 +5250,9 @@ impl ContextoSemantico {
         self.archivo_actual = prev_archivo;
         self.funciones = prev_funciones;
         self.scopes = prev_scopes;
+        self.modulos_alias_scopes = prev_modulos_alias_scopes;
+        self.nominales_por_nombre = prev_nominales_por_nombre;
+        self.nominales_visibles = prev_nominales_visibles;
         ModuloInfo {
             exports,
             nombres,
@@ -2173,6 +5293,21 @@ impl ContextoSemantico {
         self.scopes.last().is_some_and(|s| s.contains_key(nombre))
     }
 
+    /// Resuelve un alias de módulo en el ámbito léxico actual. Respeta sombreado.
+    fn resolver_alias_modulo(&self, nombre: &str) -> Option<PathBuf> {
+        for (scope, aliases) in self
+            .scopes
+            .iter()
+            .zip(self.modulos_alias_scopes.iter())
+            .rev()
+        {
+            if scope.contains_key(nombre) {
+                return aliases.get(nombre).cloned();
+            }
+        }
+        None
+    }
+
     // ===== G2.2/G3: parámetros de tipo genéricos =====
 
     fn tipo_param_actual(&self, nombre: &str) -> Option<TipoSem> {
@@ -2181,26 +5316,54 @@ impl ContextoSemantico {
             .and_then(|m| m.get(nombre).cloned())
     }
 
-    fn resolver_tipo_anotacion(&self, t: &TipoAnotacion) -> TipoSem {
+    fn resolver_tipo_anotacion(
+        &mut self,
+        t: &TipoAnotacion,
+        linea: usize,
+        columna: usize,
+    ) -> TipoSem {
         match t {
             TipoAnotacion::Entero => TipoSem::Entero,
             TipoAnotacion::Decimal => TipoSem::Decimal,
             TipoAnotacion::Real => TipoSem::Real,
             TipoAnotacion::Logico => TipoSem::Logico,
             TipoAnotacion::Texto => TipoSem::Texto,
-            TipoAnotacion::Arreglo(te, n) => {
-                TipoSem::Arreglo(Box::new(self.resolver_tipo_anotacion(te)), *n)
+            TipoAnotacion::Arreglo(te, n) => TipoSem::Arreglo(
+                Box::new(self.resolver_tipo_anotacion(te, linea, columna)),
+                *n,
+            ),
+            TipoAnotacion::Lista(te) => {
+                TipoSem::Lista(Box::new(self.resolver_tipo_anotacion(te, linea, columna)))
             }
-            TipoAnotacion::Lista(te) => TipoSem::Lista(Box::new(self.resolver_tipo_anotacion(te))),
             TipoAnotacion::Nulo => TipoSem::Nulo,
             TipoAnotacion::Parametro(nombre) => self
                 .tipo_param_actual(nombre)
                 .unwrap_or(TipoSem::Desconocido),
+            TipoAnotacion::Nominal(nombre) => {
+                if let Some(id) = self.nominales_por_nombre.get(nombre).copied() {
+                    TipoSem::Nominal(id)
+                } else {
+                    self.error(
+                        CausaError::TipoNominalDesconocido {
+                            nombre: nombre.clone(),
+                        },
+                        linea,
+                        columna,
+                    );
+                    TipoSem::Desconocido
+                }
+            }
         }
     }
 
-    fn resolver_tipo_anotacion_opt(&self, t: &Option<TipoAnotacion>) -> Option<TipoSem> {
-        t.as_ref().map(|ta| self.resolver_tipo_anotacion(ta))
+    fn resolver_tipo_anotacion_opt(
+        &mut self,
+        t: &Option<TipoAnotacion>,
+        linea: usize,
+        columna: usize,
+    ) -> Option<TipoSem> {
+        t.as_ref()
+            .map(|ta| self.resolver_tipo_anotacion(ta, linea, columna))
     }
 
     fn construir_params_tipo_decl(
@@ -2271,6 +5434,7 @@ impl ContextoSemantico {
             TipoAnotacion::Logico => "logico".to_string(),
             TipoAnotacion::Texto => "texto".to_string(),
             TipoAnotacion::Nulo => "nulo".to_string(),
+            TipoAnotacion::Nominal(n) => n.clone(),
         }
     }
 }
@@ -2361,7 +5525,7 @@ impl ContextoSemantico {
                 ok = false;
                 continue;
             }
-            let t = self.resolver_tipo_anotacion(ta);
+            let t = self.resolver_tipo_anotacion(ta, linea, columna);
             if matches!(t, TipoSem::Desconocido) {
                 // Argumento no resoluble/concreto en este contexto.
                 let arg_nombre = Self::nombre_tipo_anotacion_arg(ta);
@@ -2521,6 +5685,7 @@ impl ContextoSemantico {
 
         // Ámbito de parámetros ordinarios.
         self.scopes.push(HashMap::new());
+        self.modulos_alias_scopes.push(HashMap::new());
         self.gestor.entrar();
         for (i, pname) in sig.parametros_nombres.iter().enumerate() {
             let tipo = params_sust
@@ -2533,6 +5698,8 @@ impl ContextoSemantico {
                 CategoriaSimbodo::Parametro,
                 true,
             );
+            self.tipos_vars_persistentes
+                .insert(pname.clone(), tipo.clone());
             self.scopes.last_mut().unwrap().insert(
                 pname.clone(),
                 VarInfo {
@@ -2546,6 +5713,7 @@ impl ContextoSemantico {
             self.analizar_sentencia(st.clone());
         }
         self.gestor.salir();
+        self.modulos_alias_scopes.pop();
         self.scopes.pop();
 
         self.g3_v3_depth = prev_v3;
@@ -2606,7 +5774,7 @@ pub fn es_tipo_concreto_resoluble(t: &TipoSem) -> bool {
     match t {
         TipoSem::Desconocido => false,
         TipoSem::Param(_) => true, // identidad resuelta (puede ser de plantilla actual en forwarding)
-        TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te) => {
+        TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te, _) => {
             es_tipo_concreto_resoluble(te)
         }
         TipoSem::Funcion {
@@ -2621,7 +5789,7 @@ pub fn es_tipo_concreto_resoluble(t: &TipoSem) -> bool {
 pub fn contiene_param_de(t: &TipoSem, ids: &std::collections::HashSet<TipoParamId>) -> bool {
     match t {
         TipoSem::Param(id) => ids.contains(id),
-        TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te) => {
+        TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te, _) => {
             contiene_param_de(te, ids)
         }
         TipoSem::Funcion {
@@ -2635,7 +5803,7 @@ pub fn contiene_param_de(t: &TipoSem, ids: &std::collections::HashSet<TipoParamI
 pub fn contiene_param_generico(t: &TipoSem) -> bool {
     match t {
         TipoSem::Param(_) => true,
-        TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te) => {
+        TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te, _) => {
             contiene_param_generico(te)
         }
         TipoSem::Funcion {
@@ -2659,7 +5827,7 @@ pub fn sustituir_tipo(tipo: &TipoSem, sigma: &HashMap<TipoParamId, TipoSem>) -> 
             .unwrap_or_else(|| TipoSem::Param(id.clone())),
         TipoSem::Arreglo(te, n) => TipoSem::Arreglo(Box::new(sustituir_tipo(te, sigma)), *n),
         TipoSem::Lista(te) => TipoSem::Lista(Box::new(sustituir_tipo(te, sigma))),
-        TipoSem::Coleccion(te) => TipoSem::Coleccion(Box::new(sustituir_tipo(te, sigma))),
+        TipoSem::Coleccion(te, n) => TipoSem::Coleccion(Box::new(sustituir_tipo(te, sigma)), *n),
         TipoSem::Funcion {
             params,
             retorno,
@@ -2717,7 +5885,7 @@ pub fn unificar(
             }
         }
         TipoSem::Lista(tf) => match observado {
-            TipoSem::Lista(to) | TipoSem::Arreglo(to, _) | TipoSem::Coleccion(to) => {
+            TipoSem::Lista(to) | TipoSem::Arreglo(to, _) | TipoSem::Coleccion(to, _) => {
                 // Inferencia estructural autorizada para lista<T> (contenedor conocido).
                 unificar(tf, to, params_objetivo, sigma)
             }
@@ -2726,15 +5894,15 @@ pub fn unificar(
         },
         TipoSem::Arreglo(tf, nf) => match observado {
             TipoSem::Arreglo(to, no) if nf == no => unificar(tf, to, params_objetivo, sigma),
-            // Permitir unificación con Coleccion solo si tamaño no contradice? Coleccion no porta tamaño.
-            TipoSem::Coleccion(to) => unificar(tf, to, params_objetivo, sigma),
+            // Unificación con Coleccion: tamaño literal debe coincidir si es conocido.
+            TipoSem::Coleccion(to, no) if nf == no => unificar(tf, to, params_objetivo, sigma),
             TipoSem::Desconocido => Err(UnificacionError::Incompleta),
             _ => Err(UnificacionError::Conflicto),
         },
-        TipoSem::Coleccion(tf) => match observado {
-            TipoSem::Coleccion(to) | TipoSem::Lista(to) | TipoSem::Arreglo(to, _) => {
-                unificar(tf, to, params_objetivo, sigma)
-            }
+        TipoSem::Coleccion(tf, nf) => match observado {
+            TipoSem::Coleccion(to, no) if nf == no => unificar(tf, to, params_objetivo, sigma),
+            TipoSem::Arreglo(to, no) if nf == no => unificar(tf, to, params_objetivo, sigma),
+            TipoSem::Lista(to) => unificar(tf, to, params_objetivo, sigma),
             TipoSem::Desconocido => Err(UnificacionError::Incompleta),
             _ => Err(UnificacionError::Conflicto),
         },
@@ -2855,6 +6023,8 @@ pub fn tipo_anotacion_a_sem(t: &TipoAnotacion) -> TipoSem {
         TipoAnotacion::Nulo => TipoSem::Nulo,
         // G2: referencias a parámetros de tipo aún sin semántica de genéricos.
         TipoAnotacion::Parametro(_) => TipoSem::Desconocido,
+        // S8.1: resolución nominal real se hace en análisis semántico con registro.
+        TipoAnotacion::Nominal(_) => TipoSem::Desconocido,
     }
 }
 
@@ -2892,13 +6062,14 @@ fn compatible(a: &TipoSem, b: &TipoSem) -> bool {
         (TipoSem::Nulo, TipoSem::Nulo) => true,
         (TipoSem::Arreglo(te, ne), TipoSem::Arreglo(to, no)) => ne == no && compatible(te, to),
         (TipoSem::Lista(te), TipoSem::Lista(to)) => compatible(te, to),
-        (TipoSem::Arreglo(te, _), TipoSem::Lista(to)) => compatible(te, to),
+        (TipoSem::Arreglo(_, _), TipoSem::Lista(_)) => false,
         (TipoSem::Lista(te), TipoSem::Arreglo(to, _)) => compatible(te, to),
-        (TipoSem::Coleccion(te), TipoSem::Arreglo(to, _)) => compatible(te, to),
-        (TipoSem::Coleccion(te), TipoSem::Lista(to)) => compatible(te, to),
-        (TipoSem::Arreglo(te, _), TipoSem::Coleccion(to)) => compatible(te, to),
-        (TipoSem::Lista(te), TipoSem::Coleccion(to)) => compatible(te, to),
-        (TipoSem::Coleccion(te), TipoSem::Coleccion(to)) => compatible(te, to),
+        (TipoSem::Coleccion(te, nc), TipoSem::Arreglo(to, na)) => nc == na && compatible(te, to),
+        (TipoSem::Coleccion(te, _), TipoSem::Lista(to)) => compatible(te, to),
+        (TipoSem::Arreglo(te, na), TipoSem::Coleccion(to, nc)) => na == nc && compatible(te, to),
+        (TipoSem::Lista(te), TipoSem::Coleccion(to, _)) => compatible(te, to),
+        (TipoSem::Coleccion(te, n1), TipoSem::Coleccion(to, n2)) => n1 == n2 && compatible(te, to),
+        (TipoSem::Nominal(a), TipoSem::Nominal(b)) => a == b,
         (
             TipoSem::Funcion {
                 params: p1,
@@ -2986,9 +6157,47 @@ fn ubicacion_sentencia(s: &Sentencia) -> (usize, usize) {
         | Sentencia::Continuar { linea, columna }
         | Sentencia::IntentarRescatar { linea, columna, .. }
         | Sentencia::Importar { linea, columna, .. }
+        | Sentencia::Rasgo { linea, columna, .. }
+        | Sentencia::ImplementacionInherente { linea, columna, .. }
+        | Sentencia::ImplementacionRasgo { linea, columna, .. }
         | Sentencia::Exportar { linea, columna, .. }
-        | Sentencia::Usar { linea, columna, .. } => (*linea, *columna),
-        Sentencia::Bloque(_) | Sentencia::Expresion(_) => (1, 1),
+        | Sentencia::Usar { linea, columna, .. }
+        | Sentencia::AsignacionCampo { linea, columna, .. }
+        | Sentencia::Estructura { linea, columna, .. }
+        | Sentencia::Enumeracion { linea, columna, .. } => (*linea, *columna),
+        Sentencia::Expresion(e) => ubicacion_expresion(e),
+        Sentencia::Bloque(stmts) => stmts.first().map(ubicacion_sentencia).unwrap_or((1, 1)),
+    }
+}
+
+fn ubicacion_expresion(e: &Expresion) -> (usize, usize) {
+    match e {
+        Expresion::Literal { linea, columna, .. }
+        | Expresion::Variable { linea, columna, .. }
+        | Expresion::Llamada { linea, columna, .. }
+        | Expresion::ArregloLiteral { linea, columna, .. }
+        | Expresion::Indice { linea, columna, .. }
+        | Expresion::Acceso { linea, columna, .. }
+        | Expresion::LlamadaIndirecta { linea, columna, .. }
+        | Expresion::Lambda { linea, columna, .. }
+        | Expresion::Rango { linea, columna, .. }
+        | Expresion::ConstruccionEstructura { linea, columna, .. }
+        | Expresion::ConstruccionVariante { linea, columna, .. }
+        | Expresion::Coincidir { linea, columna, .. } => (*linea, *columna),
+        Expresion::Suma(a, _)
+        | Expresion::Resta(a, _)
+        | Expresion::Multiplicacion(a, _)
+        | Expresion::Division(a, _)
+        | Expresion::Modulo(a, _)
+        | Expresion::IgualIgual(a, _)
+        | Expresion::Distinto(a, _)
+        | Expresion::Menor(a, _)
+        | Expresion::MenorIgual(a, _)
+        | Expresion::Mayor(a, _)
+        | Expresion::MayorIgual(a, _)
+        | Expresion::Y(a, _)
+        | Expresion::O(a, _) => ubicacion_expresion(a),
+        Expresion::No(inner) => ubicacion_expresion(inner),
     }
 }
 
@@ -3013,6 +6222,7 @@ fn tipo_comun(a: &TipoSem, b: &TipoSem) -> TipoSem {
         }
         (TipoSem::Texto, TipoSem::Texto) => TipoSem::Texto,
         (TipoSem::Logico, TipoSem::Logico) => TipoSem::Logico,
+        (TipoSem::Nominal(a), TipoSem::Nominal(b)) if a == b => TipoSem::Nominal(*a),
         _ => TipoSem::Desconocido,
     }
 }
@@ -3023,7 +6233,7 @@ fn es_param_opaco(t: &TipoSem) -> bool {
 
 fn tipo_elemento_coleccion(t: &TipoSem) -> TipoSem {
     match t {
-        TipoSem::Arreglo(elem, _) | TipoSem::Lista(elem) | TipoSem::Coleccion(elem) => {
+        TipoSem::Arreglo(elem, _) | TipoSem::Lista(elem) | TipoSem::Coleccion(elem, _) => {
             (**elem).clone()
         }
         _ => TipoSem::Desconocido,
@@ -3073,7 +6283,7 @@ impl ContextoSemantico {
     fn c2_tipo_conocido(t: &TipoSem) -> bool {
         match t {
             TipoSem::Desconocido | TipoSem::Param(_) => false,
-            TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te) => {
+            TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te, _) => {
                 Self::c2_tipo_conocido(te)
             }
             TipoSem::Funcion {
@@ -3169,8 +6379,20 @@ impl ContextoSemantico {
 
     fn c2_expr_admisible(&self, e: &Expresion) -> bool {
         match e {
-            Expresion::Literal { .. } | Expresion::Variable { .. } | Expresion::Rango { .. } => {
-                true
+            Expresion::Literal { .. }
+            | Expresion::Variable { .. }
+            | Expresion::Rango { .. }
+            | Expresion::ConstruccionEstructura { .. }
+            | Expresion::ConstruccionVariante { .. } => true,
+            Expresion::Coincidir {
+                scrutinee, brazos, ..
+            } => {
+                self.c2_expr_admisible(scrutinee)
+                    && brazos.iter().all(|b| {
+                        b.cuerpo
+                            .iter()
+                            .all(|_s| true /* S8.3: C2 stmt admissibility pendiente */)
+                    })
             }
             Expresion::Suma(a, b)
             | Expresion::Resta(a, b)

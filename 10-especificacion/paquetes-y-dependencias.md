@@ -1,12 +1,10 @@
-# Paquetes y dependencias (prototipo v0.5)
+# Paquetes y dependencias (Fase 12)
 
-Estado: **implementación local mínima y verificada**. No hay descarga desde red,
-registro central ni verificación criptográfica. Esta capacidad es una extensión
-del prototipo y no forma parte de una garantía de versión.
+Estado: **implementación verificada en alcance Fase 12** (local + registro remoto en entorno controlado). No es una aprobación de fase; la aprobación/cierre corresponde al mantenedor humano.
 
-## Manifiesto
+## Manifiesto (`basilisco.toml`)
 
-Cada proyecto declara su identidad y sus dependencias en `basilisco.toml`:
+Cada proyecto declara identidad y dependencias:
 
 ```toml
 [paquete]
@@ -14,100 +12,86 @@ nombre = "mi-proyecto"
 version = "0.1.0"
 
 [dependencias]
-matematica = "0.1.0"
-util = { version = "0.2.0", ruta = "../util" }
+mate = "0.1.0"
+util = { version = "0.2.0", ruta = "../util", autorizado = true }
+remoto = { version = "1.0.0", registro = "official" }
 ```
 
-Reglas:
+Reglas verificadas:
+- `[paquete].nombre` obligatorio: ASCII alfanumérico, `-`, `_`, máx. 64, empieza por alfanumérico.
+- `[paquete].version` opcional (default `0.0.0`); validación de formato.
+- Dependencias: versión string o tabla en línea (`version`, `ruta/path`, `hash`, `firma`, `clave`, `registro`, `nonce`, `expira`, `autorizado`).
+- Versionado: exacto, `*`, y rangos SemVer compatibles con el motor (`^`, `~`, `>=`) donde aplique.
+- Rechazo de tablas/claves inválidas, duplicados, valores malformados.
 
-- `[paquete].nombre` es obligatorio y solo admite letras ASCII, dígitos, `-` y `_`
-  (máximo 64 caracteres, debe empezar por letra o dígito).
-- `[paquete].version` es opcional; si falta se usa `0.0.0`.
-- En `[dependencias]`, el valor puede ser una versión entre comillas o una tabla
-  en línea con `version` y `ruta` (alias `path`).
-- Las versiones son **exactas**; `*` significa cualquiera. No hay rangos semver.
-- Se rechazan claves o tablas desconocidas, dependencias duplicadas y valores sin
-  comillas.
+## Resolución e instalación
 
-## Resolución local
-
-Para cada dependencia se prueba, en orden:
-
-1. La `ruta` explícita del manifiesto (relativa al manifiesto).
+Orden local:
+1. `ruta` explícita (relativa al manifiesto; rutas externas requieren `autorizado = true` y quedan acotadas por validación de ruta).
 2. `<proyecto>/paquetes/<nombre>`.
 3. `<proyecto>/vendor/<nombre>`.
 4. `<proyecto>/<nombre>`.
 
-Cada ruta puede ser un archivo `.bsk` o un directorio. En un directorio se busca,
-en orden: `lib.bsk`, `src/lib.bsk`, `principal.bsk` y `<nombre>.bsk`.
+Comportamiento:
+- Resolución **transitiva** con detección de ciclos y conflictos de versión.
+- Entrada de paquete: archivo `.bsk` o directorio con `lib.bsk`, `src/lib.bsk`, `principal.bsk` o `<nombre>.bsk`.
+- Si el paquete tiene `basilisco.toml`, se valida nombre/versión declarada.
+- Dependencias con `registro` pueden resolverse vía registro remoto configurado (flujo verificado en pruebas controladas).
 
-Si el paquete encontrado tiene su propio `basilisco.toml`, se comprueban su
-`nombre` y su `version` contra lo solicitado. Una discrepancia es un error de
-resolución, no una advertencia.
+## Bloqueo (`basilisco.lock`)
 
-## Bloqueo
-
-`basilisco instalar` resuelve las dependencias y escribe `basilisco.lock` con
-rutas relativas al proyecto:
+`basilisco instalar` escribe bloqueo determinista (v1) con rutas portables relativas al proyecto y hash SHA-256. Campos de procedencia/autenticidad soportados cuando están disponibles: `registro`, `key_id`, `firma`, `nonce`, `expira`, `verificado`.
 
 ```toml
-# Generado por basilisco. No editar a mano.
 version = 1
 
 [[dependencia]]
-nombre = "matematica"
+nombre = "mate"
 version = "0.1.0"
-ruta = "paquetes/matematica/lib.bsk"
+ruta = "paquetes/mate/lib.bsk"
+hash = "..."
+registro = "official"
+key_id = "key-1"
+verificado = true
 ```
 
-`importar "matematica"` consulta primero el bloqueo del directorio de trabajo.
-Si el bloqueo no existe, se mantienen las rutas convencionales de importación.
+`importar "nombre"` consulta primero el bloqueo; si no existe, usa rutas convencionales.
 
-## Comandos
+## Integridad, autenticidad y seguridad
+
+- **Integridad:** SHA-256 de artefacto/archivo; comparación obligatoria ante hash esperado. La divergencia rechaza instalación.
+- **Autenticidad:** metadatos firmados con Ed25519; verificación contra almacén de claves confiables (`.basilisco/trust.json`) por `registry_id/key_id`. Claves revocadas no se aceptan.
+- **Anti-replay:** nonce por registro persistido en `.basilisco/nonces.json`; nonce repetido rechazado.
+- **BPK (R2):** ZIP restringido con `BPK-MANIFEST.toml`, `payload/`, rutas normalizadas NFC, sin cifrado/symlinks/entradas especiales, límites de tamaño/cantidad, verificación de tamaño+SHA-256 por archivo y rechazo de archivos no declarados/faltantes.
+- **Extracción segura:** validación de rutas, rechazo de traversal, rechazo de symlinks en ruta de extracción, creación sin sobrescritura.
+- **Transporte/registro:** HTTPS requerido para registros remotos no locales; localhost/127.0.0.1 permitido para pruebas aisladas. Credenciales no se incluyen en URL.
+
+## Registro remoto
+
+- Configuración local de registros: `basilisco registry add/list/remove/set-default/enable/disable/info` (`.basilisco/registries.json`).
+- Cliente remoto: obtener metadatos, descargar artefacto, verificar hash, validar BPK, verificar firma/clave confiable/nonce.
+- Servidor de registro (`basilisco-registry`, Axum+SQLx/PostgreSQL): auth/token, namespaces, publish, download, yanked, search, claves. Publicación valida BPK, hash, identidad manifiesto, SemVer, registry_id, expiración, autorización por namespace, unicidad de versión/nonce, almacenamiento atómico.
+- Integración E2E PostgreSQL aislado: tests `registry_integration` (ignorados por defecto, ejecutables con `DATABASE_URL` aislado) verificados localmente con PostgreSQL en Docker.
+
+## Comandos CLI (verificados)
 
 ```bash
-basilisco instalar [ruta-del-proyecto]   # resuelve y escribe basilisco.lock
-basilisco paquetes [ruta-del-proyecto]   # lista el contenido del bloqueo
+basilisco instalar [ruta]
+basilisco paquetes [ruta]
+basilisco update [ruta]
+basilisco add <paquete> [versión] [--ruta=<ruta>]
+basilisco publish [ruta] [--clave=<hex32>] [--salida=<archivo>]
+basilisco instalar-remoto <metadata-url> <artifact-url> <destino>
+basilisco registry <add|list|remove|set-default|enable|disable|info> ...
 ```
 
-`instalar` falla con código 1 si falta el manifiesto, una dependencia no existe o
-las versiones no coinciden. `paquetes` falla si no hay bloqueo.
+## Limitaciones residuales
 
-## Ejemplo completo
-
-```text
-proyecto/
-├── basilisco.toml
-├── basilisco.lock
-├── main.bsk
-└── paquetes/
-    └── mate/
-        ├── basilisco.toml
-        └── lib.bsk
-```
-
-```basilisco
-# paquetes/mate/lib.bsk
-exportar funcion duplicar(x: entero) -> entero {
-  retornar x * 2
-}
-```
-
-```basilisco
-# main.bsk
-importar "mate"
-mostrar duplicar(21)   # 42
-```
-
-## Límites conocidos
-
-- Las rutas del bloqueo y de `importar` se resuelven respecto al **directorio de
-  trabajo actual**, no al archivo que importa. Ejecutar desde otra carpeta exige
-  pasar por el directorio del proyecto.
-- No hay descarga, actualización ni cache de paquetes remotos.
-- No hay verificación de integridad ni firmas (GAP-020).
-- No hay resolución transitiva: las dependencias de un paquete no se instalan
-  automáticamente.
-- No hay rangos de versión ni selección de múltiples versiones simultáneas.
-- La caché de módulos del evaluador es por proceso: un módulo se ejecuta una vez
-  aunque se importe varias veces.
+- La resolución remota automática en `instalar` se activa para dependencias con metadatos remotos/registro explícito; no se afirma cobertura total de todos los flujos de resolución remota posibles.
+- El lock v1 conserva compatibilidad y campos de procedencia; la semántica completa de estados de verificación R1 (`integridad_verificada`, `autenticidad_verificada`, `autenticidad_pendiente`, `verificacion_fallida`) no está modelada como enum formal en el lock.
+- R3 (distribución/rotación/revocación avanzada de claves, protocolo completo de firmas) no está implementado por completo; no se declara autenticidad verificada sin clave confiable.
+- Publicación remota desde CLI está soportada a nivel de artefacto/cliente/servidor en piezas existentes; el flujo CLI puede requerir endurecimiento adicional según alcance operativo.
+- `registry_integration` requiere PostgreSQL aislado; fuera de ese entorno permanece `#[ignore]` (no falso verde).
+- No hay sandbox de ejecución para código de paquetes; instalar no ejecuta código, pero el consumo/ejecución de código del paquete sigue sujeto al modelo de seguridad general del lenguaje.
+- No se declara soporte de registros reales públicos ni publicación en registros reales.
+- Las rutas de lock/importación se resuelven respecto al directorio de trabajo actual.

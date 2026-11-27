@@ -53,7 +53,7 @@ pub enum TipoCanon {
     Nulo,
     Arreglo(Box<TipoCanon>, usize),
     Lista(Box<TipoCanon>),
-    Coleccion(Box<TipoCanon>),
+    Coleccion(Box<TipoCanon>, usize),
     Funcion {
         params: Vec<TipoCanon>,
         retorno: Box<TipoCanon>,
@@ -71,7 +71,7 @@ impl TipoCanon {
             TipoCanon::Nulo => "nulo".to_string(),
             TipoCanon::Arreglo(t, n) => format!("arreglo<{}, {}>", t.nombre(), n),
             TipoCanon::Lista(t) => format!("lista<{}>", t.nombre()),
-            TipoCanon::Coleccion(t) => format!("colección<{}>", t.nombre()),
+            TipoCanon::Coleccion(t, n) => format!("colección<{}, {}>", t.nombre(), n),
             TipoCanon::Funcion { params, retorno } => {
                 let ps: Vec<String> = params.iter().map(|t| t.nombre()).collect();
                 format!("función({}) -> {}", ps.join(", "), retorno.nombre())
@@ -92,7 +92,10 @@ pub fn canonicalizar_tipo(t: &TipoSem) -> Option<TipoCanon> {
         TipoSem::Nulo => Some(TipoCanon::Nulo),
         TipoSem::Arreglo(te, n) => Some(TipoCanon::Arreglo(Box::new(canonicalizar_tipo(te)?), *n)),
         TipoSem::Lista(te) => Some(TipoCanon::Lista(Box::new(canonicalizar_tipo(te)?))),
-        TipoSem::Coleccion(te) => Some(TipoCanon::Coleccion(Box::new(canonicalizar_tipo(te)?))),
+        TipoSem::Coleccion(te, n) => {
+            Some(TipoCanon::Coleccion(Box::new(canonicalizar_tipo(te)?), *n))
+        }
+        TipoSem::Nominal(_) => None, // S8.1: nominales no participan en monomorfización G4
         TipoSem::Funcion {
             params, retorno, ..
         } => {
@@ -120,7 +123,7 @@ pub fn canon_a_anotacion(t: &TipoCanon) -> Option<TipoAnotacion> {
         }
         TipoCanon::Lista(te) => Some(TipoAnotacion::Lista(Box::new(canon_a_anotacion(te)?))),
         // Coleccion no tiene anotación de sintaxis propia; se representa como lista para tipos concretos.
-        TipoCanon::Coleccion(te) => Some(TipoAnotacion::Lista(Box::new(canon_a_anotacion(te)?))),
+        TipoCanon::Coleccion(te, _) => Some(TipoAnotacion::Lista(Box::new(canon_a_anotacion(te)?))),
         TipoCanon::Funcion { .. } => None,
     }
 }
@@ -136,7 +139,7 @@ pub fn canon_a_sem(t: &TipoCanon) -> TipoSem {
         TipoCanon::Nulo => TipoSem::Nulo,
         TipoCanon::Arreglo(te, n) => TipoSem::Arreglo(Box::new(canon_a_sem(te)), *n),
         TipoCanon::Lista(te) => TipoSem::Lista(Box::new(canon_a_sem(te))),
-        TipoCanon::Coleccion(te) => TipoSem::Coleccion(Box::new(canon_a_sem(te))),
+        TipoCanon::Coleccion(te, n) => TipoSem::Coleccion(Box::new(canon_a_sem(te)), *n),
         TipoCanon::Funcion { params, retorno } => TipoSem::Funcion {
             params: params.iter().map(canon_a_sem).collect(),
             retorno: Box::new(canon_a_sem(retorno)),
@@ -191,6 +194,8 @@ pub struct RegistroInstancia {
     pub error: Option<CausaError>,
     /// Dependencias solicitadas durante la especialización.
     pub dependencias: Vec<InstanceKey>,
+    /// Origen/cadena de instanciación (para profundidad/growth en modo iterativo).
+    pub origen: Option<OrigenInstancia>,
 }
 
 /// Contexto de origen para diagnósticos.
@@ -200,6 +205,7 @@ pub struct OrigenInstancia {
     pub instancia: String,
     pub tipos: Vec<String>,
     pub cadena: Vec<String>,
+    pub cadena_keys: Vec<InstanceKey>,
     pub linea: usize,
     pub columna: usize,
 }
@@ -295,7 +301,9 @@ fn codificar_tipo_para_nombre(t: &TipoCanon) -> String {
         TipoCanon::Texto => "texto".to_string(),
         TipoCanon::Nulo => "nulo".to_string(),
         TipoCanon::Lista(te) => format!("lista_{}_end", codificar_tipo_para_nombre(te)),
-        TipoCanon::Coleccion(te) => format!("coleccion_{}_end", codificar_tipo_para_nombre(te)),
+        TipoCanon::Coleccion(te, n) => {
+            format!("coleccion_{}_{}_end", codificar_tipo_para_nombre(te), n)
+        }
         TipoCanon::Arreglo(te, n) => {
             format!("arreglo_{}_{}_end", codificar_tipo_para_nombre(te), n)
         }
@@ -406,6 +414,7 @@ impl MotorMonomorfizacion {
             funcion: None,
             error: None,
             dependencias: Vec::new(),
+            origen: Some(origen.clone()),
         };
         self.instancias.insert(key.clone(), reg);
         self.cola.push(key);
@@ -490,7 +499,7 @@ fn contiene_subtipo(contenedor: &TipoCanon, objetivo: &TipoCanon) -> bool {
         return true;
     }
     match contenedor {
-        TipoCanon::Lista(t) | TipoCanon::Coleccion(t) => {
+        TipoCanon::Lista(t) | TipoCanon::Coleccion(t, _) => {
             t.as_ref() == objetivo || contiene_subtipo(t, objetivo)
         }
         TipoCanon::Arreglo(t, _) => t.as_ref() == objetivo || contiene_subtipo(t, objetivo),
@@ -522,6 +531,7 @@ pub fn sustituir_anotacion(a: &TipoAnotacion, sigma: &MapaSustAnot) -> Option<Ti
         TipoAnotacion::Logico => Some(TipoAnotacion::Logico),
         TipoAnotacion::Texto => Some(TipoAnotacion::Texto),
         TipoAnotacion::Nulo => Some(TipoAnotacion::Nulo),
+        TipoAnotacion::Nominal(n) => Some(TipoAnotacion::Nominal(n.clone())),
     }
 }
 
@@ -733,6 +743,61 @@ pub fn sustituir_expresion(e: &Expresion, sigma: &MapaSustAnot) -> Option<Expres
             inicio: Box::new(sustituir_expresion(inicio, sigma)?),
             fin: Box::new(sustituir_expresion(fin, sigma)?),
             inclusivo: *inclusivo,
+            linea: *linea,
+            columna: *columna,
+        },
+        Expresion::ConstruccionEstructura {
+            nombre,
+            campos,
+            linea,
+            columna,
+        } => Expresion::ConstruccionEstructura {
+            nombre: nombre.clone(),
+            campos: campos
+                .iter()
+                .map(|(n, e)| Some((n.clone(), sustituir_expresion(e, sigma)?)))
+                .collect::<Option<Vec<_>>>()?,
+            linea: *linea,
+            columna: *columna,
+        },
+        Expresion::ConstruccionVariante {
+            tipo,
+            variante,
+            argumentos,
+            linea,
+            columna,
+        } => Expresion::ConstruccionVariante {
+            tipo: tipo.clone(),
+            variante: variante.clone(),
+            argumentos: argumentos
+                .iter()
+                .map(|a| sustituir_expresion(a, sigma))
+                .collect::<Option<Vec<_>>>()?,
+            linea: *linea,
+            columna: *columna,
+        },
+        Expresion::Coincidir {
+            scrutinee,
+            brazos,
+            linea,
+            columna,
+        } => Expresion::Coincidir {
+            scrutinee: Box::new(sustituir_expresion(scrutinee, sigma)?),
+            brazos: brazos
+                .iter()
+                .map(|b| {
+                    Some(crate::parser::BrazoCoincidir {
+                        patron: b.patron.clone(),
+                        cuerpo: b
+                            .cuerpo
+                            .iter()
+                            .map(|s| sustituir_sentencia(s, sigma))
+                            .collect::<Option<Vec<_>>>()?,
+                        linea: b.linea,
+                        columna: b.columna,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
             linea: *linea,
             columna: *columna,
         },
@@ -982,6 +1047,107 @@ pub fn sustituir_sentencia(s: &Sentencia, sigma: &MapaSustAnot) -> Option<Senten
             linea: *linea,
             columna: *columna,
         },
+        Sentencia::AsignacionCampo {
+            objeto,
+            campo,
+            valor,
+            linea,
+            columna,
+        } => Sentencia::AsignacionCampo {
+            objeto: Box::new(sustituir_expresion(objeto, sigma)?),
+            campo: campo.clone(),
+            valor: sustituir_expresion(valor, sigma)?,
+            linea: *linea,
+            columna: *columna,
+        },
+        Sentencia::Estructura {
+            nombre,
+            campos,
+            linea,
+            columna,
+            publico,
+        } => Sentencia::Estructura {
+            nombre: nombre.clone(),
+            campos: campos
+                .iter()
+                .map(|c| {
+                    Some(crate::parser::CampoEstructura {
+                        nombre: c.nombre.clone(),
+                        tipo: sustituir_anotacion(&c.tipo, sigma)?,
+                        publico: c.publico,
+                        linea: c.linea,
+                        columna: c.columna,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+            linea: *linea,
+            columna: *columna,
+            publico: *publico,
+        },
+        Sentencia::Enumeracion {
+            nombre,
+            variantes,
+            linea,
+            columna,
+            publico,
+        } => Sentencia::Enumeracion {
+            nombre: nombre.clone(),
+            variantes: variantes
+                .iter()
+                .map(|v| {
+                    Some(crate::parser::VarianteEnumeracion {
+                        nombre: v.nombre.clone(),
+                        payload: v
+                            .payload
+                            .iter()
+                            .map(|t| sustituir_anotacion(t, sigma))
+                            .collect::<Option<Vec<_>>>()?,
+                        linea: v.linea,
+                        columna: v.columna,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+            linea: *linea,
+            columna: *columna,
+            publico: *publico,
+        },
+        Sentencia::Rasgo {
+            nombre,
+            metodos,
+            linea,
+            columna,
+            publico,
+        } => Sentencia::Rasgo {
+            nombre: nombre.clone(),
+            metodos: metodos.clone(),
+            linea: *linea,
+            columna: *columna,
+            publico: *publico,
+        },
+        Sentencia::ImplementacionInherente {
+            tipo,
+            metodos,
+            linea,
+            columna,
+        } => Sentencia::ImplementacionInherente {
+            tipo: tipo.clone(),
+            metodos: metodos.clone(),
+            linea: *linea,
+            columna: *columna,
+        },
+        Sentencia::ImplementacionRasgo {
+            rasgo,
+            tipo,
+            metodos,
+            linea,
+            columna,
+        } => Sentencia::ImplementacionRasgo {
+            rasgo: rasgo.clone(),
+            tipo: tipo.clone(),
+            metodos: metodos.clone(),
+            linea: *linea,
+            columna: *columna,
+        },
     })
 }
 
@@ -1135,6 +1301,7 @@ pub fn anotacion_a_sem_concreta(a: &TipoAnotacion) -> TipoSem {
         }
         TipoAnotacion::Lista(te) => TipoSem::Lista(Box::new(anotacion_a_sem_concreta(te))),
         TipoAnotacion::Parametro(_) => TipoSem::Desconocido,
+        TipoAnotacion::Nominal(_) => TipoSem::Desconocido, // S8.1: resolución nominal fuera de G4
     }
 }
 
@@ -1167,7 +1334,7 @@ pub fn estimar_tipo_expr(
                 let te = estimar_tipo_expr(el, vars, firmas_no_genericas, inst_retornos);
                 t = tipo_comun_simple(&t, &te);
             }
-            TipoSem::Coleccion(Box::new(t))
+            TipoSem::Coleccion(Box::new(t), elementos.len())
         }
         Expresion::Rango { .. } => TipoSem::Lista(Box::new(TipoSem::Entero)),
         Expresion::Suma(a, b)
@@ -1205,7 +1372,7 @@ pub fn estimar_tipo_expr(
         }
         Expresion::Indice { objeto, .. } => {
             match estimar_tipo_expr(objeto, vars, firmas_no_genericas, inst_retornos) {
-                TipoSem::Arreglo(t, _) | TipoSem::Lista(t) | TipoSem::Coleccion(t) => *t,
+                TipoSem::Arreglo(t, _) | TipoSem::Lista(t) | TipoSem::Coleccion(t, _) => *t,
                 _ => TipoSem::Desconocido,
             }
         }
@@ -1358,11 +1525,14 @@ pub(crate) fn reescribir_expr_g4(
                         };
                         let mut cadena = origen_base.cadena.clone();
                         cadena.push(format!("{}<{}>", nombre, key.nombre_tipos().join(",")));
+                        let mut cadena_keys = origen_base.cadena_keys.clone();
+                        cadena_keys.push(key.clone());
                         let origen = OrigenInstancia {
                             funcion: nombre.clone(),
                             instancia: nombre.clone(),
                             tipos: key.nombre_tipos(),
                             cadena,
+                            cadena_keys,
                             linea: *linea,
                             columna: *columna,
                         };
@@ -2011,6 +2181,130 @@ pub(crate) fn reescribir_sentencia_g4(
     >,
 ) -> Result<Sentencia, CausaError> {
     Ok(match s {
+        Sentencia::Rasgo { .. } => s.clone(),
+        Sentencia::ImplementacionInherente {
+            tipo,
+            metodos,
+            linea,
+            columna,
+        } => {
+            let mut metodos_rw = Vec::with_capacity(metodos.len());
+            for m in metodos {
+                let mut vars_locales = vars.clone();
+                for (n, t) in &m.parametros {
+                    let ty = t
+                        .as_ref()
+                        .map(crate::semantico::tipo_anotacion_a_sem)
+                        .unwrap_or(TipoSem::Desconocido);
+                    vars_locales.insert(n.clone(), ty);
+                }
+                let cuerpo_rw = reescribir_bloque_g4(
+                    &m.cuerpo,
+                    sigma,
+                    plantillas,
+                    por_nombre,
+                    motor,
+                    &vars_locales,
+                    firmas_no_genericas,
+                    inst_retornos,
+                    origen_base,
+                    funciones,
+                    validar_v3,
+                )?;
+                metodos_rw.push(crate::parser::Metodo {
+                    cuerpo: cuerpo_rw,
+                    ..m.clone()
+                });
+            }
+            Sentencia::ImplementacionInherente {
+                tipo: tipo.clone(),
+                metodos: metodos_rw,
+                linea: *linea,
+                columna: *columna,
+            }
+        }
+        Sentencia::ImplementacionRasgo {
+            rasgo,
+            tipo,
+            metodos,
+            linea,
+            columna,
+        } => {
+            let mut metodos_rw = Vec::with_capacity(metodos.len());
+            for m in metodos {
+                let mut vars_locales = vars.clone();
+                for (n, t) in &m.parametros {
+                    let ty = t
+                        .as_ref()
+                        .map(crate::semantico::tipo_anotacion_a_sem)
+                        .unwrap_or(TipoSem::Desconocido);
+                    vars_locales.insert(n.clone(), ty);
+                }
+                let cuerpo_rw = reescribir_bloque_g4(
+                    &m.cuerpo,
+                    sigma,
+                    plantillas,
+                    por_nombre,
+                    motor,
+                    &vars_locales,
+                    firmas_no_genericas,
+                    inst_retornos,
+                    origen_base,
+                    funciones,
+                    validar_v3,
+                )?;
+                metodos_rw.push(crate::parser::Metodo {
+                    cuerpo: cuerpo_rw,
+                    ..m.clone()
+                });
+            }
+            Sentencia::ImplementacionRasgo {
+                rasgo: rasgo.clone(),
+                tipo: tipo.clone(),
+                metodos: metodos_rw,
+                linea: *linea,
+                columna: *columna,
+            }
+        }
+        Sentencia::AsignacionCampo {
+            objeto,
+            campo,
+            valor,
+            linea,
+            columna,
+        } => Sentencia::AsignacionCampo {
+            objeto: Box::new(reescribir_expr_g4(
+                objeto,
+                sigma,
+                plantillas,
+                por_nombre,
+                motor,
+                vars,
+                firmas_no_genericas,
+                inst_retornos,
+                origen_base,
+                funciones,
+                validar_v3,
+            )?),
+            campo: campo.clone(),
+            valor: reescribir_expr_g4(
+                valor,
+                sigma,
+                plantillas,
+                por_nombre,
+                motor,
+                vars,
+                firmas_no_genericas,
+                inst_retornos,
+                origen_base,
+                funciones,
+                validar_v3,
+            )?,
+            linea: *linea,
+            columna: *columna,
+        },
+        Sentencia::Estructura { .. } => s.clone(),
+        Sentencia::Enumeracion { .. } => s.clone(),
         Sentencia::Declaracion {
             nombre,
             linea,
@@ -2338,7 +2632,7 @@ pub(crate) fn reescribir_sentencia_g4(
             // estimar tipo elemento para var
             let t_it = estimar_tipo_expr(&it, vars, firmas_no_genericas, inst_retornos);
             let t_el = match t_it {
-                TipoSem::Arreglo(t, _) | TipoSem::Lista(t) | TipoSem::Coleccion(t) => *t,
+                TipoSem::Arreglo(t, _) | TipoSem::Lista(t) | TipoSem::Coleccion(t, _) => *t,
                 _ => TipoSem::Desconocido,
             };
             let mut vars_inner = vars.clone();
@@ -2614,6 +2908,8 @@ pub(crate) fn especializar_instancia(
             usize,
         ) -> Vec<crate::evaluador::ErrorEjecucion>,
     >,
+    cadena_base: Vec<String>,
+    cadena_keys_base: Vec<InstanceKey>,
 ) -> Result<Sentencia, CausaError> {
     // Construir sigma TipoParamId->TipoSem y mapa nombre->TipoCanon
     let mut sigma_sem: HashMap<TipoParamId, TipoSem> = HashMap::new();
@@ -2687,15 +2983,24 @@ pub(crate) fn especializar_instancia(
         );
     }
 
+    let mut cadena = cadena_base;
+    let mut cadena_keys = cadena_keys_base;
+    if cadena.is_empty() {
+        cadena.push(format!(
+            "{}<{}>",
+            plantilla.nombre,
+            key.nombre_tipos().join(",")
+        ));
+    }
+    if cadena_keys.is_empty() {
+        cadena_keys.push(key.clone());
+    }
     let origen = OrigenInstancia {
         funcion: plantilla.nombre.clone(),
         instancia: nombre_especializado.to_string(),
         tipos: key.nombre_tipos(),
-        cadena: vec![format!(
-            "{}<{}>",
-            plantilla.nombre,
-            key.nombre_tipos().join(",")
-        )],
+        cadena,
+        cadena_keys,
         linea: plantilla.linea,
         columna: plantilla.columna,
     };
@@ -2735,12 +3040,12 @@ pub(crate) fn especializar_instancia(
 pub(crate) fn solicitar_instancia(
     motor: &mut MotorMonomorfizacion,
     plantillas: &BTreeMap<GenericFnId, InfoPlantilla>,
-    por_nombre: &HashMap<String, GenericFnId>,
-    firmas_no_genericas: &HashMap<String, (Vec<TipoSem>, TipoSem)>,
-    funciones: &HashMap<String, FuncionSig>,
+    _por_nombre: &HashMap<String, GenericFnId>,
+    _firmas_no_genericas: &HashMap<String, (Vec<TipoSem>, TipoSem)>,
+    _funciones: &HashMap<String, FuncionSig>,
     key: InstanceKey,
     origen: &OrigenInstancia,
-    validar_v3: &mut Option<
+    _validar_v3: &mut Option<
         &mut dyn FnMut(
             &FuncionSig,
             &HashMap<TipoParamId, TipoSem>,
@@ -2766,15 +3071,13 @@ pub(crate) fn solicitar_instancia(
             })),
         };
     }
-    let plantilla =
-        plantillas
-            .get(&key.funcion)
-            .ok_or_else(|| CausaError::DependenciaGenericaNoResoluble {
-                funcion: key.funcion.nombre.clone(),
-                detalle: "plantilla genérica no encontrada para instanciación".to_string(),
-            })?;
+    if plantillas.get(&key.funcion).is_none() {
+        return Err(CausaError::DependenciaGenericaNoResoluble {
+            funcion: key.funcion.nombre.clone(),
+            detalle: "plantilla genérica no encontrada para instanciación".to_string(),
+        });
+    }
 
-    // Límites y crecimiento
     if motor.instancias.len() >= motor.limite_instancias {
         return Err(CausaError::LimiteInstanciasExcedido {
             limite: motor.limite_instancias,
@@ -2784,8 +3087,7 @@ pub(crate) fn solicitar_instancia(
             detalle: "se alcanzó el límite de instancias únicas (M1)".to_string(),
         });
     }
-    // profundidad de cadena activa
-    if motor.cadena_activa.len() >= motor.limite_profundidad {
+    if origen.cadena.len() >= motor.limite_profundidad {
         return Err(CausaError::ProfundidadInstanciacionExcedida {
             funcion: key.funcion.nombre.clone(),
             instancia: key.funcion.nombre.clone(),
@@ -2795,23 +3097,22 @@ pub(crate) fn solicitar_instancia(
             detalle: "profundidad de instanciación excedida (M2)".to_string(),
         });
     }
-    // crecimiento polimórfico vs cadena activa
-    for anc in &motor.cadena_activa {
-        if anc.funcion == key.funcion {
-            if anc == &key {
-                // recursión monomórfica: debería estar en cache como InProgress; pero si no, permitimos
-            } else if crecimiento_estructural(&anc.args, &key.args) {
-                return Err(CausaError::RecursionPolimorficaCreciente {
-                    funcion: key.funcion.nombre.clone(),
-                    instancia: key.funcion.nombre.clone(),
-                    tipos: key.nombre_tipos(),
-                    cadena: origen.cadena.clone(),
-                    detalle: format!(
-                        "crecimiento estructural respecto a instancia ancestral con tipos [{}]",
-                        anc.nombre_tipos().join(", ")
-                    ),
-                });
-            }
+    // Crecimiento polimórfico: comparar contra cadena de instanciación (semántica G4).
+    for anc in &origen.cadena_keys {
+        if anc.funcion == key.funcion
+            && anc != &key
+            && crecimiento_estructural(&anc.args, &key.args)
+        {
+            return Err(CausaError::RecursionPolimorficaCreciente {
+                funcion: key.funcion.nombre.clone(),
+                instancia: key.funcion.nombre.clone(),
+                tipos: key.nombre_tipos(),
+                cadena: origen.cadena.clone(),
+                detalle: format!(
+                    "crecimiento estructural respecto a instancia ancestral con tipos [{}]",
+                    anc.nombre_tipos().join(", ")
+                ),
+            });
         }
     }
 
@@ -2820,47 +3121,112 @@ pub(crate) fn solicitar_instancia(
         key.clone(),
         RegistroInstancia {
             key: key.clone(),
-            estado: EstadoInstancia::InProgress,
+            estado: EstadoInstancia::Pending,
             nombre_especializado: Some(nombre.clone()),
             funcion: None,
             error: None,
             dependencias: Vec::new(),
+            origen: Some(origen.clone()),
         },
     );
-    motor.cadena_activa.push(key.clone());
+    motor.cola.push(key);
+    motor.cola.sort();
+    Ok(nombre)
+}
 
-    let resultado = especializar_instancia(
-        plantilla,
-        &key,
-        plantillas,
-        por_nombre,
-        motor,
-        firmas_no_genericas,
-        funciones,
-        &nombre,
-        validar_v3,
-    );
-
-    motor.cadena_activa.pop();
-    match resultado {
-        Ok(funcion) => {
-            // Especialización completada; V3 post-especialización se ejecuta de forma
-            // iterativa antes de publicar (Bloqueante A), evitando recursión profunda.
+fn especializar_pendientes(
+    motor: &mut MotorMonomorfizacion,
+    plantillas: &BTreeMap<GenericFnId, InfoPlantilla>,
+    por_nombre: &HashMap<String, GenericFnId>,
+    firmas_no_genericas: &HashMap<String, (Vec<TipoSem>, TipoSem)>,
+    funciones: &HashMap<String, FuncionSig>,
+    validar_v3: &mut Option<
+        &mut dyn FnMut(
+            &FuncionSig,
+            &HashMap<TipoParamId, TipoSem>,
+            usize,
+            usize,
+        ) -> Vec<crate::evaluador::ErrorEjecucion>,
+    >,
+) -> Vec<crate::evaluador::ErrorEjecucion> {
+    let mut errores = Vec::new();
+    loop {
+        let pendientes: Vec<InstanceKey> = motor
+            .instancias
+            .iter()
+            .filter(|(_, r)| r.estado == EstadoInstancia::Pending)
+            .map(|(k, _)| k.clone())
+            .collect();
+        if pendientes.is_empty() {
+            break;
+        }
+        for key in pendientes {
+            let (plantilla, nombre_esp, cadena_base, cadena_keys_base) = {
+                let Some(reg) = motor.instancias.get(&key) else {
+                    continue;
+                };
+                if reg.estado != EstadoInstancia::Pending {
+                    continue;
+                }
+                let Some(p) = plantillas.get(&key.funcion) else {
+                    continue;
+                };
+                (
+                    p.clone(),
+                    reg.nombre_especializado.clone().unwrap_or_default(),
+                    reg.origen
+                        .as_ref()
+                        .map(|o| o.cadena.clone())
+                        .unwrap_or_default(),
+                    reg.origen
+                        .as_ref()
+                        .map(|o| o.cadena_keys.clone())
+                        .unwrap_or_default(),
+                )
+            };
             if let Some(reg) = motor.instancias.get_mut(&key) {
                 reg.estado = EstadoInstancia::InProgress;
-                reg.funcion = Some(funcion);
-                reg.error = None;
             }
-            Ok(nombre)
-        }
-        Err(e) => {
-            if let Some(reg) = motor.instancias.get_mut(&key) {
-                reg.estado = EstadoInstancia::Failed;
-                reg.error = Some(e.clone());
+            motor.cadena_activa.push(key.clone());
+            let resultado = especializar_instancia(
+                &plantilla,
+                &key,
+                plantillas,
+                por_nombre,
+                motor,
+                firmas_no_genericas,
+                funciones,
+                &nombre_esp,
+                validar_v3,
+                cadena_base,
+                cadena_keys_base,
+            );
+            motor.cadena_activa.pop();
+            match resultado {
+                Ok(funcion) => {
+                    if let Some(reg) = motor.instancias.get_mut(&key) {
+                        reg.estado = EstadoInstancia::InProgress;
+                        reg.funcion = Some(funcion);
+                        reg.error = None;
+                    }
+                }
+                Err(e) => {
+                    if let Some(reg) = motor.instancias.get_mut(&key) {
+                        reg.estado = EstadoInstancia::Failed;
+                        reg.error = Some(e.clone());
+                    }
+                    errores.push(crate::evaluador::ErrorEjecucion {
+                        mensaje: e.to_string(),
+                        causa: Box::new(e),
+                        linea: plantilla.linea,
+                        columna: plantilla.columna,
+                        archivo: None,
+                    });
+                }
             }
-            Err(e)
         }
     }
+    errores
 }
 
 /// Ejecuta V3 post-especialización de forma iterativa sobre instancias especializadas
@@ -3060,6 +3426,7 @@ pub(crate) fn ejecutar_g4(
                         sol.callee_nombre,
                         key.nombre_tipos().join(",")
                     )],
+                    cadena_keys: vec![key.clone()],
                     linea: sol.linea,
                     columna: sol.columna,
                 };
@@ -3087,6 +3454,18 @@ pub(crate) fn ejecutar_g4(
         }
     }
 
+    let errs_esp = especializar_pendientes(
+        &mut motor,
+        &plantillas,
+        &por_nombre,
+        &firmas_ng,
+        funciones,
+        &mut validar_v3,
+    );
+    for mut e in errs_esp {
+        e.archivo = archivo.map(|s| s.to_string());
+        errores.push(e);
+    }
     // V3 post-especialización iterativa sobre instancias descubiertas en siembra (Bloqueante A).
     let errs_v3 = validar_v3_instancias_pendientes(
         &mut motor,
@@ -3150,6 +3529,18 @@ pub(crate) fn ejecutar_g4(
     }
     if let Some(errs) = motor_errores(&motor, archivo) {
         errores.extend(errs);
+    }
+    let errs_esp_rw = especializar_pendientes(
+        &mut motor,
+        &plantillas,
+        &por_nombre,
+        &firmas_ng,
+        funciones,
+        &mut validar_v3,
+    );
+    for mut e in errs_esp_rw {
+        e.archivo = archivo.map(|s| s.to_string());
+        errores.push(e);
     }
     // Validar V3 de instancias descubiertas durante reescritura (Bloqueante A).
     let errs_v3_rw = validar_v3_instancias_pendientes(
@@ -3334,6 +3725,7 @@ fn reescribir_no_generica(
         instancia: "<toplevel>".into(),
         tipos: vec![],
         cadena: vec![],
+        cadena_keys: vec![],
         linea: 1,
         columna: 1,
     };
@@ -4087,6 +4479,58 @@ pub fn verificar_integridad_salida_g4(
         ubic: &str,
     ) {
         match e {
+            Expresion::ConstruccionEstructura { campos, .. } => {
+                for (_, v) in campos {
+                    verificar_llamadas_y_tipos_expr(
+                        v,
+                        nombres_plantillas,
+                        todas_especializadas,
+                        validas_completas,
+                        archivo,
+                        errores,
+                        ubic,
+                    );
+                }
+            }
+            Expresion::ConstruccionVariante { argumentos, .. } => {
+                for v in argumentos {
+                    verificar_llamadas_y_tipos_expr(
+                        v,
+                        nombres_plantillas,
+                        todas_especializadas,
+                        validas_completas,
+                        archivo,
+                        errores,
+                        ubic,
+                    );
+                }
+            }
+            Expresion::Coincidir {
+                scrutinee, brazos, ..
+            } => {
+                verificar_llamadas_y_tipos_expr(
+                    scrutinee,
+                    nombres_plantillas,
+                    todas_especializadas,
+                    validas_completas,
+                    archivo,
+                    errores,
+                    ubic,
+                );
+                for b in brazos {
+                    for st in &b.cuerpo {
+                        verificar_llamadas_y_tipos_sent(
+                            st,
+                            nombres_plantillas,
+                            todas_especializadas,
+                            validas_completas,
+                            archivo,
+                            errores,
+                            ubic,
+                        );
+                    }
+                }
+            }
             Expresion::Llamada {
                 nombre,
                 argumentos,

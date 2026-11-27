@@ -15,6 +15,8 @@ pub struct Lexer {
     columna: usize,
     /// Archivo de origen, si está disponible (ADR-0017 D5).
     archivo: Option<String>,
+    /// Comentarios de línea `# ...` capturados (línea, texto sin el `#` inicial ni salto).
+    comentarios: Vec<(usize, String)>,
 }
 
 impl Lexer {
@@ -32,6 +34,7 @@ impl Lexer {
             linea: 1,
             columna: 1,
             archivo,
+            comentarios: Vec::new(),
         }
     }
 
@@ -162,6 +165,9 @@ impl Lexer {
                     if self.actual() == Some('=') {
                         self.avanzar();
                         TipoToken::IgualIgual
+                    } else if self.actual() == Some('>') {
+                        self.avanzar();
+                        TipoToken::FlechaDoble
                     } else {
                         TipoToken::Asignacion
                     }
@@ -241,16 +247,25 @@ impl Lexer {
                 Some(' ') | Some('\t') => self.avanzar(),
                 // Comentario de línea: '#' hasta antes del fin de línea.
                 Some('#') => {
+                    let linea = self.linea;
+                    let inicio = self.pos;
                     while let Some(c) = self.actual() {
                         if c == '\n' || c == '\r' {
                             break;
                         }
                         self.avanzar();
                     }
+                    let texto: String = self.entrada[inicio..self.pos].iter().collect();
+                    self.comentarios.push((linea, texto));
                 }
                 _ => break,
             }
         }
+    }
+
+    /// Comentarios de línea capturados durante la tokenización.
+    pub fn comentarios(&self) -> &[(usize, String)] {
+        &self.comentarios
     }
 
     fn leer_numero(&mut self) -> TipoToken {
@@ -335,6 +350,12 @@ impl Lexer {
             "usar" => TipoToken::Usar,
             "como" => TipoToken::Como,
             "publico" => TipoToken::Publico,
+            "estructura" => TipoToken::Estructura,
+            "enumeracion" => TipoToken::Enumeracion,
+            "coincidir" => TipoToken::Coincidir,
+            "implementar" => TipoToken::Implementar,
+            "rasgo" => TipoToken::Rasgo,
+            "yo" => TipoToken::Yo,
             _ => TipoToken::Identificador(texto),
         }
     }

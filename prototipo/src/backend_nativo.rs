@@ -37,6 +37,9 @@ pub fn generar_funciones_enteras(programa: &MirPrograma) -> String {
 }
 
 fn generar_funciones_con(programa: &MirPrograma, _permitir_texto: bool) -> String {
+    if programa_usa_ffi(programa) {
+        return "compile_error!(\"BAS-7124: backend nativo: FFI (cargar_ffi/llamar_ffi/descargar_ffi) no soportada; usar motor Tree-Walk o VM\");\n".to_string();
+    }
     let retornos = inferir_retornos_programa(programa);
     let mut out = String::new();
     out.push_str("mod bsk_runtime {\n");
@@ -118,6 +121,19 @@ fn generar_funciones_con(programa: &MirPrograma, _permitir_texto: bool) -> Strin
     out
 }
 
+fn programa_usa_ffi(programa: &MirPrograma) -> bool {
+    programa.funciones.iter().any(|f| {
+        f.bloques.iter().any(|b| {
+            b.stmts.iter().any(|s| match s {
+                MirStmt::Llamada { callee, .. } => matches!(
+                    callee.as_str(),
+                    "cargar_ffi" | "llamar_ffi" | "descargar_ffi"
+                ),
+                _ => false,
+            })
+        })
+    })
+}
 /// Genera código Rust (con función `main` de entrada) a partir de un programa MIR.
 pub fn generar_rust(programa: &MirPrograma) -> String {
     let retornos = inferir_retornos_programa(programa);
@@ -135,9 +151,15 @@ pub fn generar_rust(programa: &MirPrograma) -> String {
     let mut out = String::new();
     out.push_str("// Generado por BASILISCO backend nativo (Etapa A: runtime embebido)\n");
     out.push_str("#![allow(unused)]\n\n");
+    if programa_usa_ffi(programa) {
+        out.push_str(
+            "compile_error!(\"BAS-7124: backend nativo: FFI (cargar_ffi/llamar_ffi/descargar_ffi) no soportada; usar motor Tree-Walk o VM\");\n",
+        );
+        return out;
+    }
     if !main_soportada {
         out.push_str(
-            "compile_error!(\"backend nativo: la función 'main' usa operaciones no soportadas \
+            "compile_error!(\"BAS-7124: backend nativo: la función 'main' usa operaciones no soportadas \
              (try/catch/invoke, rangos u otras construcciones aún no soportadas)\");\n\n",
         );
     }
@@ -333,8 +355,45 @@ fn es_soportado(t: &TipoSem) -> bool {
             | TipoSem::Desconocido
             | TipoSem::Arreglo(_, _)
             | TipoSem::Lista(_)
-            | TipoSem::Coleccion(_)
+            | TipoSem::Coleccion(_, _)
+            | TipoSem::Nominal(_)
     )
+}
+
+fn tipo_contiene_nominal(t: &TipoSem) -> bool {
+    match t {
+        TipoSem::Nominal(_) => true,
+        TipoSem::Arreglo(inner, _) | TipoSem::Lista(inner) | TipoSem::Coleccion(inner, _) => {
+            tipo_contiene_nominal(inner)
+        }
+        TipoSem::Funcion {
+            params, retorno, ..
+        } => params.iter().any(tipo_contiene_nominal) || tipo_contiene_nominal(retorno),
+        _ => false,
+    }
+}
+
+fn rvalue_contiene_nominal(r: &MirRvalue) -> bool {
+    matches!(
+        r,
+        MirRvalue::ConstruirStruct { .. } | MirRvalue::CampoNominal { .. }
+    )
+}
+
+pub fn programa_contiene_nominal(programa: &MirPrograma) -> bool {
+    programa.funciones.iter().any(|f| {
+        f.params.iter().any(|(_, t)| tipo_contiene_nominal(t))
+            || tipo_contiene_nominal(&f.retorno)
+            || f.locals.iter().any(tipo_contiene_nominal)
+            || f.bloques.iter().any(|b| {
+                b.stmts.iter().any(|s| match s {
+                    MirStmt::Asignacion { valor, .. } | MirStmt::AsignacionGlobal { valor, .. } => {
+                        rvalue_contiene_nominal(valor)
+                    }
+                    _ => false,
+                })
+            })
+    })
 }
 
 fn funcion_soportada(f: &MirFunction, ctx: &CtxFn, retornos: &Retornos) -> bool {
@@ -431,6 +490,11 @@ fn rvalue_soportado(r: &MirRvalue) -> bool {
         MirRvalue::LeerCelda { base } => operando_soportado(base),
         MirRvalue::Clausura { capturas, .. } => capturas.iter().all(operando_soportado),
         MirRvalue::Rango { .. } => false,
+        MirRvalue::ConstruirStruct { campos, .. } => campos.iter().all(operando_soportado),
+        MirRvalue::CampoNominal { base, .. } => operando_soportado(base),
+        MirRvalue::ConstruirEnum { payload, .. } => payload.iter().all(operando_soportado),
+        MirRvalue::DiscriminanteEnum { base } => operando_soportado(base),
+        MirRvalue::PayloadEnum { base, .. } => operando_soportado(base),
     }
 }
 
@@ -498,9 +562,10 @@ fn tipo_conv_expr(t: Option<&TipoSem>) -> Option<String> {
                 conv_de(elem).unwrap_or_else(|| "TipoConv::Nada".to_string()),
                 n
             )),
-            TipoSem::Coleccion(elem) => Some(format!(
-                "&TipoConv::Coleccion(Box::new({}))",
-                conv_de(elem).unwrap_or_else(|| "TipoConv::Nada".to_string())
+            TipoSem::Coleccion(elem, n) => Some(format!(
+                "&TipoConv::Coleccion(Box::new({}), {})",
+                conv_de(elem).unwrap_or_else(|| "TipoConv::Nada".to_string()),
+                n
             )),
             _ => None,
         }
@@ -547,6 +612,33 @@ fn generar_stmt(out: &mut String, stmt: &MirStmt, indent: usize, ctx: &CtxFn) {
                         }
                         MirProjection::Celda => {
                             out.push_str(&format!("{}l{}.escribir_celda({})?;\n", pad, base, rhs));
+                        }
+                        MirProjection::CampoIndice(idx_campo) => {
+                            out.push_str(&format!("{}match &mut l{} {{\n", pad, base));
+                            out.push_str(&format!(
+                                "{}    Valor::EstructuraNominal {{ campos, .. }} => {{\n",
+                                pad
+                            ));
+                            out.push_str(&format!(
+                                "{}        if {idx} < campos.len() {{ campos[{idx}] = {rhs}; }}\n",
+                                pad,
+                                idx = idx_campo,
+                                rhs = rhs
+                            ));
+                            out.push_str(&format!(
+                                "{}        else {{ return Err(RuntimeError(\"BAS-7124: índice de campo nominal fuera de rango\".to_string())); }}\n",
+                                pad
+                            ));
+                            out.push_str(&format!("{}    }}\n", pad));
+                            out.push_str(&format!(
+                                "{}    Valor::Celda(c) => {{\n{}        let mut g = c.lock().unwrap();\n{}        match &mut *g {{\n{}            Valor::EstructuraNominal {{ campos, .. }} => {{\n{}                if {idx} < campos.len() {{ campos[{idx}] = {rhs}; }}\n{}                else {{ return Err(RuntimeError(\"BAS-7124: índice de campo nominal fuera de rango\".to_string())); }}\n{}            }}\n{}            _ => {{ return Err(RuntimeError(\"BAS-7124: asignación nominal sobre valor no nominal\".to_string())); }}\n{}        }}\n{}    }}\n",
+                                pad, pad, pad, pad, pad, pad, pad, pad, pad, pad, idx = idx_campo, rhs = rhs
+                            ));
+                            out.push_str(&format!(
+                                "{}    _ => {{ return Err(RuntimeError(\"BAS-7124: asignación nominal sobre valor no nominal\".to_string())); }}\n",
+                                pad
+                            ));
+                            out.push_str(&format!("{}}}\n", pad));
                         }
                     }
                 }
@@ -897,7 +989,42 @@ fn generar_rvalue(r: &MirRvalue, _ctx: &CtxFn) -> String {
                 caps.join(", ")
             )
         }
-        MirRvalue::Rango { .. } => "Valor::Nulo".to_string(),
+        MirRvalue::Rango { .. } => {
+            "{ return Err(RuntimeError(\"BAS-7124: rango no soportado en backend_nativo\".to_string())); #[allow(unreachable_code)] Valor::Nulo }".to_string()
+        }
+        MirRvalue::ConstruirStruct { tipo_id, campos } => {
+            let cs: Vec<String> = campos.iter().map(generar_operando).collect();
+            format!(
+                "Valor::EstructuraNominal {{ tipo_id: {}u32, campos: vec![{}] }}",
+                tipo_id,
+                cs.join(", ")
+            )
+        }
+        MirRvalue::CampoNominal { base, indice } => {
+            let b = generar_operando(base);
+            format!("{}.campo_nominal({})?", b, indice)
+        }
+        MirRvalue::ConstruirEnum {
+            tipo_id,
+            variante_idx,
+            payload,
+        } => {
+            let ps: Vec<String> = payload.iter().map(generar_operando).collect();
+            format!(
+                "Valor::EnumNominal {{ tipo_id: {}u32, variante: {}u32, payload: vec![{}] }}",
+                tipo_id,
+                variante_idx,
+                ps.join(", ")
+            )
+        }
+        MirRvalue::DiscriminanteEnum { base } => {
+            let b = generar_operando(base);
+            format!("Valor::Entero({}.discriminante_enum()?)", b)
+        }
+        MirRvalue::PayloadEnum { base, indice } => {
+            let b = generar_operando(base);
+            format!("{}.payload_enum({})?", b, indice)
+        }
     }
 }
 

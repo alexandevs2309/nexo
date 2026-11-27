@@ -945,3 +945,212 @@ fn backend_nativo_closure_creada_en_para_cada() {
     };
     assert_eq!(salida, vm_run(src));
 }
+
+#[test]
+fn backend_nativo_rechaza_rango_bas7124() {
+    use basilisco::mir::{
+        BlockId, LocalId, MirBasicBlock, MirFunction, MirOperand, MirPrograma, MirRvalue, MirStmt,
+        MirTerminator,
+    };
+    let prog = MirPrograma {
+        funciones: vec![MirFunction {
+            nombre: "main".into(),
+            params: vec![],
+            retorno: basilisco::semantico::TipoSem::Desconocido,
+            locals: vec![basilisco::semantico::TipoSem::Desconocido],
+            bloques: vec![MirBasicBlock {
+                id: BlockId(0),
+                stmts: vec![MirStmt::Asignacion {
+                    destino: basilisco::mir::MirPlace {
+                        local: LocalId(0),
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::Rango {
+                        inicio: MirOperand::Const(basilisco::mir::MirConst::Entero(1)),
+                        fin: MirOperand::Const(basilisco::mir::MirConst::Entero(3)),
+                        inclusivo: false,
+                    },
+                }],
+                terminator: MirTerminator::Return(Some(MirOperand::Copy(LocalId(0)))),
+
+                stmt_spans: Vec::new(),
+                terminator_span: None,
+            }],
+            bloque_entrada: BlockId(0),
+        }],
+        globals: vec![],
+        contiene_coincidir: false,
+        contiene_nominales: false,
+
+        source_map: std::collections::HashMap::new(),
+    };
+    let rust = backend_nativo::generar_rust(&prog);
+    assert!(
+        rust.contains("BAS-7124"),
+        "debe rechazar rango con BAS-7124: {rust}"
+    );
+    assert!(
+        !rust.contains("Valor::Nulo /* BAS-7124: rango no soportado en backend_nativo */"),
+        "no debe usar fallback silencioso Valor::Nulo: {rust}"
+    );
+}
+
+#[test]
+fn backend_nativo_asignacion_nominal_fuera_de_rango_error_explicito() {
+    use basilisco::mir::{
+        BlockId, LocalId, MirBasicBlock, MirFunction, MirOperand, MirPlace, MirPrograma,
+        MirProjection, MirRvalue, MirStmt, MirTerminator,
+    };
+    let prog = MirPrograma {
+        funciones: vec![MirFunction {
+            nombre: "main".into(),
+            params: vec![],
+            retorno: basilisco::semantico::TipoSem::Entero,
+            locals: vec![
+                basilisco::semantico::TipoSem::Nominal(basilisco::semantico::TipoNominalId(1)),
+                basilisco::semantico::TipoSem::Entero,
+            ],
+            bloques: vec![MirBasicBlock {
+                id: BlockId(0),
+                stmts: vec![
+                    MirStmt::Asignacion {
+                        destino: MirPlace {
+                            local: LocalId(0),
+                            projection: vec![],
+                        },
+                        valor: MirRvalue::ConstruirStruct {
+                            tipo_id: 1,
+                            campos: vec![MirOperand::Const(basilisco::mir::MirConst::Entero(1))],
+                        },
+                    },
+                    MirStmt::Asignacion {
+                        destino: MirPlace {
+                            local: LocalId(0),
+                            projection: vec![MirProjection::CampoIndice(5)],
+                        },
+                        valor: MirRvalue::Use(MirOperand::Const(basilisco::mir::MirConst::Entero(
+                            9,
+                        ))),
+                    },
+                    MirStmt::Asignacion {
+                        destino: MirPlace {
+                            local: LocalId(1),
+                            projection: vec![],
+                        },
+                        valor: MirRvalue::Use(MirOperand::Const(basilisco::mir::MirConst::Entero(
+                            0,
+                        ))),
+                    },
+                ],
+                terminator: MirTerminator::Return(Some(MirOperand::Copy(LocalId(1)))),
+
+                stmt_spans: Vec::new(),
+                terminator_span: None,
+            }],
+            bloque_entrada: BlockId(0),
+        }],
+        globals: vec![],
+        contiene_coincidir: false,
+        contiene_nominales: true,
+
+        source_map: std::collections::HashMap::new(),
+    };
+    let rust = backend_nativo::generar_rust(&prog);
+    assert!(!rust.contains("fallo silencioso"), "{rust}");
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        // Si no hay rustc, al menos verificamos que el código generado contiene el error explícito.
+        assert!(
+            rust.contains("índice de campo nominal fuera de rango"),
+            "{rust}"
+        );
+        return;
+    };
+    // Si compiló y ejecutó, debe fallar con error explícito, nunca éxito silencioso.
+    panic!("debería haber fallado en runtime por índice fuera de rango, got: {salida}");
+}
+
+#[test]
+fn backend_nativo_asignacion_nominal_tipo_incompatible_error_explicito() {
+    use basilisco::mir::{
+        BlockId, LocalId, MirBasicBlock, MirFunction, MirOperand, MirPlace, MirPrograma,
+        MirProjection, MirRvalue, MirStmt, MirTerminator,
+    };
+    let prog = MirPrograma {
+        funciones: vec![MirFunction {
+            nombre: "main".into(),
+            params: vec![],
+            retorno: basilisco::semantico::TipoSem::Entero,
+            locals: vec![
+                basilisco::semantico::TipoSem::Entero,
+                basilisco::semantico::TipoSem::Entero,
+            ],
+            bloques: vec![MirBasicBlock {
+                id: BlockId(0),
+                stmts: vec![
+                    MirStmt::Asignacion {
+                        destino: MirPlace {
+                            local: LocalId(0),
+                            projection: vec![],
+                        },
+                        valor: MirRvalue::Use(MirOperand::Const(basilisco::mir::MirConst::Entero(
+                            1,
+                        ))),
+                    },
+                    MirStmt::Asignacion {
+                        destino: MirPlace {
+                            local: LocalId(0),
+                            projection: vec![MirProjection::CampoIndice(0)],
+                        },
+                        valor: MirRvalue::Use(MirOperand::Const(basilisco::mir::MirConst::Entero(
+                            9,
+                        ))),
+                    },
+                ],
+                terminator: MirTerminator::Return(Some(MirOperand::Const(
+                    basilisco::mir::MirConst::Entero(0),
+                ))),
+
+                stmt_spans: Vec::new(),
+                terminator_span: None,
+            }],
+            bloque_entrada: BlockId(0),
+        }],
+        globals: vec![],
+        contiene_coincidir: false,
+        contiene_nominales: false,
+
+        source_map: std::collections::HashMap::new(),
+    };
+    let rust = backend_nativo::generar_rust(&prog);
+    let Some(salida) = compilar_y_ejecutar(&rust) else {
+        assert!(
+            rust.contains("asignación nominal sobre valor no nominal"),
+            "{rust}"
+        );
+        return;
+    };
+    panic!("debería haber fallado en runtime por tipo incompatible, got: {salida}");
+}
+
+#[test]
+fn backend_nativo_rechaza_ffi_bas7124() {
+    let src = r#"
+funcion main() -> entero {
+    sea lib = cargar_ffi("lib.so")
+    retornar 0
+}
+"#;
+    let tokens = basilisco::Lexer::nuevo(src).tokenizar().unwrap();
+    let ss = basilisco::Parser::nuevo(tokens).parsear_programa().unwrap();
+    let mut ctx = basilisco::ContextoSemantico::nuevo();
+    let _ = ctx.analizar_programa(&ss);
+    let (ss, _errs_g4) = ctx.monomorfizar_programa(&ss);
+    let hir = basilisco::hir::lower_programa(&ss, &ctx).unwrap();
+    let mirp = basilisco::mir::lower_programa(&hir);
+    let rust = basilisco::backend_nativo::generar_rust(&mirp);
+    assert!(
+        rust.contains("BAS-7124"),
+        "debe rechazar FFI con BAS-7124: {rust}"
+    );
+    assert!(rust.contains("FFI"), "debe mencionar FFI: {rust}");
+}

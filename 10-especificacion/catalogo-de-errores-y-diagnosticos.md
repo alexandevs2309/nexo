@@ -87,7 +87,26 @@ Fases: `léxico`, `sintáctico`, `semántico`, `ejecución`. El prototipo actual
 | `BAS-3023` | Inicialización antes del uso | (pendiente de formalizar) | Variables no inicializadas. |
 | `BAS-3024` | Arreglos/listas anidados no soportados | (pendiente de formalizar) | Limitación actual. |
 
-### 3.4 Genéricos (`BAS-7XXX`) — rango reservado (Fase 07, G2+)
+### 3.4 FFI / ABI C (`BAS-307X/BAS-308X`) — Fase 11
+Rango reservado para errores de frontera FFI ABI C. Los códigos E1070-E1082 son los códigos de runtime emitidos por el prototipo; los BAS-307x/308x son su correspondencia normativa.
+
+| Código | Causa | Mensaje típico | Notas |
+|---|---|---|---|
+| `BAS-3070` / `E1070` | Biblioteca FFI no encontrada | `biblioteca FFI no encontrada '<ruta>': <detalle>` | Carga. |
+| `BAS-3071` / `E1071` | Biblioteca FFI no cargable | `biblioteca FFI no cargable '<ruta>': <detalle>` | Incompatible/no cargable. |
+| `BAS-3072` / `E1072` | Símbolo FFI no encontrado | `símbolo FFI '<simbolo>' no encontrado: <detalle>` | Resolución. |
+| `BAS-3073` / `E1073` | Id de biblioteca FFI inválido | `id de biblioteca FFI inválido: <id>` | Estado de registro. |
+| `BAS-3074` / `E1074` | Biblioteca FFI descargada | `biblioteca FFI descargada: id <id>` | Uso tras descarga/ausencia. |
+| `BAS-3075` / `E1075` | Firma FFI inválida | `firma FFI inválida: <detalle>` | Tipo retorno/firma. |
+| `BAS-3076` / `E1076` | Aridad FFI incompatible | `aridad FFI incompatible: esperado <n>, obtenido <m>` | Reservado; no validable sin metadata C. |
+| `BAS-3077` / `E1077` | Tipo argumento FFI incompatible | `argumento FFI <i> de tipo '<tipo>' incompatible: <detalle>` | Conversión/validación argumento. |
+| `BAS-3078` / `E1078` | Conversión FFI fuera de rango | `conversión FFI fuera de rango: <detalle>` | decimal no finito/desbordado, etc. |
+| `BAS-3079` / `E1079` | Resultado FFI incompatible | `resultado FFI incompatible: <detalle>` | p.ej. texto nulo. |
+| `BAS-3080` / `E1080` | Error de invocación FFI | `error de invocación FFI: <detalle>` | Invocación/pánico capturado. |
+| `BAS-3081` / `E1081` | Estado de recurso FFI inválido | `estado de recurso FFI inválido: <detalle>` | Estado inválido. |
+| `BAS-3082` / `E1082` | Error de memoria FFI | `error de memoria FFI: <detalle>` | Memoria controlable por BASILISCO. |
+
+### 3.5 Genéricos (`BAS-7XXX`) — rango reservado (Fase 07, G2+)
 Rango **BAS-70xx reservado formalmente** para diagnósticos de genéricos/monomorfización. Verificación previa (2026-11-18, misiones G2.1/G2.2): sin colisiones detectadas de `BAS-7` en el repositorio al momento de la asignación; los códigos no utilizados permanecen reservados y no se redefinen códigos existentes.
 
 | Código | Situación | Mensaje(s) real(es) | Etapa/notas |
@@ -113,6 +132,33 @@ Rango **BAS-70xx reservado formalmente** para diagnósticos de genéricos/monomo
 | `BAS-7019` | Profundidad de instanciación excedida | `profundidad de instanciación excedida para '<f>' (instancia '<i>', tipos [..], límite <n>): <detalle> [cadena: ...]` | G4 monomorfización (límite calibrado M2). **Nota:** colisión con propuesta de plan (BAS-7012 ocupado por G3, conflicto de unificación); se preserva G3 y se asigna BAS-7019 (E1054). |
 | `BAS-7020` | Referencia genérica residual en IR | `referencia genérica residual en IR concreta (<ubicación>): <detalle>` | G4 monomorfización/gate (rechazo de parámetros genéricos o referencias no resueltas en HIR/MIR final). **Nota:** colisión con propuesta de plan (BAS-7014 ocupado por G3, incompatibilidad concreta V3); se preserva G3 y se asigna BAS-7020 (E1055). |
 | `BAS-7021` | Límite de instancias únicas excedido | `límite de instancias únicas excedido (límite <n>) al solicitar '<i>' con tipos [..]: <detalle> [cadena: ...]` | G4 monomorfización (límite calibrado M1). **Nota:** el plan propuso BAS-7018 para esta condición; BAS-7018 se asignó a recursión polimórfica creciente por colisiones previas, por lo que se asigna BAS-7021 (E1056). |
+| `BAS-7101` | Tipo nominal no resuelto | `tipo nominal '<T>' no encontrado en el ámbito actual` | S8.1 semántico. |
+| `BAS-7102` | Tipo nominal duplicado/sombreado | `el tipo nominal '<T>' ya está declarado o su sombreado no está permitido en v1[: <detalle>]` | S8.1 semántico. |
+| `BAS-7103` | Campo struct desconocido | `el campo '<c>' no existe en la estructura '<T>'` | S8.1 semántico. |
+| `BAS-7104` | Campo struct duplicado | `el campo '<c>' está duplicado en la construcción de '<T>'` | S8.1 semántico. |
+| `BAS-7105` | Campo struct faltante | `falta el campo '<c>' en la construcción de '<T>'` | S8.1 semántico. |
+| `BAS-7106` | Campo struct sobrante | `el campo '<c>' no pertenece a la estructura '<T>'` | S8.1 semántico. |
+| `BAS-7107` | Tipo de campo incompatible | `el campo '<c>' de '<T>' espera <esperado> y recibió <obtenido>` | S8.1 semántico. |
+| `BAS-7108` | Construcción nominal inválida | `construcción inválida del tipo nominal '<T>': <detalle>` | S8.1 semántico. |
+| `BAS-7109` | Variante enum desconocida | `la variante '<v>' no existe en la enumeración '<T>'` | S8.2 semántico. |
+| `BAS-7110` | Payload de variante incompatible | `payload incompatible para la variante '<v>' de '<T>': <detalle>` | S8.2 semántico. |
+| `BAS-7111` | Construcción/forma de variante inválida | `construcción inválida de variante para '<T>': <detalle>` | S8.2 semántico. |
+| `BAS-7112` | Patrón incompatible | `patrón incompatible: <detalle>` | S8.3 semántico. |
+| `BAS-7113` | Match no exhaustivo | `coincidir no exhaustivo: <detalle>` | S8.3 semántico. |
+| `BAS-7114` | Patrón inalcanzable | `patrón inalcanzable: <detalle>` | S8.3 semántico. |
+| `BAS-7115` | Binding de patrón inválido | `binding de patrón inválido: <detalle>` | S8.3 semántico. |
+| `BAS-7116` | Uso de patrón inválido | `uso de patrón inválido: <detalle>` | S8.3 semántico. |
+| `BAS-7117` | Método no encontrado | `método '<m>' no encontrado en '<T>'` | S8.4 semántico. |
+| `BAS-7118` | Firma/colisión de método incompatible | `firma/colisión de método incompatible: <detalle>` | S8.4 semántico. |
+| `BAS-7119` | Trait no encontrado | `rasgo '<R>' no encontrado` | S8.4 semántico. |
+| `BAS-7120` | Trait no implementado | `el tipo '<T>' no implementa el rasgo '<R>'` | S8.4 semántico. |
+| `BAS-7121` | Implementación incompleta | `implementación incompleta de '<R>' para '<T>': <detalle>` | S8.4 semántico. |
+| `BAS-7122` | Impl duplicada o violación de coherencia | `implementación duplicada o violación de coherencia: <detalle>` | S8.4 semántico. |
+| `BAS-7124` | Capacidad nominal no soportada por backend | `capacidad nominal '<cap>' no soportada por el backend '<b>' en capa '<capa>'` | S8.1+ capacidad/backend. |
+| `BAS-7125` | Genérico nominal no soportado | `tipos nominales genéricos no soportados en Fase 08 v1: '<T>'` | S8.1+ semántico/capacidad. |
+| `BAS-7126` | Igualdad nominal no soportada | `igualdad nominal no soportada en Fase 08 v1 para '<T>'` | S8.1+ semántico; solo nominales Fase 08. |
+| `BAS-7128` | Miembro no visible | `miembro '<m>' de '<T>' no es visible en este contexto` | S8.1+ semántico. |
+| `BAS-7130` | Recursividad nominal por valor | `recursividad por valor no permitida en tipo nominal '<T>': <ciclo>` | S8.1 semántico. |
 
 ## 4. Ubicación y *spans*
 - **Léxico/sintáctico:** usan la ubicación del token donde se detecta el error (`linea`/`columna`).

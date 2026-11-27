@@ -55,13 +55,17 @@ fn v1_argumentos_tipo_en_funcion_no_generica() {
 
 #[test]
 fn v1_parametro_tipo_no_declarado_en_anotacion() {
-    // Referencia a parámetro no declarado en la plantilla (error estructural/declaración).
-    // Debe ser detectado independientemente de sustitución (parser/semántica según frontend G2.x).
-    let tokens = Lexer::nuevo("funcion f(x: T) -> T {\n  retornar x\n}\n")
-        .tokenizar()
-        .expect("léxico");
-    let r = Parser::nuevo(tokens).parsear_programa();
-    assert!(r.is_err(), "T no declarado debe rechazarse en la plantilla");
+    // S8.1: T no declarado se parsea como Nominal y se rechaza en semántica (BAS-7101).
+    let src = "funcion f(x: T) -> T {\n  retornar x\n}\n";
+    let tokens = Lexer::nuevo(src).tokenizar().expect("léxico");
+    let ss = Parser::nuevo(tokens).parsear_programa().expect("sintaxis");
+    let mut ctx = ContextoSemantico::nuevo();
+    let e = ctx.analizar_programa(&ss);
+    assert!(
+        e.iter().any(|x| x.causa.codigo() == "BAS-7101"),
+        "T no declarado debe rechazarse en la plantilla: {:?}",
+        e.iter().map(|x| x.causa.codigo()).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -524,13 +528,17 @@ fn forwarding_argumento_tipo_invalido_fuera_contexto_e1044() {
 
 #[test]
 fn forwarding_argumento_tipo_fuera_contexto_rechazo_frontend_trazable() {
-    // Trazabilidad: el mismo patrón en fuente es rechazado por el frontend (ámbito de tipos),
-    // preservando rechazo temprano no permisivo.
+    // S8.1: U fuera de contexto se parsea como nominal/tipo y se rechaza en semántica (BAS-7101 o E1046).
     let src = "funcion id<T>(x: T) -> T {\n  retornar x\n}\nfuncion g(x: entero) -> entero {\n  retornar id::<U>(x)\n}\n";
     let tokens = Lexer::nuevo(src).tokenizar().expect("léxico");
+    let ss = Parser::nuevo(tokens).parsear_programa().expect("sintaxis");
+    let mut ctx = ContextoSemantico::nuevo();
+    let e = ctx.analizar_programa(&ss);
     assert!(
-        Parser::nuevo(tokens).parsear_programa().is_err(),
-        "el frontend debe rechazar parámetros de tipo fuera de contexto en fuente"
+        e.iter()
+            .any(|x| matches!(x.causa.codigo(), "BAS-7101" | "E1046" | "E1049")),
+        "el frontend debe rechazar parámetros de tipo fuera de contexto: {:?}",
+        e.iter().map(|x| x.causa.codigo()).collect::<Vec<_>>()
     );
 }
 

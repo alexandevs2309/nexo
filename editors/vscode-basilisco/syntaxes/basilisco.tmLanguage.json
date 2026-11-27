@@ -1,0 +1,35 @@
+{
+  "scopeName": "source.basilisco",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#types" },
+    { "include": "#functions" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [{ "name": "comment.line.number-sign.basilisco", "match": "#.*$" }]
+    },
+    "strings": {
+      "patterns": [{ "name": "string.quoted.double.basilisco", "begin": "\"", "end": "\"", "patterns": [{ "name": "constant.character.escape.basilisco", "match": "\\\\." }] }]
+    },
+    "numbers": {
+      "patterns": [{ "name": "constant.numeric.basilisco", "match": "\\b[0-9]+(?:\\.[0-9]+)?\\b" }]
+    },
+    "keywords": {
+      "patterns": [{ "name": "keyword.control.basilisco", "match": "\\b(funcion|var|sea|const|si|sino|mientras|para|cada|en|retornar|romper|continuar|clase|estructura|enumeracion|rasgo|implementar|importar|usar|desde|como|publico|privado|intentar|capturar|lanzar|coincidir|caso|mostrar|verdadero|falso|nulo)\\b" }]
+    },
+    "constants": {
+      "patterns": [{ "name": "constant.language.basilisco", "match": "\\b(verdadero|falso|nulo)\\b" }]
+    },
+    "types": {
+      "patterns": [{ "name": "storage.type.basilisco", "match": "\\b(entero|decimal|texto|logico|lista|mapa|vacio|cualquier)\\b" }]
+    },
+    "functions": {
+      "patterns": [{ "name": "entity.name.function.basilisco", "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()" }]
+    }
+  }
+}

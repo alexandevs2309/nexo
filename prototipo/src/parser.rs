@@ -98,6 +98,79 @@ pub enum Expresion {
         linea: usize,
         columna: usize,
     },
+    /// Construcción de estructura nominal `Tipo { campo: expr }` (Fase 08 S8.1).
+    ConstruccionEstructura {
+        nombre: String,
+        campos: Vec<(String, Expresion)>,
+        linea: usize,
+        columna: usize,
+    },
+    /// Construcción de variante enum nominal `Tipo.Variante` o `Tipo.Variante(args)` (Fase 08 S8.2).
+    ConstruccionVariante {
+        tipo: String,
+        variante: String,
+        argumentos: Vec<Expresion>,
+        linea: usize,
+        columna: usize,
+    },
+    /// Expresión `coincidir` (Fase 08 S8.3).
+    Coincidir {
+        scrutinee: Box<Expresion>,
+        brazos: Vec<BrazoCoincidir>,
+        linea: usize,
+        columna: usize,
+    },
+}
+
+/// Patrón de `coincidir` (Fase 08 S8.3, v1).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Patron {
+    Wildcard {
+        linea: usize,
+        columna: usize,
+    },
+    Binding {
+        nombre: String,
+        linea: usize,
+        columna: usize,
+    },
+    Literal {
+        valor: Valor,
+        linea: usize,
+        columna: usize,
+    },
+    Variante {
+        tipo: String,
+        variante: String,
+        campos: Vec<Patron>,
+        linea: usize,
+        columna: usize,
+    },
+    Estructura {
+        tipo: String,
+        campos: Vec<(String, Patron)>,
+        linea: usize,
+        columna: usize,
+    },
+}
+
+/// Brazo de `coincidir` (Fase 08 S8.3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrazoCoincidir {
+    pub patron: Patron,
+    pub cuerpo: Vec<Sentencia>,
+    pub linea: usize,
+    pub columna: usize,
+}
+
+/// Definición de campo en una estructura nominal (Fase 08 S8.1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CampoEstructura {
+    pub nombre: String,
+    pub tipo: TipoAnotacion,
+    pub publico: bool,
+    pub linea: usize,
+    pub columna: usize,
 }
 
 /// Sentencias de un programa (ADR-0006, ampliadas ADR-0007, ADR-0008).
@@ -129,6 +202,14 @@ pub enum Sentencia {
     AsignacionIndice {
         objeto: Box<Expresion>,
         indice: Box<Expresion>,
+        valor: Expresion,
+        linea: usize,
+        columna: usize,
+    },
+    /// `objeto.campo = expresión` asignación de campo nominal (Fase 08 S8.1, C2).
+    AsignacionCampo {
+        objeto: Box<Expresion>,
+        campo: String,
         valor: Expresion,
         linea: usize,
         columna: usize,
@@ -226,6 +307,86 @@ pub enum Sentencia {
         linea: usize,
         columna: usize,
     },
+    /// Declaración de estructura nominal (Fase 08 S8.1).
+    Estructura {
+        nombre: String,
+        campos: Vec<CampoEstructura>,
+        linea: usize,
+        columna: usize,
+        publico: bool,
+    },
+    /// Declaración de enumeración nominal (Fase 08 S8.2).
+    Enumeracion {
+        nombre: String,
+        variantes: Vec<VarianteEnumeracion>,
+        linea: usize,
+        columna: usize,
+        publico: bool,
+    },
+    /// Declaración de rasgo (Fase 08 S8.4b).
+    Rasgo {
+        nombre: String,
+        metodos: Vec<FirmaMetodo>,
+        linea: usize,
+        columna: usize,
+        publico: bool,
+    },
+    /// Implementación inherente `implementar Tipo { ... }` (Fase 08 S8.4a).
+    ImplementacionInherente {
+        tipo: String,
+        metodos: Vec<Metodo>,
+        linea: usize,
+        columna: usize,
+    },
+    /// Implementación de rasgo `implementar Rasgo para Tipo { ... }` (Fase 08 S8.4b).
+    ImplementacionRasgo {
+        rasgo: String,
+        tipo: String,
+        metodos: Vec<Metodo>,
+        linea: usize,
+        columna: usize,
+    },
+}
+
+/// Variante de enumeración nominal (Fase 08 S8.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VarianteEnumeracion {
+    pub nombre: String,
+    /// Payload posicional. Vacío para variante unitaria.
+    pub payload: Vec<TipoAnotacion>,
+    pub linea: usize,
+    pub columna: usize,
+}
+
+/// Receptor de método (Fase 08 S8.4).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReceptorMetodo {
+    Ninguno,
+    Yo { mutable: bool },
+}
+
+/// Firma de método en rasgo (Fase 08 S8.4b).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FirmaMetodo {
+    pub nombre: String,
+    pub receptor: ReceptorMetodo,
+    pub parametros: Vec<(String, Option<TipoAnotacion>)>,
+    pub tipo_retorno: Option<TipoAnotacion>,
+    pub linea: usize,
+    pub columna: usize,
+}
+
+/// Método en implementación (Fase 08 S8.4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Metodo {
+    pub nombre: String,
+    pub receptor: ReceptorMetodo,
+    pub parametros: Vec<(String, Option<TipoAnotacion>)>,
+    pub tipo_retorno: Option<TipoAnotacion>,
+    pub cuerpo: Vec<Sentencia>,
+    pub linea: usize,
+    pub columna: usize,
+    pub publico: bool,
 }
 
 /// Anotación de tipo en declaraciones (var/dato/const).
@@ -243,6 +404,8 @@ pub enum TipoAnotacion {
     /// Referencia sintáctica a un parámetro de tipo (G2, Fase 07).
     /// No implica validación semántica en G2.
     Parametro(String),
+    /// Tipo nominal declarado por el usuario (Fase 08 S8.1).
+    Nominal(String),
 }
 
 impl TipoAnotacion {
@@ -257,6 +420,7 @@ impl TipoAnotacion {
             TipoAnotacion::Lista(t) => format!("lista<{}>", t.nombre()),
             TipoAnotacion::Nulo => "nulo".to_string(),
             TipoAnotacion::Parametro(n) => n.clone(),
+            TipoAnotacion::Nominal(n) => n.clone(),
         }
     }
 }
@@ -340,6 +504,8 @@ pub struct Parser {
     parametros_tipo_alcance: Vec<std::collections::HashSet<String>>,
     /// Archivo de origen, si está disponible (ADR-0017 D5).
     archivo: Option<String>,
+    /// C1 (Fase 08 R3): bloquea literal struct directo `Ident { ... }` en cabeza de control.
+    bloquear_literal_struct_cabeza: bool,
 }
 
 impl Parser {
@@ -357,6 +523,7 @@ impl Parser {
             profundidad_bloque: 0,
             parametros_tipo_alcance: Vec::new(),
             archivo,
+            bloquear_literal_struct_cabeza: false,
         }
     }
 
@@ -406,10 +573,15 @@ impl Parser {
                         | TipoToken::Dato
                         | TipoToken::Const
                         | TipoToken::Funcion
+                        | TipoToken::Estructura
+                        | TipoToken::Enumeracion
+                        | TipoToken::Rasgo
                 )
             )
         {
-            return Err(self.error("'publico' solo puede preceder a una declaración o función"));
+            return Err(self.error(
+                "'publico' solo puede preceder a una declaración, función, estructura, enumeración o rasgo",
+            ));
         }
 
         if matches!(
@@ -419,6 +591,25 @@ impl Parser {
             return self.sentencia_declaracion(publico);
         } else if matches!(self.actual(), Some(TipoToken::Funcion)) {
             let st = self.sentencia_funcion(publico)?;
+            self.terminar_sentencia()?;
+            return Ok(st);
+        } else if matches!(self.actual(), Some(TipoToken::Estructura)) {
+            let st = self.sentencia_estructura(publico)?;
+            self.terminar_sentencia()?;
+            return Ok(st);
+        } else if matches!(self.actual(), Some(TipoToken::Enumeracion)) {
+            let st = self.sentencia_enumeracion(publico)?;
+            self.terminar_sentencia()?;
+            return Ok(st);
+        } else if matches!(self.actual(), Some(TipoToken::Rasgo)) {
+            let st = self.sentencia_rasgo(publico)?;
+            self.terminar_sentencia()?;
+            return Ok(st);
+        } else if matches!(self.actual(), Some(TipoToken::Implementar)) {
+            if publico {
+                return Err(self.error("'publico' no puede preceder a 'implementar'"));
+            }
+            let st = self.sentencia_implementar()?;
             self.terminar_sentencia()?;
             return Ok(st);
         } else if matches!(self.actual(), Some(TipoToken::Retornar)) {
@@ -485,6 +676,7 @@ impl Parser {
         if matches!(
             self.actual(),
             Some(TipoToken::Identificador(_))
+                | Some(TipoToken::Yo)
                 | Some(TipoToken::CorcheteIzq)
                 | Some(TipoToken::ParentesisIzq)
         ) {
@@ -514,9 +706,35 @@ impl Parser {
                         linea,
                         columna,
                     } => {
+                        // C2: solo se admite id[indice] = expr en v1.
+                        if !matches!(objeto.as_ref(), Expresion::Variable { .. }) {
+                            return Err(self.error(
+                                "forma de lvalue no soportada en Fase 08 v1; se admite solo `id[indice] = expr`",
+                            ));
+                        }
                         return Ok(Sentencia::AsignacionIndice {
                             objeto,
                             indice,
+                            valor,
+                            linea,
+                            columna,
+                        });
+                    }
+                    Expresion::Acceso {
+                        objeto,
+                        miembro,
+                        linea,
+                        columna,
+                    } => {
+                        // C2: solo se admite id.campo = expr en v1.
+                        if !matches!(objeto.as_ref(), Expresion::Variable { .. }) {
+                            return Err(self.error(
+                                "forma de lvalue no soportada en Fase 08 v1; se admite solo `id.campo = expr`",
+                            ));
+                        }
+                        return Ok(Sentencia::AsignacionCampo {
+                            objeto,
+                            campo: miembro,
                             valor,
                             linea,
                             columna,
@@ -617,13 +835,11 @@ impl Parser {
             }
             Some(TipoToken::Identificador(t)) => {
                 let nombre = t.clone();
+                self.pos += 1;
                 if self.tipo_param_en_alcance(&nombre) {
-                    self.pos += 1;
                     Ok(TipoAnotacion::Parametro(nombre))
                 } else {
-                    Err(self.error(
-                        "tipo desconocido; se esperaba: entero, decimal, real, logico, texto, nulo, arreglo<T, N>, lista<T>",
-                    ))
+                    Ok(TipoAnotacion::Nominal(nombre))
                 }
             }
             Some(TipoToken::Nulo) => {
@@ -854,14 +1070,17 @@ impl Parser {
     fn sentencia_funcion(&mut self, publico: bool) -> Result<Sentencia, ErrorSintactico> {
         // Las funciones anidadas están permitidas para closures (Fase 2).
         let t = &self.tokens[self.pos];
-        let (linea, columna) = (t.linea, t.columna);
+        let (_linea_kw, _columna_kw) = (t.linea, t.columna);
         self.pos += 1; // 'funcion'
         let prev_en_funcion = self.en_funcion;
         self.en_funcion = true;
-        let nombre = match self.actual() {
+        let (nombre, linea, columna) = match self.actual() {
             Some(TipoToken::Identificador(n)) => {
+                let tn = &self.tokens[self.pos];
+                let (ln, cn) = (tn.linea, tn.columna);
+                let nom = n.clone();
                 self.pos += 1;
-                n
+                (nom, ln, cn)
             }
             _ => return Err(self.error("se esperaba el nombre de la función")),
         };
@@ -956,6 +1175,521 @@ impl Parser {
             columna,
             publico,
         })
+    }
+
+    fn sentencia_estructura(&mut self, publico: bool) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'estructura'
+
+        let nombre = match self.actual() {
+            Some(TipoToken::Identificador(n)) => {
+                let n = n.clone();
+                self.pos += 1;
+                n
+            }
+            _ => {
+                return Err(self.error("se esperaba un nombre de estructura tras 'estructura'"));
+            }
+        };
+
+        self.omitir_finales_de_linea();
+        if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+            return Err(self.error(format!(
+                "se esperaba '{{' tras el nombre de estructura '{nombre}'"
+            )));
+        }
+        self.pos += 1; // '{'
+        self.omitir_finales_de_linea();
+
+        let mut campos = Vec::new();
+        let mut nombres_vistos = std::collections::HashSet::new();
+        while !matches!(
+            self.actual(),
+            Some(TipoToken::LlaveDer) | Some(TipoToken::Fin) | None
+        ) {
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                break;
+            }
+
+            let mut campo_publico = false;
+            if matches!(self.actual(), Some(TipoToken::Publico)) {
+                campo_publico = true;
+                self.pos += 1;
+                self.omitir_finales_de_linea();
+            }
+
+            let (c_linea, c_columna) = self
+                .tokens
+                .get(self.pos)
+                .map(|tk| (tk.linea, tk.columna))
+                .unwrap_or((linea, columna));
+            let nombre_campo = match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    let n = n.clone();
+                    self.pos += 1;
+                    n
+                }
+                _ => {
+                    return Err(self.error("se esperaba un nombre de campo en la estructura"));
+                }
+            };
+
+            if !nombres_vistos.insert(nombre_campo.clone()) {
+                return Err(ErrorSintactico {
+                    mensaje: format!(
+                        "el campo '{nombre_campo}' está duplicado en la estructura '{nombre}'"
+                    ),
+                    linea: c_linea,
+                    columna: c_columna,
+                    archivo: self.archivo.clone(),
+                });
+            }
+
+            if !matches!(self.actual(), Some(TipoToken::DosPuntos)) {
+                return Err(self.error(format!(
+                    "se esperaba ':' tras el nombre del campo '{nombre_campo}'"
+                )));
+            }
+            let tipo = self.parsear_tipo_anotacion()?;
+            campos.push(CampoEstructura {
+                nombre: nombre_campo,
+                tipo,
+                publico: campo_publico,
+                linea: c_linea,
+                columna: c_columna,
+            });
+
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                self.pos += 1;
+                self.omitir_finales_de_linea();
+                continue;
+            }
+            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                break;
+            }
+            // permitir salto de línea como separador
+            if matches!(self.actual(), Some(TipoToken::FinDeLinea)) {
+                self.omitir_finales_de_linea();
+                continue;
+            }
+            return Err(
+                self.error("se esperaba ',', nueva línea o '}' tras un campo de estructura")
+            );
+        }
+
+        if !matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+            return Err(self.error(format!(
+                "se esperaba '}}' para cerrar la estructura '{nombre}'"
+            )));
+        }
+        self.pos += 1; // '}'
+
+        Ok(Sentencia::Estructura {
+            nombre,
+            campos,
+            linea,
+            columna,
+            publico,
+        })
+    }
+
+    fn sentencia_enumeracion(&mut self, publico: bool) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'enumeracion'
+
+        let nombre = match self.actual() {
+            Some(TipoToken::Identificador(n)) => {
+                let n = n.clone();
+                self.pos += 1;
+                n
+            }
+            _ => {
+                return Err(self.error("se esperaba un nombre de enumeración tras 'enumeracion'"));
+            }
+        };
+
+        self.omitir_finales_de_linea();
+        if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+            return Err(self.error(format!(
+                "se esperaba '{{' tras el nombre de enumeración '{nombre}'"
+            )));
+        }
+        self.pos += 1; // '{'
+        self.omitir_finales_de_linea();
+
+        let mut variantes = Vec::new();
+        let mut nombres_vistos = std::collections::HashSet::new();
+        while !matches!(
+            self.actual(),
+            Some(TipoToken::LlaveDer) | Some(TipoToken::Fin) | None
+        ) {
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                break;
+            }
+            let (v_linea, v_columna) = self
+                .tokens
+                .get(self.pos)
+                .map(|tk| (tk.linea, tk.columna))
+                .unwrap_or((linea, columna));
+            let nombre_variante = match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    let n = n.clone();
+                    self.pos += 1;
+                    n
+                }
+                _ => {
+                    return Err(self.error("se esperaba un nombre de variante en la enumeración"));
+                }
+            };
+            nombres_vistos.insert(nombre_variante.clone());
+
+            let mut payload = Vec::new();
+            if matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
+                self.pos += 1; // '('
+                self.omitir_finales_de_linea();
+                if !matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                    loop {
+                        let tipo = self.parsear_tipo_anotacion_cuerpo()?;
+                        payload.push(tipo);
+                        self.omitir_finales_de_linea();
+                        if matches!(self.actual(), Some(TipoToken::Coma)) {
+                            self.pos += 1;
+                            self.omitir_finales_de_linea();
+                            if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                                break;
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                if !matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                    return Err(self.error(format!(
+                        "se esperaba ')' tras el payload de la variante '{nombre_variante}'"
+                    )));
+                }
+                self.pos += 1; // ')'
+            }
+
+            variantes.push(VarianteEnumeracion {
+                nombre: nombre_variante,
+                payload,
+                linea: v_linea,
+                columna: v_columna,
+            });
+
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                self.pos += 1;
+                self.omitir_finales_de_linea();
+                continue;
+            }
+            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                break;
+            }
+            if matches!(self.actual(), Some(TipoToken::FinDeLinea)) {
+                self.omitir_finales_de_linea();
+                continue;
+            }
+            return Err(
+                self.error("se esperaba ',', nueva línea o '}' tras una variante de enumeración")
+            );
+        }
+
+        if !matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+            return Err(self.error(format!(
+                "se esperaba '}}' para cerrar la enumeración '{nombre}'"
+            )));
+        }
+        self.pos += 1; // '}'
+
+        Ok(Sentencia::Enumeracion {
+            nombre,
+            variantes,
+            linea,
+            columna,
+            publico,
+        })
+    }
+
+    fn sentencia_rasgo(&mut self, publico: bool) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'rasgo'
+        let nombre = match self.actual() {
+            Some(TipoToken::Identificador(n)) => {
+                let n = n.clone();
+                self.pos += 1;
+                n
+            }
+            _ => return Err(self.error("se esperaba el nombre del rasgo")),
+        };
+        self.omitir_finales_de_linea();
+        if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+            return Err(self.error(format!(
+                "se esperaba '{{' tras el nombre del rasgo '{nombre}'"
+            )));
+        }
+        self.pos += 1; // '{'
+        self.omitir_finales_de_linea();
+        let mut metodos = Vec::new();
+        while !matches!(
+            self.actual(),
+            Some(TipoToken::LlaveDer) | Some(TipoToken::Fin) | None
+        ) {
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                break;
+            }
+            if !matches!(self.actual(), Some(TipoToken::Funcion)) {
+                return Err(self.error("se esperaba 'funcion' en declaración de rasgo"));
+            }
+            let mt = &self.tokens[self.pos];
+            let (ml, mc) = (mt.linea, mt.columna);
+            self.pos += 1; // 'funcion'
+            let mnombre = match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    let n = n.clone();
+                    self.pos += 1;
+                    n
+                }
+                _ => return Err(self.error("se esperaba el nombre del método en rasgo")),
+            };
+            let (receptor, parametros) = self.parsear_params_metodo(&mnombre)?;
+            let tipo_retorno = if matches!(self.actual(), Some(TipoToken::Flecha)) {
+                self.pos += 1;
+                Some(self.parsear_tipo_anotacion_cuerpo()?)
+            } else {
+                None
+            };
+            metodos.push(FirmaMetodo {
+                nombre: mnombre,
+                receptor,
+                parametros,
+                tipo_retorno,
+                linea: ml,
+                columna: mc,
+            });
+            self.omitir_finales_de_linea();
+            // permitir fin de línea o coma opcional
+            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                self.pos += 1;
+                self.omitir_finales_de_linea();
+            }
+        }
+        if !matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+            return Err(self.error(format!("se esperaba '}}' para cerrar el rasgo '{nombre}'")));
+        }
+        self.pos += 1;
+        Ok(Sentencia::Rasgo {
+            nombre,
+            metodos,
+            linea,
+            columna,
+            publico,
+        })
+    }
+
+    fn sentencia_implementar(&mut self) -> Result<Sentencia, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'implementar'
+        let nombre1 = match self.actual() {
+            Some(TipoToken::Identificador(n)) => {
+                let n = n.clone();
+                self.pos += 1;
+                n
+            }
+            _ => return Err(self.error("se esperaba nombre de tipo o rasgo tras 'implementar'")),
+        };
+        self.omitir_finales_de_linea();
+        // implementar Rasgo para Tipo { ... } or implementar Tipo { ... }
+        if matches!(self.actual(), Some(TipoToken::Para)) {
+            self.pos += 1; // 'para'
+            let tipo = match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    let n = n.clone();
+                    self.pos += 1;
+                    n
+                }
+                _ => return Err(self.error("se esperaba nombre de tipo tras 'para'")),
+            };
+            let metodos = self.parsear_metodos_impl()?;
+            Ok(Sentencia::ImplementacionRasgo {
+                rasgo: nombre1,
+                tipo,
+                metodos,
+                linea,
+                columna,
+            })
+        } else {
+            let metodos = self.parsear_metodos_impl()?;
+            Ok(Sentencia::ImplementacionInherente {
+                tipo: nombre1,
+                metodos,
+                linea,
+                columna,
+            })
+        }
+    }
+
+    fn parsear_metodos_impl(&mut self) -> Result<Vec<Metodo>, ErrorSintactico> {
+        self.omitir_finales_de_linea();
+        if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+            return Err(self.error("se esperaba '{' en implementación"));
+        }
+        self.pos += 1;
+        self.omitir_finales_de_linea();
+        let mut metodos = Vec::new();
+        while !matches!(
+            self.actual(),
+            Some(TipoToken::LlaveDer) | Some(TipoToken::Fin) | None
+        ) {
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                break;
+            }
+            let mut publico = false;
+            if matches!(self.actual(), Some(TipoToken::Publico)) {
+                publico = true;
+                self.pos += 1;
+                self.omitir_finales_de_linea();
+            }
+            if !matches!(self.actual(), Some(TipoToken::Funcion)) {
+                return Err(self.error("se esperaba 'funcion' en implementación"));
+            }
+            let mt = &self.tokens[self.pos];
+            let (ml, mc) = (mt.linea, mt.columna);
+            self.pos += 1; // 'funcion'
+            let mnombre = match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    let n = n.clone();
+                    self.pos += 1;
+                    n
+                }
+                _ => return Err(self.error("se esperaba el nombre del método")),
+            };
+            let (receptor, parametros) = self.parsear_params_metodo(&mnombre)?;
+            let tipo_retorno = if matches!(self.actual(), Some(TipoToken::Flecha)) {
+                self.pos += 1;
+                Some(self.parsear_tipo_anotacion_cuerpo()?)
+            } else {
+                None
+            };
+            self.omitir_finales_de_linea();
+            if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+                return Err(self.error(format!(
+                    "se esperaba '{{' para el cuerpo del método '{mnombre}'"
+                )));
+            }
+            let prev_en_funcion = self.en_funcion;
+            self.en_funcion = true;
+            let cuerpo = self.bloque()?;
+            self.en_funcion = prev_en_funcion;
+            metodos.push(Metodo {
+                nombre: mnombre,
+                receptor,
+                parametros,
+                tipo_retorno,
+                cuerpo,
+                linea: ml,
+                columna: mc,
+                publico,
+            });
+            self.omitir_finales_de_linea();
+        }
+        if !matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+            return Err(self.error("se esperaba '}' para cerrar la implementación"));
+        }
+        self.pos += 1;
+        Ok(metodos)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn parsear_params_metodo(
+        &mut self,
+        _mnombre: &str,
+    ) -> Result<(ReceptorMetodo, Vec<(String, Option<TipoAnotacion>)>), ErrorSintactico> {
+        if !matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
+            return Err(self.error("se esperaba '(' tras el nombre del método"));
+        }
+        self.pos += 1; // '('
+        let mut receptor = ReceptorMetodo::Ninguno;
+        let mut parametros: Vec<(String, Option<TipoAnotacion>)> = Vec::new();
+        let mut primer_tiene_tipo: Option<bool> = None;
+        let mut primero = true;
+        loop {
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                self.pos += 1;
+                break;
+            }
+            // receptor yo / yo var
+            if primero && matches!(self.actual(), Some(TipoToken::Yo)) {
+                self.pos += 1; // 'yo'
+                let mutable = if matches!(self.actual(), Some(TipoToken::Var)) {
+                    self.pos += 1;
+                    true
+                } else {
+                    false
+                };
+                receptor = ReceptorMetodo::Yo { mutable };
+                primero = false;
+                self.omitir_finales_de_linea();
+                if matches!(self.actual(), Some(TipoToken::Coma)) {
+                    self.pos += 1;
+                    continue;
+                }
+                if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                    self.pos += 1;
+                    break;
+                }
+                return Err(self.error("se esperaba ',' o ')' tras receptor 'yo'"));
+            }
+            primero = false;
+            let param_nombre = match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    let n = n.clone();
+                    self.pos += 1;
+                    n
+                }
+                Some(TipoToken::Yo) => {
+                    return Err(self.error("'yo' solo puede ser el primer parámetro del método"));
+                }
+                _ => return Err(self.error("se esperaba un parámetro")),
+            };
+            let tipo_param = if matches!(self.actual(), Some(TipoToken::DosPuntos)) {
+                let tipo = self.parsear_tipo_anotacion()?;
+                Some(tipo)
+            } else {
+                None
+            };
+            let este_tiene_tipo = tipo_param.is_some();
+            match primer_tiene_tipo {
+                None => primer_tiene_tipo = Some(este_tiene_tipo),
+                Some(pt) if pt != este_tiene_tipo => {
+                    return Err(self.error("la firma del método mezcla parámetros con y sin tipo; anota todos o ninguno"));
+                }
+                _ => {}
+            }
+            parametros.push((param_nombre, tipo_param));
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                self.pos += 1;
+                continue;
+            }
+            if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                self.pos += 1;
+                break;
+            }
+            return Err(self.error("se esperaba ',' o ')'"));
+        }
+        Ok((receptor, parametros))
     }
 
     fn sentencia_usar(&mut self) -> Result<Sentencia, ErrorSintactico> {
@@ -1131,31 +1865,37 @@ impl Parser {
 
     /// Parsea una expresión de iteración: puede ser colección o rango `inicio..fin` / `inicio..=fin`.
     fn expr_iteracion(&mut self) -> Result<Expresion, ErrorSintactico> {
-        let inicio = self.expresion()?;
-        let (linea, columna) = ubicacion_expr(&inicio);
-        if matches!(self.actual(), Some(TipoToken::RangoDos)) {
-            self.pos += 1;
-            let fin = self.expresion()?;
-            Ok(Expresion::Rango {
-                inicio: Box::new(inicio),
-                fin: Box::new(fin),
-                inclusivo: false,
-                linea,
-                columna,
-            })
-        } else if matches!(self.actual(), Some(TipoToken::RangoDosCerrado)) {
-            self.pos += 1;
-            let fin = self.expresion()?;
-            Ok(Expresion::Rango {
-                inicio: Box::new(inicio),
-                fin: Box::new(fin),
-                inclusivo: true,
-                linea,
-                columna,
-            })
-        } else {
-            Ok(inicio)
-        }
+        let prev = self.bloquear_literal_struct_cabeza;
+        self.bloquear_literal_struct_cabeza = true;
+        let r = (|| {
+            let inicio = self.expresion()?;
+            let (linea, columna) = ubicacion_expr(&inicio);
+            if matches!(self.actual(), Some(TipoToken::RangoDos)) {
+                self.pos += 1;
+                let fin = self.expresion()?;
+                Ok(Expresion::Rango {
+                    inicio: Box::new(inicio),
+                    fin: Box::new(fin),
+                    inclusivo: false,
+                    linea,
+                    columna,
+                })
+            } else if matches!(self.actual(), Some(TipoToken::RangoDosCerrado)) {
+                self.pos += 1;
+                let fin = self.expresion()?;
+                Ok(Expresion::Rango {
+                    inicio: Box::new(inicio),
+                    fin: Box::new(fin),
+                    inclusivo: true,
+                    linea,
+                    columna,
+                })
+            } else {
+                Ok(inicio)
+            }
+        })();
+        self.bloquear_literal_struct_cabeza = prev;
+        r
     }
 
     /// Parsea `intentar { ... } rescatar [IDENT] { ... }`.
@@ -1256,7 +1996,7 @@ impl Parser {
         let t = &self.tokens[self.pos];
         let (linea, columna) = (t.linea, t.columna);
         self.pos += 1; // 'si'
-        let condicion = self.expresion()?;
+        let condicion = self.expresion_cabeza_control()?;
         self.exigir_llave_misma_linea(linea, "si")?;
         let rama_si = self.bloque()?;
         // `sino` puede ir en la línea siguiente; se busca sin consumir los saltos de línea
@@ -1300,7 +2040,7 @@ impl Parser {
         let t = &self.tokens[self.pos];
         let (linea, columna) = (t.linea, t.columna);
         self.pos += 1; // 'mientras'
-        let condicion = self.expresion()?;
+        let condicion = self.expresion_cabeza_control()?;
         self.exigir_llave_misma_linea(linea, "mientras")?;
         self.en_ciclo += 1;
         let cuerpo = self.bloque()?;
@@ -1381,6 +2121,15 @@ impl Parser {
 
     fn expresion(&mut self) -> Result<Expresion, ErrorSintactico> {
         self.o()
+    }
+
+    /// C1 (R3): expresión de cabeza de control. Prohíbe literal struct directo `Ident { ... }`.
+    fn expresion_cabeza_control(&mut self) -> Result<Expresion, ErrorSintactico> {
+        let prev = self.bloquear_literal_struct_cabeza;
+        self.bloquear_literal_struct_cabeza = true;
+        let r = self.expresion();
+        self.bloquear_literal_struct_cabeza = prev;
+        r
     }
 
     fn o(&mut self) -> Result<Expresion, ErrorSintactico> {
@@ -1506,6 +2255,391 @@ impl Parser {
         Ok(izq)
     }
 
+    fn parsear_coincidir(&mut self) -> Result<Expresion, ErrorSintactico> {
+        let t = &self.tokens[self.pos];
+        let (linea, columna) = (t.linea, t.columna);
+        self.pos += 1; // 'coincidir'
+        let prev = self.bloquear_literal_struct_cabeza;
+        self.bloquear_literal_struct_cabeza = true;
+        let scrutinee = self.expresion()?;
+        self.bloquear_literal_struct_cabeza = prev;
+        self.omitir_finales_de_linea();
+        if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+            return Err(self.error("se esperaba '{' tras la expresión de 'coincidir'"));
+        }
+        self.pos += 1; // '{'
+        self.omitir_finales_de_linea();
+        let mut brazos = Vec::new();
+        while !matches!(
+            self.actual(),
+            Some(TipoToken::LlaveDer) | Some(TipoToken::Fin) | None
+        ) {
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                break;
+            }
+            let patron = self.parsear_patron()?;
+            self.omitir_finales_de_linea();
+            if !matches!(self.actual(), Some(TipoToken::FlechaDoble)) {
+                return Err(self.error("se esperaba '=>' en brazo de 'coincidir'"));
+            }
+            let flecha = &self.tokens[self.pos];
+            let (bl, bc) = (flecha.linea, flecha.columna);
+            self.pos += 1; // '=>'
+            self.omitir_finales_de_linea();
+            let cuerpo = if matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+                self.bloque()?
+            } else {
+                let expr = self.expresion()?;
+                vec![Sentencia::Expresion(expr)]
+            };
+            brazos.push(BrazoCoincidir {
+                patron,
+                cuerpo,
+                linea: bl,
+                columna: bc,
+            });
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                self.pos += 1;
+                self.omitir_finales_de_linea();
+            }
+        }
+        if !matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+            return Err(self.error("se esperaba '}' para cerrar 'coincidir'"));
+        }
+        self.pos += 1; // '}'
+        Ok(Expresion::Coincidir {
+            scrutinee: Box::new(scrutinee),
+            brazos,
+            linea,
+            columna,
+        })
+    }
+
+    fn parsear_patron(&mut self) -> Result<Patron, ErrorSintactico> {
+        self.omitir_finales_de_linea();
+        let t = self
+            .tokens
+            .get(self.pos)
+            .cloned()
+            .ok_or_else(|| self.error("se esperaba un patrón"))?;
+        let (linea, columna) = (t.linea, t.columna);
+        match &t.tipo {
+            TipoToken::Identificador(nombre) if nombre == "_" => {
+                self.pos += 1;
+                Ok(Patron::Wildcard { linea, columna })
+            }
+            TipoToken::Verdadero => {
+                self.pos += 1;
+                Ok(Patron::Literal {
+                    valor: Valor::Logico(true),
+                    linea,
+                    columna,
+                })
+            }
+            TipoToken::Falso => {
+                self.pos += 1;
+                Ok(Patron::Literal {
+                    valor: Valor::Logico(false),
+                    linea,
+                    columna,
+                })
+            }
+            TipoToken::Nulo => {
+                self.pos += 1;
+                Ok(Patron::Literal {
+                    valor: Valor::Nulo,
+                    linea,
+                    columna,
+                })
+            }
+            TipoToken::Cadena(s) => {
+                let s = s.clone();
+                self.pos += 1;
+                Ok(Patron::Literal {
+                    valor: Valor::Texto(s),
+                    linea,
+                    columna,
+                })
+            }
+            TipoToken::Numero => {
+                let v = clasificar_literal(&t.lexema).map_err(|m| ErrorSintactico {
+                    mensaje: format!("literal numérico inválido {:?}: {m}", t.lexema),
+                    linea: t.linea,
+                    columna: t.columna,
+                    archivo: self.archivo.clone(),
+                })?;
+                self.pos += 1;
+                Ok(Patron::Literal {
+                    valor: v,
+                    linea,
+                    columna,
+                })
+            }
+            TipoToken::Menos
+                if matches!(
+                    self.tokens.get(self.pos + 1).map(|x| &x.tipo),
+                    Some(TipoToken::Numero)
+                ) =>
+            {
+                self.pos += 1; // -
+                let nt = &self.tokens[self.pos];
+                let lex = format!("-{}", nt.lexema);
+                let v = clasificar_literal(&lex).map_err(|m| ErrorSintactico {
+                    mensaje: format!("literal numérico inválido {lex:?}: {m}"),
+                    linea: nt.linea,
+                    columna: nt.columna,
+                    archivo: self.archivo.clone(),
+                })?;
+                self.pos += 1;
+                Ok(Patron::Literal {
+                    valor: v,
+                    linea,
+                    columna,
+                })
+            }
+            TipoToken::Identificador(nombre) => {
+                let nombre = nombre.clone();
+                self.pos += 1;
+                // Variant pattern: Tipo.Variante ...
+                if matches!(self.actual(), Some(TipoToken::Punto)) {
+                    self.pos += 1; // '.'
+                    let variante = match self.actual() {
+                        Some(TipoToken::Identificador(v)) => {
+                            let v = v.clone();
+                            self.pos += 1;
+                            v
+                        }
+                        _ => {
+                            return Err(
+                                self.error("se esperaba nombre de variante tras '.' en patrón")
+                            );
+                        }
+                    };
+                    let mut campos = Vec::new();
+                    if matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
+                        self.pos += 1; // '('
+                        self.omitir_finales_de_linea();
+                        if !matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                            loop {
+                                campos.push(self.parsear_patron()?);
+                                self.omitir_finales_de_linea();
+                                if matches!(self.actual(), Some(TipoToken::Coma)) {
+                                    self.pos += 1;
+                                    self.omitir_finales_de_linea();
+                                    if matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                break;
+                            }
+                        }
+                        if !matches!(self.actual(), Some(TipoToken::ParentesisDer)) {
+                            return Err(self.error("se esperaba ')' en patrón de variante"));
+                        }
+                        self.pos += 1;
+                    }
+                    return Ok(Patron::Variante {
+                        tipo: nombre,
+                        variante,
+                        campos,
+                        linea,
+                        columna,
+                    });
+                }
+                // Struct pattern: Tipo { campo: patron }
+                if matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+                    // Disambiguate: struct pattern must have `ident :` or `}` (empty allowed?)
+                    let mut j = self.pos + 1;
+                    while matches!(
+                        self.tokens.get(j).map(|x| &x.tipo),
+                        Some(TipoToken::FinDeLinea)
+                    ) {
+                        j += 1;
+                    }
+                    let es_struct_pat = match self.tokens.get(j).map(|x| &x.tipo) {
+                        Some(TipoToken::LlaveDer) => true,
+                        Some(TipoToken::Identificador(_)) => matches!(
+                            self.tokens.get(j + 1).map(|x| &x.tipo),
+                            Some(TipoToken::DosPuntos)
+                        ),
+                        _ => false,
+                    };
+                    if es_struct_pat {
+                        self.pos += 1; // '{'
+                        self.omitir_finales_de_linea();
+                        let mut campos = Vec::new();
+                        while !matches!(
+                            self.actual(),
+                            Some(TipoToken::LlaveDer) | Some(TipoToken::Fin) | None
+                        ) {
+                            self.omitir_finales_de_linea();
+                            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                                break;
+                            }
+                            let (cl, cc) = self
+                                .tokens
+                                .get(self.pos)
+                                .map(|x| (x.linea, x.columna))
+                                .unwrap_or((linea, columna));
+                            let campo = match self.actual() {
+                                Some(TipoToken::Identificador(n)) => {
+                                    let n = n.clone();
+                                    self.pos += 1;
+                                    n
+                                }
+                                _ => {
+                                    return Err(
+                                        self.error("se esperaba nombre de campo en patrón struct")
+                                    );
+                                }
+                            };
+                            self.omitir_finales_de_linea();
+                            if !matches!(self.actual(), Some(TipoToken::DosPuntos)) {
+                                return Err(self.error(
+                                    "se esperaba ':' tras nombre de campo en patrón struct",
+                                ));
+                            }
+                            self.pos += 1; // ':'
+                            self.omitir_finales_de_linea();
+                            let p = self.parsear_patron()?;
+                            let _ = (cl, cc);
+                            campos.push((campo, p));
+                            self.omitir_finales_de_linea();
+                            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                                self.pos += 1;
+                                self.omitir_finales_de_linea();
+                                continue;
+                            }
+                            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                                break;
+                            }
+                        }
+                        if !matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                            return Err(self.error("se esperaba '}' en patrón struct"));
+                        }
+                        self.pos += 1;
+                        return Ok(Patron::Estructura {
+                            tipo: nombre,
+                            campos,
+                            linea,
+                            columna,
+                        });
+                    }
+                }
+                Ok(Patron::Binding {
+                    nombre,
+                    linea,
+                    columna,
+                })
+            }
+            _ => Err(self.error("patrón no soportado en 'coincidir' v1")),
+        }
+    }
+
+    fn parsear_construccion_estructura(
+        &mut self,
+        nombre: String,
+        linea: usize,
+        columna: usize,
+    ) -> Result<Expresion, ErrorSintactico> {
+        if !matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+            return Err(self.error("se esperaba '{' en la construcción de estructura"));
+        }
+        self.pos += 1; // '{'
+        let prev_bloqueo = self.bloquear_literal_struct_cabeza;
+        self.bloquear_literal_struct_cabeza = false;
+        self.omitir_finales_de_linea();
+
+        let mut campos = Vec::new();
+        let mut nombres_vistos = std::collections::HashSet::new();
+        while !matches!(
+            self.actual(),
+            Some(TipoToken::LlaveDer) | Some(TipoToken::Fin) | None
+        ) {
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                break;
+            }
+            let (c_linea, c_columna) = self
+                .tokens
+                .get(self.pos)
+                .map(|tk| (tk.linea, tk.columna))
+                .unwrap_or((linea, columna));
+            let nombre_campo = match self.actual() {
+                Some(TipoToken::Identificador(n)) => {
+                    let n = n.clone();
+                    self.pos += 1;
+                    n
+                }
+                _ => {
+                    self.bloquear_literal_struct_cabeza = prev_bloqueo;
+                    return Err(self
+                        .error("se esperaba un nombre de campo en la construcción de estructura"));
+                }
+            };
+            if !nombres_vistos.insert(nombre_campo.clone()) {
+                self.bloquear_literal_struct_cabeza = prev_bloqueo;
+                return Err(ErrorSintactico {
+                    mensaje: format!(
+                        "el campo '{nombre_campo}' está duplicado en la construcción de '{nombre}'"
+                    ),
+                    linea: c_linea,
+                    columna: c_columna,
+                    archivo: self.archivo.clone(),
+                });
+            }
+            if !matches!(self.actual(), Some(TipoToken::DosPuntos)) {
+                self.bloquear_literal_struct_cabeza = prev_bloqueo;
+                return Err(self.error(format!("se esperaba ':' tras el campo '{nombre_campo}'")));
+            }
+            self.pos += 1; // ':'
+            let valor = match self.expresion() {
+                Ok(v) => v,
+                Err(e) => {
+                    self.bloquear_literal_struct_cabeza = prev_bloqueo;
+                    return Err(e);
+                }
+            };
+            campos.push((nombre_campo, valor));
+            self.omitir_finales_de_linea();
+            if matches!(self.actual(), Some(TipoToken::Coma)) {
+                self.pos += 1;
+                self.omitir_finales_de_linea();
+                continue;
+            }
+            if matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+                break;
+            }
+            if matches!(self.actual(), Some(TipoToken::FinDeLinea)) {
+                self.omitir_finales_de_linea();
+                continue;
+            }
+            self.bloquear_literal_struct_cabeza = prev_bloqueo;
+            return Err(
+                self.error("se esperaba ',', nueva línea o '}' en la construcción de estructura")
+            );
+        }
+
+        if !matches!(self.actual(), Some(TipoToken::LlaveDer)) {
+            self.bloquear_literal_struct_cabeza = prev_bloqueo;
+            return Err(self.error(format!(
+                "se esperaba '}}' para cerrar la construcción de '{nombre}'"
+            )));
+        }
+        self.pos += 1; // '}'
+        self.bloquear_literal_struct_cabeza = prev_bloqueo;
+
+        Ok(Expresion::ConstruccionEstructura {
+            nombre,
+            campos,
+            linea,
+            columna,
+        })
+    }
+
     fn primaria_sin_indice(&mut self) -> Result<Expresion, ErrorSintactico> {
         // Continuación contextual: tras un operador o '(' el salto de línea no termina.
         self.omitir_finales_de_linea();
@@ -1626,11 +2760,58 @@ impl Parser {
                     columna,
                 })
             }
+            Some(TipoToken::Coincidir) => self.parsear_coincidir(),
+            Some(TipoToken::Yo) => {
+                let t = &self.tokens[self.pos];
+                let (linea, columna) = (t.linea, t.columna);
+                self.pos += 1;
+                Ok(Expresion::Variable {
+                    nombre: "yo".to_string(),
+                    linea,
+                    columna,
+                })
+            }
             Some(TipoToken::Identificador(nombre)) => {
                 let t = &self.tokens[self.pos];
                 let (linea, columna) = (t.linea, t.columna);
                 let nombre = nombre.clone();
                 self.pos += 1;
+                // Construcción de estructura nominal: `Tipo { campo: expr }` (Fase 08 S8.1).
+                if matches!(self.actual(), Some(TipoToken::LlaveIzq)) {
+                    if self.bloquear_literal_struct_cabeza {
+                        // C1: no interpretar como struct literal en cabeza de control.
+                        // Solo error si parece claramente un literal struct (Ident ':' / '}' / 'publico').
+                        let parece_struct = {
+                            let mut j = self.pos + 1; // tras '{'
+                            while matches!(
+                                self.tokens.get(j).map(|t| &t.tipo),
+                                Some(TipoToken::FinDeLinea)
+                            ) {
+                                j += 1;
+                            }
+                            match self.tokens.get(j).map(|t| &t.tipo) {
+                                Some(TipoToken::Publico) => true,
+                                Some(TipoToken::Identificador(_)) => {
+                                    matches!(
+                                        self.tokens.get(j + 1).map(|t| &t.tipo),
+                                        Some(TipoToken::DosPuntos)
+                                    )
+                                }
+                                // `{}` vacío es ambiguo con bloque vacío de control; no rechazar como struct literal.
+                                Some(TipoToken::LlaveDer) => false,
+                                _ => false,
+                            }
+                        };
+                        if parece_struct {
+                            return Err(self.error(
+                                "literal struct directo no permitido en cabeza de control; envuelve la expresión entre paréntesis, p. ej. `si (Tipo { ... }).campo { ... }`",
+                            ));
+                        }
+                        // Si no parece struct literal, tratar como variable y dejar '{' al bloque de control.
+                    } else {
+                        return self.parsear_construccion_estructura(nombre, linea, columna);
+                    }
+                }
                 // Turbofish en llamada directa por identificador (G2): `id::<T>(...)`
                 if let Some(argumentos_tipo) = self.intentar_parsear_argumentos_tipo_turbofish()? {
                     if !matches!(self.actual(), Some(TipoToken::ParentesisIzq)) {
@@ -1720,8 +2901,11 @@ impl Parser {
             Some(TipoToken::ParentesisIzq) => {
                 self.pos += 1;
                 self.en_grupo += 1;
+                let prev_bloqueo = self.bloquear_literal_struct_cabeza;
+                self.bloquear_literal_struct_cabeza = false;
                 let e = self.expresion();
                 self.en_grupo -= 1;
+                self.bloquear_literal_struct_cabeza = prev_bloqueo;
                 let e = e?;
                 self.omitir_finales_de_linea();
                 match self.actual() {
@@ -1912,7 +3096,10 @@ fn ubicacion_expr(e: &Expresion) -> (usize, usize) {
         | Expresion::Acceso { linea, columna, .. }
         | Expresion::LlamadaIndirecta { linea, columna, .. }
         | Expresion::Lambda { linea, columna, .. }
-        | Expresion::Rango { linea, columna, .. } => (*linea, *columna),
+        | Expresion::Rango { linea, columna, .. }
+        | Expresion::ConstruccionEstructura { linea, columna, .. }
+        | Expresion::ConstruccionVariante { linea, columna, .. }
+        | Expresion::Coincidir { linea, columna, .. } => (*linea, *columna),
         Expresion::Suma(a, _)
         | Expresion::Resta(a, _)
         | Expresion::Multiplicacion(a, _)

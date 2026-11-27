@@ -83,16 +83,10 @@ fn funcion_anidada_con_mismo_nombre_param_tiene_identidad_propia() {
 
 #[test]
 fn funcion_anidada_no_hereda_parametro_exterior_implicitamente() {
-    // Parser/semántica: T no está declarado en interior, por lo que no es válido.
-    let tokens = Lexer::nuevo(
+    // S8.1: T no declarado en interior se parsea como Nominal y se rechaza en semántica (BAS-7101).
+    err_codigo(
         "funcion exterior<T>(x: T) {\n  funcion interior<U>(v: T) -> T {\n    retornar v\n  }\n}\n",
-    )
-    .tokenizar()
-    .expect("léxico");
-    let r = Parser::nuevo(tokens).parsear_programa();
-    assert!(
-        r.is_err(),
-        "T exterior no debe ser heredado implícitamente por la función interior"
+        "BAS-7101",
     );
 }
 

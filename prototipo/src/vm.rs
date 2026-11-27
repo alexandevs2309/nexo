@@ -31,6 +31,12 @@ pub enum ErrorVm {
     FuncionNoEncontrada(String),
     /// La función se llamó con menos argumentos que parámetros.
     ArgumentosInsuficientes { faltantes: usize },
+    /// La función se llamó con una aridad incompatible.
+    FirmaInvalida {
+        funcion: String,
+        esperado: usize,
+        obtenido: usize,
+    },
     /// Se alcanzó el límite de pasos (posible bucle infinito).
     LimitePasosExcedido,
     /// Se alcanzó el límite de profundidad de llamadas (posible recursión infinita).
@@ -82,7 +88,9 @@ pub enum ErrorVm {
         obtenido: String,
     },
     /// Error del puente FFI (carga/llamada de biblioteca dinámica).
-    FfiInvalido { detalle: String },
+    FfiInvalido(crate::ffi::CausaFfi),
+    /// Operación/capacidad no soportada (diagnósticos nominales, etc.).
+    NoSoportado(String),
 }
 
 impl std::fmt::Display for ErrorVm {
@@ -91,6 +99,16 @@ impl std::fmt::Display for ErrorVm {
             ErrorVm::FuncionNoEncontrada(nombre) => write!(f, "función no encontrada: {nombre}"),
             ErrorVm::ArgumentosInsuficientes { faltantes } => {
                 write!(f, "argumentos insuficientes ({faltantes} faltantes)")
+            }
+            ErrorVm::FirmaInvalida {
+                funcion,
+                esperado,
+                obtenido,
+            } => {
+                write!(
+                    f,
+                    "firma inválida en {funcion}: esperado {esperado}, obtenido {obtenido}"
+                )
             }
             ErrorVm::LimitePasosExcedido => write!(f, "límite de pasos excedido"),
             ErrorVm::ProfundidadExcedida => write!(f, "límite de profundidad excedido"),
@@ -142,7 +160,8 @@ impl std::fmt::Display for ErrorVm {
                 f,
                 "retorno de '{funcion}': se esperaba {esperado} y se obtuvo {obtenido}"
             ),
-            ErrorVm::FfiInvalido { detalle } => write!(f, "ffi inválido: {detalle}"),
+            ErrorVm::FfiInvalido(causa) => write!(f, "{causa}"),
+            ErrorVm::NoSoportado(m) => write!(f, "{m}"),
         }
     }
 }
@@ -157,6 +176,65 @@ pub const LIMITE_PROFUNDIDAD_DEFAULT: usize = 1_000;
 /// Tipo de una función nativa registrada en la VM: recibe los argumentos
 /// evaluados y devuelve un `Valor` (o un `ErrorVm`).
 pub type FuncionNativa = std::sync::Arc<dyn Fn(&[Valor]) -> Result<Valor, ErrorVm> + Send + Sync>;
+
+/// Punto de parada para depuración (archivo, línea 1-based).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BreakpointVm {
+    pub archivo: String,
+    pub linea: usize,
+}
+
+/// Modo de paso del depurador.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModoPasoVm {
+    #[default]
+    Ninguno,
+    StepIn,
+    StepOver {
+        profundidad: usize,
+    },
+    StepOut {
+        profundidad: usize,
+    },
+}
+
+/// Razón de detención de la VM depurable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MotivoParadaVm {
+    Breakpoint { archivo: String, linea: usize },
+    Step,
+    Pause,
+    Entry,
+    Terminado,
+    Error(String),
+}
+
+/// Snapshot de frame para DAP/UI.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameVm {
+    pub funcion: String,
+    pub archivo: Option<String>,
+    pub linea: Option<usize>,
+    pub columna: Option<usize>,
+}
+
+/// Snapshot de variable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariableVm {
+    pub nombre: String,
+    pub valor: String,
+    pub tipo: String,
+}
+
+/// Estado de depuración aislado por sesión (instancia VM).
+#[derive(Debug, Clone, Default)]
+pub struct SesionDepuracionVm {
+    pub breakpoints: std::collections::HashSet<BreakpointVm>,
+    pub modo_paso: ModoPasoVm,
+    pub pausa_solicitada: bool,
+    pub frames: Vec<FrameVm>,
+    pub ultima_linea: Option<(String, usize)>,
+}
 
 /// Máquina virtual. Interpreta un `MirPrograma`.
 pub struct MaquinaVirtual {
@@ -187,6 +265,12 @@ pub struct MaquinaVirtual {
     traza: bool,
     /// Salida de la traza del depurador.
     traza_salida: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Mapa opcional de spans para depuración (func_idx, block_idx, stmt_idx; TERM=usize::MAX) -> (archivo, linea, columna).
+    pub debug_spans: HashMap<(usize, usize, usize), (String, usize, usize)>,
+    /// Nombres de globals para inspección.
+    pub debug_global_names: Vec<String>,
+    /// Sesión de depuración aislada por instancia VM.
+    pub debug: SesionDepuracionVm,
 }
 
 impl MaquinaVirtual {
@@ -216,6 +300,12 @@ impl MaquinaVirtual {
             })
             .map(|f| f.nombre.clone())
             .collect();
+        let debug_global_names = programa
+            .globals
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("g{i}"))
+            .collect();
         MaquinaVirtual {
             programa,
             indice,
@@ -233,12 +323,20 @@ impl MaquinaVirtual {
             limite_profundidad,
             traza: false,
             traza_salida: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            debug_spans: HashMap::new(),
+            debug_global_names,
+            debug: SesionDepuracionVm::default(),
         }
     }
 
     /// Número de funciones del programa.
     pub fn numero_funciones(&self) -> usize {
         self.programa.funciones.len()
+    }
+
+    /// Acceso de solo lectura al programa MIR.
+    pub fn programa(&self) -> &MirPrograma {
+        &self.programa
     }
 
     /// Índice de la función por nombre (`f_{simbodo}` según el lowering).
@@ -325,9 +423,11 @@ impl MaquinaVirtual {
                         }
                         Ok(Valor::Texto(entrada))
                     }
-                    Err(e) => Err(ErrorVm::FfiInvalido {
-                        detalle: format!("<stdin>: {e}"),
-                    }),
+                    Err(e) => Err(ErrorVm::FfiInvalido(
+                        crate::ffi::CausaFfi::ErrorInvocacion {
+                            detalle: format!("<stdin>: {e}"),
+                        },
+                    )),
                 }
             }),
         );
@@ -338,8 +438,10 @@ impl MaquinaVirtual {
                 std::io::stdin()
                     .lock()
                     .read_line(&mut entrada)
-                    .map_err(|e| ErrorVm::FfiInvalido {
-                        detalle: format!("<stdin>: {e}"),
+                    .map_err(|e| {
+                        ErrorVm::FfiInvalido(crate::ffi::CausaFfi::ErrorInvocacion {
+                            detalle: format!("<stdin>: {e}"),
+                        })
                     })?;
                 if entrada.ends_with('\n') {
                     entrada.pop();
@@ -364,8 +466,10 @@ impl MaquinaVirtual {
                 std::io::stdin()
                     .lock()
                     .read_line(&mut entrada)
-                    .map_err(|e| ErrorVm::FfiInvalido {
-                        detalle: format!("<stdin>: {e}"),
+                    .map_err(|e| {
+                        ErrorVm::FfiInvalido(crate::ffi::CausaFfi::ErrorInvocacion {
+                            detalle: format!("<stdin>: {e}"),
+                        })
                     })?;
                 if entrada.ends_with('\n') {
                     entrada.pop();
@@ -390,8 +494,10 @@ impl MaquinaVirtual {
                 std::io::stdin()
                     .lock()
                     .read_line(&mut entrada)
-                    .map_err(|e| ErrorVm::FfiInvalido {
-                        detalle: format!("<stdin>: {e}"),
+                    .map_err(|e| {
+                        ErrorVm::FfiInvalido(crate::ffi::CausaFfi::ErrorInvocacion {
+                            detalle: format!("<stdin>: {e}"),
+                        })
                     })?;
                 if entrada.ends_with('\n') {
                     entrada.pop();
@@ -453,7 +559,9 @@ impl MaquinaVirtual {
                         });
                     }
                 };
-                crate::http::http_get(&url).map_err(|d| ErrorVm::FfiInvalido { detalle: d })
+                crate::http::http_get(&url).map_err(|d| {
+                    ErrorVm::FfiInvalido(crate::ffi::CausaFfi::ErrorInvocacion { detalle: d })
+                })
             }),
         );
         self.registrar_nativo(
@@ -477,8 +585,9 @@ impl MaquinaVirtual {
                         });
                     }
                 };
-                crate::http::http_post(&url, &cuerpo)
-                    .map_err(|d| ErrorVm::FfiInvalido { detalle: d })
+                crate::http::http_post(&url, &cuerpo).map_err(|d| {
+                    ErrorVm::FfiInvalido(crate::ffi::CausaFfi::ErrorInvocacion { detalle: d })
+                })
             }),
         );
         self.registrar_nativo(
@@ -884,6 +993,123 @@ impl MaquinaVirtual {
                 Ok(Valor::Real(valor.sqrt()))
             }),
         );
+        for nombre in ["piso", "techo", "redondear"] {
+            let nombre_owned = nombre.to_string();
+            self.registrar_nativo(
+                nombre,
+                std::sync::Arc::new(move |args: &[Valor]| {
+                    let nombre = nombre_owned.as_str();
+                    if args.len() != 1 {
+                        return Err(ErrorVm::FirmaInvalida {
+                            funcion: nombre.to_string(),
+                            esperado: 1,
+                            obtenido: args.len(),
+                        });
+                    }
+                    let n: i64 = match args.first() {
+                        Some(Valor::Entero(v)) => *v,
+                        Some(Valor::Decimal(v)) => {
+                            let s = crate::valor::FACTOR_ESCALA;
+                            let base = *v / s;
+                            let rem = *v % s;
+                            let res = match nombre {
+                                "piso" => {
+                                    if rem != 0 && *v < 0 {
+                                        base - 1
+                                    } else {
+                                        base
+                                    }
+                                }
+                                "techo" => {
+                                    if rem != 0 && *v > 0 {
+                                        base + 1
+                                    } else {
+                                        base
+                                    }
+                                }
+                                _ => {
+                                    // half away from zero
+                                    let sign: i128 = if *v < 0 { -1 } else { 1 };
+                                    let av = v.abs();
+                                    let abase = av / s;
+                                    let arem = av % s;
+                                    let arred = if arem * 2 >= s { abase + 1 } else { abase };
+                                    sign * arred
+                                }
+                            };
+                            i64::try_from(res).map_err(|_| {
+                                ErrorVm::Aritmetico(
+                                    crate::valor::MotivoAritmetico::DesbordamientoEntero,
+                                )
+                            })?
+                        }
+                        Some(Valor::Real(v)) => {
+                            if !v.is_finite() {
+                                return Err(ErrorVm::Aritmetico(
+                                    crate::valor::MotivoAritmetico::DesbordamientoEntero,
+                                ));
+                            }
+                            let n = match nombre {
+                                "piso" => v.floor(),
+                                "techo" => v.ceil(),
+                                _ => v.round(), // half away from zero
+                            };
+                            // Intervalo válido i64: [-2^63, 2^63). No usar i64::MAX as f64 (redondea a 2^63).
+                            const LIMITE_SUP_EXCLUSIVO: f64 = 9223372036854775808.0_f64; // 2^63
+                            if n < i64::MIN as f64 || n >= LIMITE_SUP_EXCLUSIVO {
+                                return Err(ErrorVm::Aritmetico(
+                                    crate::valor::MotivoAritmetico::DesbordamientoEntero,
+                                ));
+                            }
+                            n as i64
+                        }
+                        Some(otro) => {
+                            return Err(ErrorVm::AsignacionIncompatible {
+                                esperado: "número".to_string(),
+                                obtenido: otro.nombre_tipo().to_string(),
+                            });
+                        }
+                        None => {
+                            return Err(ErrorVm::ArgumentosInsuficientes { faltantes: 1 });
+                        }
+                    };
+                    Ok(Valor::Entero(n))
+                }),
+            );
+        }
+        self.registrar_nativo(
+            "posicion",
+            std::sync::Arc::new(|args: &[Valor]| {
+                if args.len() != 2 {
+                    return Err(ErrorVm::FirmaInvalida {
+                        funcion: "posicion".to_string(),
+                        esperado: 2,
+                        obtenido: args.len(),
+                    });
+                }
+                match (&args[0], &args[1]) {
+                    (Valor::Texto(t), Valor::Texto(sub)) => {
+                        let idx = t
+                            .find(sub.as_str())
+                            .map(|b| t[..b].chars().count() as i64)
+                            .unwrap_or(-1);
+                        Ok(Valor::Entero(idx))
+                    }
+                    (Valor::Arreglo(xs), v) | (Valor::Lista(xs), v) => {
+                        let idx = xs
+                            .iter()
+                            .position(|x| x == v)
+                            .map(|i| i as i64)
+                            .unwrap_or(-1);
+                        Ok(Valor::Entero(idx))
+                    }
+                    (otro, _) => Err(ErrorVm::AsignacionIncompatible {
+                        esperado: "texto, arreglo o lista".to_string(),
+                        obtenido: otro.nombre_tipo().to_string(),
+                    }),
+                }
+            }),
+        );
         self.registrar_nativo(
             "invertir",
             std::sync::Arc::new(|args: &[Valor]| match args.first() {
@@ -990,6 +1216,19 @@ impl MaquinaVirtual {
                     esperado: "texto",
                     encontrado: "otro",
                 }),
+            }),
+        );
+        self.registrar_nativo(
+            "texto",
+            std::sync::Arc::new(|args: &[Valor]| {
+                if args.len() != 1 {
+                    return Err(ErrorVm::FirmaInvalida {
+                        funcion: "texto".to_string(),
+                        esperado: 1,
+                        obtenido: args.len(),
+                    });
+                }
+                Ok(Valor::Texto(args[0].to_string()))
             }),
         );
         self.registrar_nativo(
@@ -1257,8 +1496,7 @@ impl MaquinaVirtual {
                         });
                     }
                 };
-                let id = crate::ffi::cargar_libreria(&ruta)
-                    .map_err(|d| ErrorVm::FfiInvalido { detalle: d })?;
+                let id = crate::ffi::cargar_libreria(&ruta).map_err(ErrorVm::FfiInvalido)?;
                 Ok(Valor::Entero(id))
             }),
         );
@@ -1274,8 +1512,7 @@ impl MaquinaVirtual {
                         });
                     }
                 };
-                crate::ffi::descargar_libreria(id)
-                    .map_err(|d| ErrorVm::FfiInvalido { detalle: d })?;
+                crate::ffi::descargar_libreria(id).map_err(ErrorVm::FfiInvalido)?;
                 Ok(Valor::Nulo)
             }),
         );
@@ -1321,7 +1558,7 @@ impl MaquinaVirtual {
                     }
                 };
                 crate::ffi::llamar_funcion(id, &simbodo, &argumentos, &retorno)
-                    .map_err(|d| ErrorVm::FfiInvalido { detalle: d })
+                    .map_err(ErrorVm::FfiInvalido)
             }),
         );
         self.registrar_nativo(
@@ -1330,10 +1567,7 @@ impl MaquinaVirtual {
                 let reg = crate::evaluador::canales_actual();
                 let mut canales = reg.lock().unwrap();
                 let id = canales.len();
-                canales.push((
-                    std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                    std::sync::Arc::new(std::sync::Condvar::new()),
-                ));
+                canales.push(crate::evaluador::crear_canal_nuevo());
                 Ok(Valor::Entero(id as i64))
             }),
         );
@@ -1353,16 +1587,16 @@ impl MaquinaVirtual {
                 let reg = crate::evaluador::canales_actual();
                 let canales = reg.lock().unwrap();
                 if id >= canales.len() {
-                    return Err(ErrorVm::TipoEsperado {
-                        esperado: "canal válido",
-                        encontrado: "canal inexistente",
-                    });
+                    return Err(ErrorVm::NoSoportado(format!("canal inexistente: {id}")));
                 }
-                let (buf, cv) = &canales[id];
-                let buf = std::sync::Arc::clone(buf);
-                let cv = std::sync::Arc::clone(cv);
+                let canal = std::sync::Arc::clone(&canales[id]);
                 drop(canales);
-                buf.lock().unwrap().push(valor);
+                let (lock, cv) = &*canal;
+                let mut estado = lock.lock().unwrap();
+                if estado.cerrado {
+                    return Err(ErrorVm::NoSoportado(format!("canal cerrado: {id}")));
+                }
+                estado.buffer.push(valor);
                 cv.notify_one();
                 Ok(Valor::Nulo)
             }),
@@ -1382,20 +1616,47 @@ impl MaquinaVirtual {
                 let reg = crate::evaluador::canales_actual();
                 let canales = reg.lock().unwrap();
                 if id >= canales.len() {
-                    return Err(ErrorVm::TipoEsperado {
-                        esperado: "canal válido",
-                        encontrado: "canal inexistente",
-                    });
+                    return Err(ErrorVm::NoSoportado(format!("canal inexistente: {id}")));
                 }
-                let (buf, cv) = &canales[id];
-                let buf = std::sync::Arc::clone(buf);
-                let cv = std::sync::Arc::clone(cv);
+                let canal = std::sync::Arc::clone(&canales[id]);
                 drop(canales);
-                let mut guard = buf.lock().unwrap();
-                while guard.is_empty() {
-                    guard = cv.wait(guard).unwrap();
+                let (lock, cv) = &*canal;
+                let mut estado = lock.lock().unwrap();
+                loop {
+                    if !estado.buffer.is_empty() {
+                        return Ok(estado.buffer.remove(0));
+                    }
+                    if estado.cerrado {
+                        return Err(ErrorVm::NoSoportado(format!("canal cerrado y vacío: {id}")));
+                    }
+                    estado = cv.wait(estado).unwrap();
                 }
-                Ok(guard.remove(0))
+            }),
+        );
+        self.registrar_nativo(
+            "cerrar_canal",
+            std::sync::Arc::new(|args: &[Valor]| {
+                let id = match args.first() {
+                    Some(Valor::Entero(v)) => *v as usize,
+                    _ => {
+                        return Err(ErrorVm::TipoEsperado {
+                            esperado: "entero (id de canal)",
+                            encontrado: "otro",
+                        });
+                    }
+                };
+                let reg = crate::evaluador::canales_actual();
+                let canales = reg.lock().unwrap();
+                if id >= canales.len() {
+                    return Err(ErrorVm::NoSoportado(format!("canal inexistente: {id}")));
+                }
+                let canal = std::sync::Arc::clone(&canales[id]);
+                drop(canales);
+                let (lock, cv) = &*canal;
+                let mut estado = lock.lock().unwrap();
+                estado.cerrado = true;
+                cv.notify_all();
+                Ok(Valor::Nulo)
             }),
         );
         self.registrar_nativo(
@@ -1436,9 +1697,168 @@ impl MaquinaVirtual {
         self.salida.lock().unwrap().clone()
     }
 
+    /// Cantidad de globals del programa actual.
+    pub fn globals_len(&self) -> usize {
+        self.globals.len()
+    }
+
     /// Número de funciones nativas registradas.
     pub fn numero_nativos(&self) -> usize {
         self.nativos.len()
+    }
+
+    /// Reemplaza el programa preservando globals/salida/estado de init para REPL.
+    /// Ejecuta solo inicializadores de globals nuevos (índices >= globals_previos).
+    pub fn reemplazar_programa_repl(
+        &mut self,
+        programa: MirPrograma,
+        globals_previos: usize,
+    ) -> Result<(), ErrorVm> {
+        let old_globals = std::mem::take(&mut self.globals);
+        let old_inicializado = self.inicializado;
+        let n_nuevos = programa.globals.len();
+        let mut indice = HashMap::new();
+        for (i, f) in programa.funciones.iter().enumerate() {
+            indice.entry(f.nombre.clone()).or_insert(i);
+        }
+        let funciones_sin_retorno: std::collections::HashSet<String> = programa
+            .funciones
+            .iter()
+            .filter(|f| {
+                !f.bloques
+                    .iter()
+                    .any(|b| matches!(b.terminator, MirTerminator::Return(Some(_))))
+            })
+            .map(|f| f.nombre.clone())
+            .collect();
+        let debug_global_names = programa
+            .globals
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("g{i}"))
+            .collect();
+        self.programa = programa;
+        self.indice = indice;
+        self.funciones_sin_retorno = funciones_sin_retorno;
+        self.debug_global_names = debug_global_names;
+        self.tipos_inferidos.clear();
+        self.sin_retorno_locals.clear();
+        self.try_stack.clear();
+        self.pasos = 0;
+        self.profundidad = 0;
+        // Restaurar globals previos; nuevos en Nulo.
+        let mut globals = vec![Valor::Nulo; n_nuevos];
+        for (i, v) in old_globals.into_iter().enumerate() {
+            if i < globals.len() {
+                globals[i] = v;
+            }
+        }
+        self.globals = globals;
+        self.inicializado = true;
+        // Ejecutar init delta solo para globals nuevos.
+        if n_nuevos > globals_previos {
+            if let Some(init_idx) = self.indice_de("__init") {
+                let init_f = self.programa.funciones.get(init_idx).cloned();
+                if let Some(f) = init_f {
+                    self.ejecutar_init_delta(&f, globals_previos)?;
+                }
+            }
+        } else if !old_inicializado {
+            // Primera vez: ejecutar init completo.
+            self.inicializado = false;
+            if let Some(idx) = self.indice_de("__init") {
+                self.inicializado = true;
+                let _ = self.ejecutar_indice(idx, &[])?;
+            } else {
+                self.inicializado = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn ejecutar_init_delta(
+        &mut self,
+        f: &crate::mir::MirFunction,
+        globals_previos: usize,
+    ) -> Result<(), ErrorVm> {
+        // Ejecuta solo la parte de __init que inicializa globals >= globals_previos.
+        // El lowering emite globales en orden: stmts..., AsignacionGlobal g0, ..., gN.
+        self.profundidad += 1;
+        if self.profundidad > self.limite_profundidad {
+            self.profundidad -= 1;
+            return Err(ErrorVm::ProfundidadExcedida);
+        }
+        let mut locals: Vec<Valor> = vec![Valor::Nulo; f.locals.len()];
+        let mut bloque_actual = f.bloque_entrada;
+        let mut vistos_previos = 0usize;
+        let mut activo = globals_previos == 0;
+        loop {
+            self.paso()?;
+            if bloque_actual.0 >= f.bloques.len() {
+                self.profundidad -= 1;
+                return Err(ErrorVm::BloqueInalcanzable);
+            }
+            let bloque = &f.bloques[bloque_actual.0].clone();
+            let mut saltar_a_rescue: Option<BlockId> = None;
+            for stmt in &bloque.stmts {
+                self.paso()?;
+                if !activo {
+                    if let MirStmt::AsignacionGlobal { global, .. } = stmt
+                        && global.0 < globals_previos
+                    {
+                        vistos_previos += 1;
+                        if vistos_previos >= globals_previos {
+                            activo = true;
+                        }
+                    }
+                    continue;
+                }
+                if let MirStmt::AsignacionGlobal { global, .. } = stmt
+                    && global.0 < globals_previos
+                {
+                    continue;
+                }
+                if let Err(e) = self.ejecutar_stmt(&mut locals, &f.locals, stmt) {
+                    if let Some((rescue, _merge, var_local)) = self.try_stack.last().cloned() {
+                        if let Some(vl) = var_local
+                            && vl < locals.len()
+                        {
+                            locals[vl] = Valor::Texto(e.to_string());
+                        }
+                        self.try_stack.pop();
+                        saltar_a_rescue = Some(rescue);
+                        break;
+                    } else {
+                        self.profundidad -= 1;
+                        return Err(e);
+                    }
+                }
+            }
+            if let Some(rescue) = saltar_a_rescue {
+                bloque_actual = rescue;
+                continue;
+            }
+            match self.ejecutar_terminador(&mut locals, f, &bloque.terminator) {
+                Ok(Transicion::Salto(nuevo)) => bloque_actual = nuevo,
+                Ok(Transicion::Retornar(_)) => break,
+                Err(e) => {
+                    if let Some((rescue, _merge, var_local)) = self.try_stack.last().cloned() {
+                        if let Some(vl) = var_local
+                            && vl < locals.len()
+                        {
+                            locals[vl] = Valor::Texto(e.to_string());
+                        }
+                        self.try_stack.pop();
+                        bloque_actual = rescue;
+                    } else {
+                        self.profundidad -= 1;
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        self.profundidad -= 1;
+        Ok(())
     }
 
     /// Ejecuta la función `nombre` con `args` y devuelve su valor de retorno.
@@ -1606,6 +2026,11 @@ impl MaquinaVirtual {
             }
             MirStmt::AsignacionGlobal { global, valor } => {
                 let v = self.evaluar_rvalue(locals, valor)?;
+                if matches!(v, Valor::Celda(_)) {
+                    return Err(ErrorVm::NoSoportado(
+                        "celda interna no puede escapar a global".to_string(),
+                    ));
+                }
                 if let Some(t) = self.programa.globals.get(global.0) {
                     self.globals[global.0] = convertir_tipo(v, t)?;
                 } else if global.0 < self.globals.len() {
@@ -1644,12 +2069,27 @@ impl MaquinaVirtual {
                         });
                     }
                 };
-                let mut args = self.evaluar_argumentos(locals, argumentos)?;
-                if let Valor::ClausuraMir { capturas, .. } = &callee_val {
-                    let mut full = args.clone();
+                let args_usuario = self.evaluar_argumentos(locals, argumentos)?;
+                let args = if let Valor::ClausuraMir { capturas, .. } = &callee_val {
+                    let esperado_usuario = self
+                        .indice
+                        .get(&nombre)
+                        .and_then(|&idx| self.programa.funciones.get(idx))
+                        .map(|f| f.params.len().saturating_sub(capturas.len()))
+                        .unwrap_or(args_usuario.len());
+                    if args_usuario.len() != esperado_usuario {
+                        return Err(ErrorVm::FirmaInvalida {
+                            funcion: "clausura".to_string(),
+                            esperado: esperado_usuario,
+                            obtenido: args_usuario.len(),
+                        });
+                    }
+                    let mut full = args_usuario;
                     full.extend(capturas.clone());
-                    args = full;
-                }
+                    full
+                } else {
+                    args_usuario
+                };
                 let r = self.llamar(&nombre, &args)?;
                 if let Some(dest) = destino {
                     if self.funciones_sin_retorno.contains(&nombre) {
@@ -1730,6 +2170,11 @@ impl MaquinaVirtual {
             MirTerminator::Return(op) => match op {
                 Some(op) => {
                     let v = self.operando_a_valor(locals, op)?;
+                    if matches!(v, Valor::Celda(_)) {
+                        return Err(ErrorVm::NoSoportado(
+                            "celda interna no puede escapar como valor de retorno".to_string(),
+                        ));
+                    }
                     let v = if f.retorno == crate::semantico::TipoSem::Desconocido {
                         v
                     } else {
@@ -1791,6 +2236,11 @@ impl MaquinaVirtual {
                         continue;
                     }
                     if let Some(arg) = args.get(i) {
+                        // Las celdas son detalles internos de captura por referencia;
+                        // se pasan tal cual sin validación/conversión de tipo de parámetro.
+                        if matches!(arg, Valor::Celda(_)) {
+                            continue;
+                        }
                         let obtenido_original = arg.nombre_tipo().to_string();
                         match convertir_tipo(arg.clone(), tipo) {
                             Ok(nuevo) => {
@@ -1820,6 +2270,9 @@ impl MaquinaVirtual {
                     let mut convertidos: Option<Vec<Valor>> = None;
                     for (i, t) in inferidos.iter().enumerate() {
                         if let Some(arg) = args.get(i) {
+                            if matches!(arg, Valor::Celda(_)) {
+                                continue;
+                            }
                             let obtenido_original = arg.nombre_tipo().to_string();
                             match convertir_para_tipo(t, arg) {
                                 Some(nuevo) => {
@@ -1994,7 +2447,9 @@ impl MaquinaVirtual {
             }
         };
         if !self.indice.contains_key(&func_name) {
-            return Err(ErrorVm::FuncionNoEncontrada(func_name));
+            return Err(ErrorVm::NoSoportado(format!(
+                "tarea: función no encontrada: {func_name}"
+            )));
         }
         let programa = self.programa.clone();
         let globals = self.globals.clone();
@@ -2035,26 +2490,19 @@ impl MaquinaVirtual {
             let reg_tareas = crate::evaluador::tareas_actual();
             let mut tareas = reg_tareas.lock().unwrap();
             if id >= tareas.len() {
-                return Err(ErrorVm::FuncionNoEncontrada(format!("tarea {id}")));
+                return Err(ErrorVm::NoSoportado(format!("tarea inexistente: {id}")));
             }
             tareas[id].take()
         };
         match handle {
             Some(h) => match h.join() {
                 Ok(Ok(v)) => Ok(v),
-                Ok(Err(_)) => Err(ErrorVm::TipoEsperado {
-                    esperado: "tarea exitosa",
-                    encontrado: "error en tarea",
-                }),
-                Err(_) => Err(ErrorVm::TipoEsperado {
-                    esperado: "tarea exitosa",
-                    encontrado: "tarea cancelada",
-                }),
+                Ok(Err(e)) => Err(ErrorVm::NoSoportado(format!("tarea falló: {e}"))),
+                Err(_) => Err(ErrorVm::NoSoportado(format!(
+                    "tarea falló: pánico en tarea {id}"
+                ))),
             },
-            None => Err(ErrorVm::TipoEsperado {
-                esperado: "tarea pendiente",
-                encontrado: "tarea ya esperada",
-            }),
+            None => Err(ErrorVm::NoSoportado(format!("tarea ya esperada: {id}"))),
         }
     }
 
@@ -2090,7 +2538,11 @@ impl MaquinaVirtual {
         valor: Valor,
     ) -> Result<(), ErrorVm> {
         let valor = if place.projection.is_empty() {
-            self.convertir_tipo_opt(valor, local_types.get(place.local.0))?
+            if matches!(valor, Valor::Celda(_)) {
+                valor
+            } else {
+                self.convertir_tipo_opt(valor, local_types.get(place.local.0))?
+            }
         } else {
             valor
         };
@@ -2128,8 +2580,32 @@ impl MaquinaVirtual {
                     mapa.insert(campo.clone(), valor);
                     Ok(())
                 }
+                Valor::EstructuraNominal { .. } => Err(ErrorVm::AsignacionIncompatible {
+                    esperado: "objeto dinámico".into(),
+                    obtenido: "estructura nominal (use CampoIndice)".into(),
+                }),
                 otro => Err(ErrorVm::TipoEsperado {
                     esperado: "objeto",
+                    encontrado: otro.nombre_tipo(),
+                }),
+            },
+            [MirProjection::CampoIndice(idx)] => match local_val {
+                Valor::EstructuraNominal { campos, .. } => {
+                    if *idx >= campos.len() {
+                        return Err(ErrorVm::AsignacionIncompatible {
+                            esperado: "índice de campo válido".into(),
+                            obtenido: format!(
+                                "campo {} fuera de rango (tamaño {})",
+                                idx,
+                                campos.len()
+                            ),
+                        });
+                    }
+                    campos[*idx] = valor;
+                    Ok(())
+                }
+                otro => Err(ErrorVm::TipoEsperado {
+                    esperado: "estructura nominal",
                     encontrado: otro.nombre_tipo(),
                 }),
             },
@@ -2298,6 +2774,74 @@ impl MaquinaVirtual {
                     }
                     otro => Err(ErrorVm::TipoEsperado {
                         esperado: "celda",
+                        encontrado: otro.nombre_tipo(),
+                    }),
+                }
+            }
+            MirRvalue::ConstruirStruct { tipo_id, campos } => {
+                let mut vals = Vec::with_capacity(campos.len());
+                for op in campos {
+                    vals.push(self.operando_a_valor(locals, op)?);
+                }
+                Ok(Valor::EstructuraNominal {
+                    tipo_id: *tipo_id,
+                    campos: vals,
+                })
+            }
+            MirRvalue::ConstruirEnum {
+                tipo_id,
+                variante_idx,
+                payload,
+            } => {
+                let mut vals = Vec::with_capacity(payload.len());
+                for op in payload {
+                    vals.push(self.operando_a_valor(locals, op)?);
+                }
+                Ok(Valor::EnumNominal {
+                    tipo_id: *tipo_id,
+                    variante: *variante_idx,
+                    payload: vals,
+                })
+            }
+            MirRvalue::DiscriminanteEnum { base } => {
+                let base_v = self.operando_a_valor(locals, base)?;
+                match base_v {
+                    Valor::EnumNominal { variante, .. } => Ok(Valor::Entero(variante as i64)),
+                    otro => Err(ErrorVm::TipoEsperado {
+                        esperado: "enumeracion nominal",
+                        encontrado: otro.nombre_tipo(),
+                    }),
+                }
+            }
+            MirRvalue::PayloadEnum { base, indice } => {
+                let base_v = self.operando_a_valor(locals, base)?;
+                match &base_v {
+                    Valor::EnumNominal { payload, .. } => {
+                        payload.get(*indice).cloned().ok_or_else(|| {
+                            ErrorVm::AsignacionIncompatible {
+                                esperado: "índice de payload válido".into(),
+                                obtenido: format!("payload {} fuera de rango", indice),
+                            }
+                        })
+                    }
+                    otro => Err(ErrorVm::TipoEsperado {
+                        esperado: "enumeracion nominal",
+                        encontrado: otro.nombre_tipo(),
+                    }),
+                }
+            }
+            MirRvalue::CampoNominal { base, indice } => {
+                let base_v = self.operando_a_valor(locals, base)?;
+                match &base_v {
+                    Valor::EstructuraNominal { campos, .. } => campos
+                        .get(*indice)
+                        .cloned()
+                        .ok_or_else(|| ErrorVm::AsignacionIncompatible {
+                            esperado: "índice de campo válido".into(),
+                            obtenido: format!("campo {} fuera de rango", indice),
+                        }),
+                    otro => Err(ErrorVm::TipoEsperado {
+                        esperado: "estructura nominal",
                         encontrado: otro.nombre_tipo(),
                     }),
                 }
@@ -2622,6 +3166,25 @@ fn convertir_para_tipo(viejo: &Valor, nuevo: &Valor) -> Option<Valor> {
 /// lógicos ni de colecciones/objetos por operador, nulo solo con nulo.
 fn comparar_igualdad(a: &Valor, b: &Valor, igual: bool) -> Result<Valor, ErrorVm> {
     use crate::valor::FACTOR_ESCALA;
+    if matches!(
+        a,
+        Valor::EstructuraNominal { .. } | Valor::EnumNominal { .. }
+    ) || matches!(
+        b,
+        Valor::EstructuraNominal { .. } | Valor::EnumNominal { .. }
+    ) {
+        return Err(ErrorVm::NoSoportado(format!(
+            "BAS-7126: igualdad nominal no soportada en Fase 08 v1 para '{}'",
+            if matches!(
+                a,
+                Valor::EstructuraNominal { .. } | Valor::EnumNominal { .. }
+            ) {
+                a.nombre_tipo()
+            } else {
+                b.nombre_tipo()
+            }
+        )));
+    }
     if matches!(a, Valor::Nulo) || matches!(b, Valor::Nulo) {
         if matches!((a, b), (Valor::Nulo, Valor::Nulo)) {
             return Ok(Valor::Logico(igual));
@@ -2632,10 +3195,15 @@ fn comparar_igualdad(a: &Valor, b: &Valor, igual: bool) -> Result<Valor, ErrorVm
         });
     }
     if matches!(a, Valor::Logico(_)) || matches!(b, Valor::Logico(_)) {
-        return Err(ErrorVm::TiposIncompatibles {
-            izquierdo: a.nombre_tipo(),
-            derecho: b.nombre_tipo(),
-        });
+        return match (a, b) {
+            (Valor::Logico(x), Valor::Logico(y)) => {
+                Ok(Valor::Logico(if igual { x == y } else { x != y }))
+            }
+            _ => Err(ErrorVm::TiposIncompatibles {
+                izquierdo: a.nombre_tipo(),
+                derecho: b.nombre_tipo(),
+            }),
+        };
     }
     let eq = match (a, b) {
         (Valor::Entero(x), Valor::Entero(y)) => x == y,
@@ -2714,13 +3282,14 @@ fn convertir_tipo(v: Valor, t: &crate::semantico::TipoSem) -> Result<Valor, Erro
             }
             _ => Err(incompatible()),
         },
-        TipoSem::Coleccion(elem) => match v {
-            Valor::Lista(elems) | Valor::Arreglo(elems) => {
+        TipoSem::Coleccion(elem, n) => match v {
+            Valor::Lista(elems) | Valor::Arreglo(elems) if elems.len() == *n => {
                 let elems = convertir_elementos(elems, elem).map_err(|_| incompatible())?;
                 Ok(Valor::Lista(elems))
             }
             _ => Err(incompatible()),
         },
+        TipoSem::Nominal(_) => Ok(v), // S8.1: validación nominal detallada en ejecución/semántica
         TipoSem::Funcion { .. } | TipoSem::Param(_) | TipoSem::Desconocido => Ok(v),
     }
 }
@@ -2741,6 +3310,454 @@ impl MaquinaVirtual {
         match t {
             Some(t) => convertir_tipo(v, t),
             None => Ok(v),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FrameDebug {
+    func_idx: usize,
+    locals: Vec<Valor>,
+    block: usize,
+    stmt: usize, // usize::MAX = terminador
+    caller_dest: Option<MirPlace>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EstadoDebugVm {
+    pub frames: Vec<FrameDebug>,
+    pub terminado: bool,
+    pub resultado: Option<Result<Option<String>, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventoDepuracionVm {
+    Parado(MotivoParadaVm),
+    Terminado(Result<Option<String>, String>),
+}
+
+impl MaquinaVirtual {
+    pub fn debug_establecer_breakpoints(&mut self, bps: Vec<BreakpointVm>) {
+        self.debug.breakpoints = bps.into_iter().collect();
+    }
+    pub fn debug_agregar_breakpoint(&mut self, bp: BreakpointVm) {
+        self.debug.breakpoints.insert(bp);
+    }
+    pub fn debug_limpiar_breakpoints(&mut self) {
+        self.debug.breakpoints.clear();
+    }
+    pub fn debug_pausar(&mut self) {
+        self.debug.pausa_solicitada = true;
+    }
+    pub fn debug_modo_paso(&mut self, modo: ModoPasoVm) {
+        self.debug.modo_paso = modo;
+    }
+    pub fn debug_pila(&self, estado: &EstadoDebugVm) -> Vec<FrameVm> {
+        estado
+            .frames
+            .iter()
+            .rev()
+            .map(|f| {
+                let func = self
+                    .programa
+                    .funciones
+                    .get(f.func_idx)
+                    .map(|x| x.nombre.clone())
+                    .unwrap_or_else(|| "<desconocida>".to_string());
+                let loc = self
+                    .debug_spans
+                    .get(&(f.func_idx, f.block, f.stmt))
+                    .cloned();
+                FrameVm {
+                    funcion: func,
+                    archivo: loc.as_ref().map(|x| x.0.clone()),
+                    linea: loc.as_ref().map(|x| x.1),
+                    columna: loc.as_ref().map(|x| x.2),
+                }
+            })
+            .collect()
+    }
+    pub fn debug_variables_locales(
+        &self,
+        estado: &EstadoDebugVm,
+        frame_idx_desde_tope: usize,
+    ) -> Vec<VariableVm> {
+        let Some(frame) = estado.frames.iter().rev().nth(frame_idx_desde_tope) else {
+            return vec![];
+        };
+        let Some(func) = self.programa.funciones.get(frame.func_idx) else {
+            return vec![];
+        };
+        let mut vars = Vec::new();
+        for (i, (local, ty)) in func.params.iter().enumerate() {
+            let nombre = format!("param{i}_l{}", local.0);
+            if let Some(v) = frame.locals.get(local.0) {
+                vars.push(VariableVm {
+                    nombre,
+                    valor: format!("{v}"),
+                    tipo: format!("{:?}", ty),
+                });
+            }
+        }
+        for (i, v) in frame.locals.iter().enumerate() {
+            if func.params.iter().any(|(l, _)| l.0 == i) {
+                continue;
+            }
+            vars.push(VariableVm {
+                nombre: format!("_l{i}"),
+                valor: format!("{v}"),
+                tipo: v.nombre_tipo().to_string(),
+            });
+        }
+        vars
+    }
+    pub fn debug_variables_globales(&self) -> Vec<VariableVm> {
+        self.globals
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let nombre = self
+                    .debug_global_names
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| format!("g{i}"));
+                VariableVm {
+                    nombre,
+                    valor: format!("{v}"),
+                    tipo: v.nombre_tipo().to_string(),
+                }
+            })
+            .collect()
+    }
+
+    fn debug_ubicacion_actual(&self, estado: &EstadoDebugVm) -> Option<(String, usize)> {
+        let f = estado.frames.last()?;
+        let loc = self.debug_spans.get(&(f.func_idx, f.block, f.stmt))?;
+        Some((loc.0.clone(), loc.1))
+    }
+
+    fn debug_debe_parar(&mut self, estado: &EstadoDebugVm) -> Option<MotivoParadaVm> {
+        if self.debug.pausa_solicitada {
+            self.debug.pausa_solicitada = false;
+            return Some(MotivoParadaVm::Pause);
+        }
+        let (archivo, linea) = self.debug_ubicacion_actual(estado)?;
+        if self.debug.ultima_linea.as_ref() == Some(&(archivo.clone(), linea)) {
+            return None;
+        }
+        let bp = BreakpointVm {
+            archivo: archivo.clone(),
+            linea,
+        };
+        if self.debug.breakpoints.contains(&bp) {
+            self.debug.ultima_linea = Some((archivo.clone(), linea));
+            return Some(MotivoParadaVm::Breakpoint { archivo, linea });
+        }
+        let profundidad = estado.frames.len();
+        match self.debug.modo_paso {
+            ModoPasoVm::StepIn => {
+                self.debug.modo_paso = ModoPasoVm::Ninguno;
+                self.debug.ultima_linea = Some((archivo, linea));
+                Some(MotivoParadaVm::Step)
+            }
+            ModoPasoVm::StepOver { profundidad: p } if profundidad <= p => {
+                self.debug.modo_paso = ModoPasoVm::Ninguno;
+                self.debug.ultima_linea = Some((archivo, linea));
+                Some(MotivoParadaVm::Step)
+            }
+            ModoPasoVm::StepOut { profundidad: p } if profundidad < p => {
+                self.debug.modo_paso = ModoPasoVm::Ninguno;
+                self.debug.ultima_linea = Some((archivo, linea));
+                Some(MotivoParadaVm::Step)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn debug_iniciar(
+        &mut self,
+        func_idx: usize,
+        args: &[Valor],
+    ) -> Result<EstadoDebugVm, ErrorVm> {
+        if self.debug_spans.is_empty() && !self.programa.source_map.is_empty() {
+            self.debug_spans = self.programa.source_map.clone();
+        }
+        self.inicializado = false;
+        self.pasos = 0;
+        self.profundidad = 0;
+        self.try_stack.clear();
+        self.sin_retorno_locals.clear();
+        self.globals = vec![Valor::Nulo; self.programa.globals.len()];
+        let mut estado = EstadoDebugVm {
+            frames: Vec::new(),
+            terminado: false,
+            resultado: None,
+        };
+        self.debug_push_frame(&mut estado, func_idx, args)?;
+        Ok(estado)
+    }
+
+    fn debug_push_frame(
+        &mut self,
+        estado: &mut EstadoDebugVm,
+        func_idx: usize,
+        args: &[Valor],
+    ) -> Result<(), ErrorVm> {
+        let Some(f) = self.programa.funciones.get(func_idx).cloned() else {
+            return Err(ErrorVm::BloqueInalcanzable);
+        };
+        self.profundidad += 1;
+        if self.profundidad > self.limite_profundidad {
+            return Err(ErrorVm::ProfundidadExcedida);
+        }
+        if !self.inicializado {
+            self.inicializado = true;
+            if let Some(init_idx) = self.indice_de("__init")
+                && init_idx != func_idx
+            {
+                // ejecutar init con motor normal para simplicidad
+                let _ = self.ejecutar_indice(init_idx, &[])?;
+            }
+        }
+        let mut locals = vec![Valor::Nulo; f.locals.len()];
+        if args.len() < f.params.len() {
+            return Err(ErrorVm::ArgumentosInsuficientes {
+                faltantes: f.params.len() - args.len(),
+            });
+        }
+        for (i, (local, _ty)) in f.params.iter().enumerate() {
+            locals[local.0] = args[i].clone();
+        }
+        estado.frames.push(FrameDebug {
+            func_idx,
+            locals,
+            block: f.bloque_entrada.0,
+            stmt: 0,
+            caller_dest: None,
+        });
+        Ok(())
+    }
+
+    /// Ejecuta un paso de depuración. Devuelve Some(Evento) si se detiene/termina, None si debe continuar.
+    pub fn debug_paso(
+        &mut self,
+        estado: &mut EstadoDebugVm,
+    ) -> Result<Option<EventoDepuracionVm>, ErrorVm> {
+        if estado.terminado {
+            return Ok(Some(EventoDepuracionVm::Terminado(
+                estado.resultado.clone().unwrap_or(Ok(None)),
+            )));
+        }
+        if let Some(motivo) = self.debug_debe_parar(estado) {
+            return Ok(Some(EventoDepuracionVm::Parado(motivo)));
+        }
+
+        let frame_idx = match estado.frames.len().checked_sub(1) {
+            Some(i) => i,
+            None => {
+                estado.terminado = true;
+                estado.resultado = Some(Ok(None));
+                return Ok(Some(EventoDepuracionVm::Terminado(Ok(None))));
+            }
+        };
+        let (func_idx, block_idx, stmt_idx) = {
+            let f = &estado.frames[frame_idx];
+            (f.func_idx, f.block, f.stmt)
+        };
+        let func = self
+            .programa
+            .funciones
+            .get(func_idx)
+            .cloned()
+            .ok_or(ErrorVm::BloqueInalcanzable)?;
+        if block_idx >= func.bloques.len() {
+            return Err(ErrorVm::BloqueInalcanzable);
+        }
+        let bloque = func.bloques[block_idx].clone();
+
+        if stmt_idx < bloque.stmts.len() {
+            let stmt = bloque.stmts[stmt_idx].clone();
+            // ejecutar stmt en frame actual
+            let res = {
+                let locals = &mut estado.frames[frame_idx].locals;
+                let local_types = &func.locals;
+                match &stmt {
+                    MirStmt::Llamada {
+                        destino,
+                        callee,
+                        argumentos,
+                    } => {
+                        let args = self.evaluar_argumentos(locals, argumentos)?;
+                        if self.indice.contains_key(callee) && !self.nativos.contains_key(callee) {
+                            let callee_idx = self.indice[callee];
+                            // guardar destino en frame y empujar nuevo frame
+                            estado.frames[frame_idx].stmt = stmt_idx + 1;
+                            estado.frames[frame_idx].caller_dest = destino.clone();
+                            self.debug_push_frame(estado, callee_idx, &args)?;
+                            return Ok(self
+                                .debug_debe_parar(estado)
+                                .map(EventoDepuracionVm::Parado));
+                        } else {
+                            let r = self.llamar(callee, &args)?;
+                            if let Some(dest) = destino {
+                                if self.funciones_sin_retorno.contains(callee) {
+                                    self.sin_retorno_locals.insert(dest.local.0);
+                                }
+                                self.escribir_place(locals, local_types, dest, r)?;
+                            }
+                            Ok(())
+                        }
+                    }
+                    MirStmt::LlamadaIndirecta {
+                        destino,
+                        callee,
+                        argumentos,
+                    } => {
+                        let callee_val = self.operando_a_valor(locals, callee)?;
+                        let nombre = match &callee_val {
+                            Valor::Funcion(n) => n.clone(),
+                            Valor::ClausuraMir { nombre, .. } => nombre.clone(),
+                            otro => {
+                                return Err(ErrorVm::TipoEsperado {
+                                    esperado: "función",
+                                    encontrado: otro.nombre_tipo(),
+                                });
+                            }
+                        };
+                        let args_usuario = self.evaluar_argumentos(locals, argumentos)?;
+                        let args = if let Valor::ClausuraMir { capturas, .. } = &callee_val {
+                            let mut full = args_usuario;
+                            full.extend(capturas.clone());
+                            full
+                        } else {
+                            args_usuario
+                        };
+                        if self.indice.contains_key(&nombre) && !self.nativos.contains_key(&nombre)
+                        {
+                            let callee_idx = self.indice[&nombre];
+                            estado.frames[frame_idx].stmt = stmt_idx + 1;
+                            estado.frames[frame_idx].caller_dest = destino.clone();
+                            self.debug_push_frame(estado, callee_idx, &args)?;
+                            return Ok(self
+                                .debug_debe_parar(estado)
+                                .map(EventoDepuracionVm::Parado));
+                        } else {
+                            let r = self.llamar(&nombre, &args)?;
+                            if let Some(dest) = destino {
+                                self.escribir_place(locals, local_types, dest, r)?;
+                            }
+                            Ok(())
+                        }
+                    }
+                    _ => self.ejecutar_stmt(locals, local_types, &stmt),
+                }
+            };
+            if let Err(e) = res {
+                if let Some((rescue, _merge, var_local)) = self.try_stack.last().cloned() {
+                    if let Some(vl) = var_local
+                        && let Some(fr) = estado.frames.get_mut(frame_idx)
+                        && vl < fr.locals.len()
+                    {
+                        fr.locals[vl] = Valor::Texto(e.to_string());
+                    }
+                    self.try_stack.pop();
+                    if let Some(fr) = estado.frames.get_mut(frame_idx) {
+                        fr.block = rescue.0;
+                        fr.stmt = 0;
+                    }
+                    return Ok(self
+                        .debug_debe_parar(estado)
+                        .map(EventoDepuracionVm::Parado));
+                }
+                estado.terminado = true;
+                estado.resultado = Some(Err(e.to_string()));
+                return Ok(Some(EventoDepuracionVm::Terminado(Err(e.to_string()))));
+            }
+            if let Some(f) = estado.frames.get_mut(frame_idx) {
+                f.stmt = stmt_idx + 1;
+            }
+            return Ok(self
+                .debug_debe_parar(estado)
+                .map(EventoDepuracionVm::Parado));
+        }
+
+        // terminador
+        let term = bloque.terminator.clone();
+        let trans = {
+            let locals = &mut estado.frames[frame_idx].locals;
+            self.ejecutar_terminador(locals, &func, &term)
+        };
+        match trans {
+            Ok(Transicion::Salto(nuevo)) => {
+                if let Some(f) = estado.frames.get_mut(frame_idx) {
+                    f.block = nuevo.0;
+                    f.stmt = 0;
+                }
+                Ok(self
+                    .debug_debe_parar(estado)
+                    .map(EventoDepuracionVm::Parado))
+            }
+            Ok(Transicion::Retornar(valor)) => {
+                let ret = valor.unwrap_or(Valor::Nulo);
+                estado.frames.pop();
+                self.profundidad = self.profundidad.saturating_sub(1);
+                if let Some(caller) = estado.frames.last_mut() {
+                    if let Some(dest) = caller.caller_dest.clone() {
+                        let caller_func_idx = caller.func_idx;
+                        let caller_func = self
+                            .programa
+                            .funciones
+                            .get(caller_func_idx)
+                            .cloned()
+                            .ok_or(ErrorVm::BloqueInalcanzable)?;
+                        let locals = &mut caller.locals;
+                        self.escribir_place(locals, &caller_func.locals, &dest, ret)?;
+                        caller.caller_dest = None;
+                    }
+                    Ok(self
+                        .debug_debe_parar(estado)
+                        .map(EventoDepuracionVm::Parado))
+                } else {
+                    estado.terminado = true;
+                    let out = Some(format!("{}", ret));
+                    estado.resultado = Some(Ok(Some(format!("{}", ret))));
+                    Ok(Some(EventoDepuracionVm::Terminado(Ok(out))))
+                }
+            }
+            Err(e) => {
+                if let Some((rescue, _merge, var_local)) = self.try_stack.last().cloned() {
+                    if let Some(vl) = var_local
+                        && let Some(fr) = estado.frames.get_mut(frame_idx)
+                        && vl < fr.locals.len()
+                    {
+                        fr.locals[vl] = Valor::Texto(e.to_string());
+                    }
+                    self.try_stack.pop();
+                    if let Some(fr) = estado.frames.get_mut(frame_idx) {
+                        fr.block = rescue.0;
+                        fr.stmt = 0;
+                    }
+                    Ok(self
+                        .debug_debe_parar(estado)
+                        .map(EventoDepuracionVm::Parado))
+                } else {
+                    estado.terminado = true;
+                    estado.resultado = Some(Err(e.to_string()));
+                    Ok(Some(EventoDepuracionVm::Terminado(Err(e.to_string()))))
+                }
+            }
+        }
+    }
+
+    pub fn debug_continuar(
+        &mut self,
+        estado: &mut EstadoDebugVm,
+    ) -> Result<EventoDepuracionVm, ErrorVm> {
+        loop {
+            match self.debug_paso(estado)? {
+                Some(ev) => return Ok(ev),
+                None => continue,
+            }
         }
     }
 }

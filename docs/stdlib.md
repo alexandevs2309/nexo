@@ -34,6 +34,7 @@ Funciones disponibles en ambos motores (Tree-Walk y VM). Las funciones marcadas 
 | `a_entero(s)` | `texto -> entero` | Parsea entero (error si inválido). |
 | `a_decimal(s)` | `texto -> decimal` | Parsea decimal. |
 | `a_real(s)` | `texto -> real` | Parsea real. |
+| `texto(x)` | `cualquiera -> texto` | Convierte a representación textual. |
 
 ## Colecciones
 
@@ -45,11 +46,15 @@ Funciones disponibles en ambos motores (Tree-Walk y VM). Las funciones marcadas 
 | `filtrar(col, f)` | `col, funcion -> col` | Filtra por predicado lógico. |
 | `reducir(col, f, ini)` | `col, funcion, cualquiera -> cualquiera` | Reduce con acumulador. |
 | `ordenar(col)` | `arreglo\|lista\|texto -> mismo` | Ordena. |
+| `posicion(col, x)` | `texto\|arreglo\|lista, cualquiera -> entero` | Índice 0-based de primera ocurrencia, o -1 si no existe. En texto: índices por caracteres Unicode (no bytes); subcadena vacía devuelve 0. En arreglo/lista: compara por igualdad de valor; lista vacía o ausente devuelve -1. |
 | `abs(x)` | `entero\|real\|decimal -> mismo` | Valor absoluto. |
 | `min(a, b)` | `entero\|real, entero\|real -> mismo` | Mínimo. |
 | `max(a, b)` | `entero\|real, entero\|real -> mismo` | Máximo. |
 | `potencia(b, e)` | `entero\|real, entero\|real -> mismo` | Potencia. |
 | `raiz(x)` | `entero\|real -> real` | Raíz cuadrada. |
+| `piso(x)` | `entero\|real\|decimal -> entero` | Piso hacia −∞. Para `decimal` usa aritmética entera escalada (sin `f64`). Para `real`, error si NaN/∞ o si el resultado está fuera de `i64` o fuera de precisión entera exacta representable con seguridad. |
+| `techo(x)` | `entero\|real\|decimal -> entero` | Techo hacia +∞. Mismas reglas de precisión/errores que `piso`. |
+| `redondear(x)` | `entero\|real\|decimal -> entero` | Redondeo half away from zero (desempate `.5` se aleja de 0). Mismas reglas de precisión/errores que `piso`. |
 
 ## JSON
 
@@ -115,3 +120,30 @@ Funciones disponibles en ambos motores (Tree-Walk y VM). Las funciones marcadas 
 
 - `intentar { ... } rescatar e { ... }` — captura cualquier error en `e`.
 - `intentar { ... } rescatar { ... }` — sin variable de error.
+
+## Disponibilidad por motor (Fase 09)
+
+| Dominio / función | Tree-Walk | VM | Nativo | WASM | Notas |
+|---|---:|---:|---:|---:|---|
+| E/S: mostrar/mostrar_sin_salto | OBL* | OBL | OBL | NO | *TW: sentencias; VM/nativo: soporte de salida. WASM sin E/S de texto. |
+| E/S stdin: leer, leer_entero, leer_decimal, leer_real | OBL | OBL | NO | NO | Solo motores interactivos/proceso. |
+| Texto: longitud, mayusculas, minusculas, recortar, reemplazar, subcadena, dividir, unir, contiene, empieza_con, termina_con, es_vacio, repetir, invertir, a_entero, a_decimal, a_real | OBL | OBL | LIM | NO | Nativo: subconjunto inline parcial; resto NO/LIM según `backend_nativo.rs`. |
+| Texto: texto(x), posicion(texto, sub) | OBL | OBL | NO | NO | Añadidos/corregidos Fase 09; paridad TW↔VM verificada. `posicion`: índices Unicode por caracteres, subcadena vacía=0, no encontrado=-1. Nativo/WASM: no reclamado. |
+| Colecciones: agregar, eliminar, map, filtrar, reducir, ordenar | OBL | OBL | LIM | NO | Nativo: `agregar/eliminar/longitud/contiene/es_vacio/invertir/ordenar` en subconjunto soportado; `map/filtrar/reducir` no garantizados en nativo/WASM. |
+| Colecciones: posicion(arreglo/lista, x) | OBL | OBL | NO | NO | Fase 09; paridad TW↔VM verificada. Igualdad de valor, ausente/vacía=-1. Nativo/WASM: no reclamado. |
+| Matemática: abs, min, max, potencia, raiz | OBL | OBL | LIM | LIM | Nativo/WASM: depende de subconjunto numérico soportado por backend; sin reclamo de paridad total fuera de casos probados. |
+| Matemática: piso, techo, redondear | OBL | OBL | NO | NO | TW/VM verificados con paridad. Decimal: aritmética entera escalada exacta en contrato decimal. Real: IEEE-754; error si NaN/∞ o fuera de rango/precisión entera segura de `i64`. Nativo/WASM: no reclamado. |
+| JSON: json_parsear, json_serializar, json_obtener | OBL | OBL | LIM | NO | Nativo: `json_parsear` por runtime; `json_serializar/json_obtener` no garantizados. |
+| Archivos: leer_archivo, escribir_archivo, existe_archivo, abrir/leer_linea/leer_todo/escribir/escribir_linea/cerrar/fin_de_archivo | OBL | OBL | LIM | NO | Nativo: `leer_archivo` en subconjunto; handles/otros archivos no garantizados. WASM sin E/S de archivos. |
+| Fechas: ahora, fecha_actual, formatear_fecha | OBL | OBL | NO | NO | Dependiente de reloj/host; no soportado en nativo/WASM. |
+| HTTP: http_get, http_post | OBL | OBL | NO | NO | Requiere red/host; no soportado en nativo/WASM. |
+| Concurrencia: iniciar_tarea, esperar_tarea, canales | OBL | OBL | NO | NO | Fase 10, solo TW/VM. |
+| FFI: cargar_ffi, llamar_ffi, descargar_ffi | OBL | OBL | NO | NO | Fase 11, solo TW/VM; nativo/WASM rechazo explícito BAS-7124. |
+
+**Leyenda:** OBL = soportado en alcance del motor; LIM = subconjunto limitado, no paridad total reclamada; NO = no soportado / fuera de alcance, debe rechazar o no reclamarse. Las afirmaciones de paridad TW↔VM se respaldan con pruebas diferenciales/conformidad; nativo/WASM solo donde hay evidencia.
+
+### Contratos y límites (Fase 09)
+
+- **`piso/techo/redondear`**: `decimal` se procesa en aritmética entera escalada (`FACTOR_ESCALA`), sin `f64`, preservando el contrato decimal. `real` usa IEEE-754; si el valor es NaN/∞, o el resultado no es representable como `i64` seguro, se produce error aritmético de desbordamiento. No se promete precisión decimal exacta para `real` fuera de la precisión entera exacta de IEEE-754. Redondeo: `half away from zero`.
+- **`posicion`**: texto indexado por caracteres Unicode (no bytes); devuelve -1 si no existe; subcadena vacía devuelve 0. En arreglo/lista devuelve índice 0-based del primer elemento igual, o -1 si vacío/ausente.
+- **`texto(x)`**: conversión textual de valores soportados por el runtime; disponible en TW/VM.

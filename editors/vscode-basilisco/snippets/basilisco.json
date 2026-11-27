@@ -1,0 +1,42 @@
+{
+  "Funcion": {
+    "prefix": "funcion",
+    "body": ["funcion ${1:nombre}(${2:args}) {", "  ${0}", "}"],
+    "description": "Declarar función"
+  },
+  "Funcion main": {
+    "prefix": "main",
+    "body": ["funcion main() {", "  ${0}", "}"],
+    "description": "Función main"
+  },
+  "Si": {
+    "prefix": "si",
+    "body": ["si ${1:condicion} {", "  ${0}", "}"],
+    "description": "Condicional si"
+  },
+  "Si sino": {
+    "prefix": "sisino",
+    "body": ["si ${1:condicion} {", "  ${2}", "} sino {", "  ${0}", "}"],
+    "description": "Condicional si/sino"
+  },
+  "Mientras": {
+    "prefix": "mientras",
+    "body": ["mientras ${1:condicion} {", "  ${0}", "}"],
+    "description": "Bucle mientras"
+  },
+  "Para": {
+    "prefix": "para",
+    "body": ["para ${1:i} en ${2:coleccion} {", "  ${0}", "}"],
+    "description": "Bucle para"
+  },
+  "Mostrar": {
+    "prefix": "mostrar",
+    "body": ["mostrar ${0:valor}"],
+    "description": "Mostrar valor"
+  },
+  "Var": {
+    "prefix": "var",
+    "body": ["var ${1:nombre}: ${2:entero} = ${0:valor}"],
+    "description": "Declarar variable"
+  }
+}

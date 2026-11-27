@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use crate::hir::{HirExpresion, HirItem, HirLiteral, HirPrograma, HirSentencia};
+use crate::hir::{
+    HirBrazoCoincidir, HirExpresion, HirItem, HirLiteral, HirPatron, HirPrograma, HirSentencia,
+};
 use crate::semantico::TipoSem;
 use crate::simbodo::SimbodoId;
 
@@ -59,6 +61,8 @@ pub enum MirProjection {
     Campo(String),
     Indice(MirOperand),
     Celda,
+    /// S8.1: campo nominal por índice.
+    CampoIndice(usize),
 }
 
 /// R-value MIR.
@@ -110,6 +114,31 @@ pub enum MirRvalue {
     ObjetoModulo {
         prefijo: String,
         nombres: Vec<String>,
+    },
+    /// S8.1: construcción de estructura nominal.
+    ConstruirStruct {
+        tipo_id: u32,
+        campos: Vec<MirOperand>,
+    },
+    /// S8.1: acceso a campo nominal por índice.
+    CampoNominal {
+        base: MirOperand,
+        indice: usize,
+    },
+    /// S8.2: construcción de variante enum nominal.
+    ConstruirEnum {
+        tipo_id: u32,
+        variante_idx: u32,
+        payload: Vec<MirOperand>,
+    },
+    /// S8.3: discriminante de enum nominal.
+    DiscriminanteEnum {
+        base: MirOperand,
+    },
+    /// S8.3: payload de variante enum nominal por índice.
+    PayloadEnum {
+        base: MirOperand,
+        indice: usize,
     },
 }
 
@@ -199,6 +228,8 @@ pub struct MirBasicBlock {
     pub id: BlockId,
     pub stmts: Vec<MirStmt>,
     pub terminator: MirTerminator,
+    pub stmt_spans: Vec<Option<(String, usize, usize)>>,
+    pub terminator_span: Option<(String, usize, usize)>,
 }
 
 /// Función MIR.
@@ -217,6 +248,12 @@ pub struct MirFunction {
 pub struct MirPrograma {
     pub funciones: Vec<MirFunction>,
     pub globals: Vec<TipoSem>,
+    /// S8.3: el programa contiene expresiones `coincidir`.
+    pub contiene_coincidir: bool,
+    /// S8.1+: el programa contiene capacidades nominales (struct/enum/rasgo/impl/métodos).
+    pub contiene_nominales: bool,
+    /// Mapa de fuente para depuración: (func_idx, block_idx, stmt_idx|usize::MAX) -> (archivo, linea, columna).
+    pub source_map: std::collections::HashMap<(usize, usize, usize), (String, usize, usize)>,
 }
 
 /// Contexto de lowering de una función.
@@ -234,6 +271,7 @@ struct LoweringCtx {
     contador_temp: usize,
     /// Pila de bucles: (bloque_condicion, bloque_salida).
     bucles: Vec<(BlockId, BlockId)>,
+    span_actual: Option<(String, usize, usize)>,
 }
 
 impl LoweringCtx {
@@ -247,12 +285,16 @@ impl LoweringCtx {
             bloque_actual: BlockId(0),
             contador_temp: 0,
             bucles: Vec::new(),
+            span_actual: None,
         };
         // Bloque de entrada inicial.
         ctx.bloques.push(MirBasicBlock {
             id: BlockId(0),
             stmts: Vec::new(),
             terminator: MirTerminator::Unreachable,
+
+            stmt_spans: Vec::new(),
+            terminator_span: None,
         });
         ctx
     }
@@ -283,6 +325,9 @@ impl LoweringCtx {
             id,
             stmts: Vec::new(),
             terminator: MirTerminator::Unreachable,
+
+            stmt_spans: Vec::new(),
+            terminator_span: None,
         });
         id
     }
@@ -292,11 +337,19 @@ impl LoweringCtx {
     }
 
     fn emitir_stmt(&mut self, stmt: MirStmt) {
-        self.bloque_mut(self.bloque_actual).stmts.push(stmt);
+        let span = self.span_actual.clone();
+        let b = self.bloque_mut(self.bloque_actual);
+        b.stmts.push(stmt);
+        b.stmt_spans.push(span);
     }
 
     fn set_terminator(&mut self, t: MirTerminator) {
-        self.bloque_mut(self.bloque_actual).terminator = t;
+        let span = self.span_actual.clone();
+        let b = self.bloque_mut(self.bloque_actual);
+        b.terminator = t;
+        if b.terminator_span.is_none() {
+            b.terminator_span = span;
+        }
     }
 
     fn cambiar_bloque(&mut self, id: BlockId) {
@@ -318,6 +371,214 @@ fn lower_literal(lit: &HirLiteral) -> MirConst {
 
 /// Convierte una expresión HIR a un operando MIR, emitiendo statements
 /// en el bloque actual para sub-expresiones.
+fn lower_cuerpo_como_expr(ctx: &mut LoweringCtx, cuerpo: &[HirSentencia]) -> MirOperand {
+    if cuerpo.is_empty() {
+        return MirOperand::Const(MirConst::Nulo);
+    }
+    let (prefix, last) = cuerpo.split_at(cuerpo.len() - 1);
+    for st in prefix {
+        let _ = lower_stmt(ctx, st);
+    }
+    match &last[0] {
+        HirSentencia::Expresion(e) => lower_expr(ctx, e),
+        HirSentencia::Retornar(Some(e)) => {
+            let op = lower_expr(ctx, e);
+            ctx.set_terminator(MirTerminator::Return(Some(op)));
+            MirOperand::Const(MirConst::Nulo)
+        }
+        HirSentencia::Retornar(None) => {
+            ctx.set_terminator(MirTerminator::Return(None));
+            MirOperand::Const(MirConst::Nulo)
+        }
+        other => {
+            let _ = lower_stmt(ctx, other);
+            MirOperand::Const(MirConst::Nulo)
+        }
+    }
+}
+
+fn emitir_test_patron(ctx: &mut LoweringCtx, pat: &HirPatron, val: MirOperand, on_fail: BlockId) {
+    match pat {
+        HirPatron::Wildcard => {}
+        HirPatron::Binding { simbodo, .. } => {
+            let local = ctx.local_de_simbodo(*simbodo, TipoSem::Desconocido);
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local,
+                    projection: vec![],
+                },
+                valor: MirRvalue::Use(val),
+            });
+        }
+        HirPatron::Literal(v) => {
+            let lit_op = MirOperand::Const(lower_literal_valor(v));
+            let tmp = ctx.nuevo_temp(TipoSem::Logico);
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local: tmp,
+                    projection: vec![],
+                },
+                valor: MirRvalue::BinOp {
+                    op: MirBinOp::Igual,
+                    lhs: val,
+                    rhs: lit_op,
+                },
+            });
+            let ok_bb = ctx.nuevo_bloque();
+            ctx.set_terminator(MirTerminator::SwitchInt {
+                discriminante: MirOperand::Copy(tmp),
+                casos: vec![(1, ok_bb)],
+                por_defecto: on_fail,
+            });
+            ctx.cambiar_bloque(ok_bb);
+        }
+        HirPatron::Variante {
+            variante_idx,
+            campos,
+            ..
+        } => {
+            let disc = ctx.nuevo_temp(TipoSem::Entero);
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local: disc,
+                    projection: vec![],
+                },
+                valor: MirRvalue::DiscriminanteEnum { base: val.clone() },
+            });
+            let eq = ctx.nuevo_temp(TipoSem::Logico);
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local: eq,
+                    projection: vec![],
+                },
+                valor: MirRvalue::BinOp {
+                    op: MirBinOp::Igual,
+                    lhs: MirOperand::Copy(disc),
+                    rhs: MirOperand::Const(MirConst::Entero(*variante_idx as i64)),
+                },
+            });
+            let ok_bb = ctx.nuevo_bloque();
+            ctx.set_terminator(MirTerminator::SwitchInt {
+                discriminante: MirOperand::Copy(eq),
+                casos: vec![(1, ok_bb)],
+                por_defecto: on_fail,
+            });
+            ctx.cambiar_bloque(ok_bb);
+            for (i, p) in campos.iter().enumerate() {
+                let ptmp = ctx.nuevo_temp(TipoSem::Desconocido);
+                ctx.emitir_stmt(MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: ptmp,
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::PayloadEnum {
+                        base: val.clone(),
+                        indice: i,
+                    },
+                });
+                emitir_test_patron(ctx, p, MirOperand::Copy(ptmp), on_fail);
+            }
+        }
+        HirPatron::Estructura { campos, .. } => {
+            for (indice, p) in campos {
+                let ftmp = ctx.nuevo_temp(TipoSem::Desconocido);
+                ctx.emitir_stmt(MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: ftmp,
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::CampoNominal {
+                        base: val.clone(),
+                        indice: *indice,
+                    },
+                });
+                emitir_test_patron(ctx, p, MirOperand::Copy(ftmp), on_fail);
+            }
+        }
+    }
+}
+
+fn lower_literal_valor(v: &crate::valor::Valor) -> MirConst {
+    use crate::valor::Valor;
+    match v {
+        Valor::Entero(n) => MirConst::Entero(*n),
+        Valor::Decimal(d) => MirConst::Decimal(*d),
+        Valor::Real(r) => MirConst::Real(*r),
+        Valor::Logico(b) => MirConst::Logico(*b),
+        Valor::Texto(s) => MirConst::Texto(s.clone()),
+        Valor::Nulo => MirConst::Nulo,
+        _ => MirConst::Nulo,
+    }
+}
+
+fn lower_coincidir(
+    ctx: &mut LoweringCtx,
+    scrutinee: &HirExpresion,
+    brazos: &[HirBrazoCoincidir],
+    tipo: &TipoSem,
+) -> MirOperand {
+    let scr = lower_expr(ctx, scrutinee);
+    let scr_local = ctx.nuevo_temp(TipoSem::Desconocido);
+    ctx.emitir_stmt(MirStmt::Asignacion {
+        destino: MirPlace {
+            local: scr_local,
+            projection: vec![],
+        },
+        valor: MirRvalue::Use(scr),
+    });
+    let res_local = ctx.nuevo_temp(tipo.clone());
+    ctx.emitir_stmt(MirStmt::Asignacion {
+        destino: MirPlace {
+            local: res_local,
+            projection: vec![],
+        },
+        valor: MirRvalue::Use(MirOperand::Const(MirConst::Nulo)),
+    });
+    let merge_bb = ctx.nuevo_bloque();
+
+    let mut arm_test_bbs: Vec<BlockId> = Vec::with_capacity(brazos.len());
+    for _ in brazos {
+        arm_test_bbs.push(ctx.nuevo_bloque());
+    }
+    if let Some(first) = arm_test_bbs.first() {
+        ctx.set_terminator(MirTerminator::Goto(*first));
+    } else {
+        ctx.set_terminator(MirTerminator::Goto(merge_bb));
+        ctx.cambiar_bloque(merge_bb);
+        return MirOperand::Copy(res_local);
+    }
+
+    for (i, b) in brazos.iter().enumerate() {
+        let test_bb = arm_test_bbs[i];
+        let next_fail = arm_test_bbs.get(i + 1).copied().unwrap_or(merge_bb);
+        ctx.cambiar_bloque(test_bb);
+        let scr_op = MirOperand::Copy(scr_local);
+        emitir_test_patron(ctx, &b.patron, scr_op, next_fail);
+        if matches!(
+            ctx.bloque_mut(ctx.bloque_actual).terminator,
+            MirTerminator::Unreachable
+        ) {
+            let body_val = lower_cuerpo_como_expr(ctx, &b.cuerpo);
+            if matches!(
+                ctx.bloque_mut(ctx.bloque_actual).terminator,
+                MirTerminator::Unreachable
+            ) {
+                ctx.emitir_stmt(MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local: res_local,
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::Use(body_val),
+                });
+                ctx.set_terminator(MirTerminator::Goto(merge_bb));
+            }
+        }
+    }
+
+    ctx.cambiar_bloque(merge_bb);
+    MirOperand::Copy(res_local)
+}
+
 fn lower_expr(ctx: &mut LoweringCtx, e: &HirExpresion) -> MirOperand {
     match e {
         HirExpresion::Literal(lit, _tipo) => MirOperand::Const(lower_literal(lit)),
@@ -772,6 +1033,88 @@ fn lower_expr(ctx: &mut LoweringCtx, e: &HirExpresion) -> MirOperand {
             });
             MirOperand::Copy(tmp)
         }
+        HirExpresion::ConstruirEstructura {
+            tipo_nominal,
+            campos,
+            tipo,
+        } => {
+            let mut ops = Vec::with_capacity(campos.len());
+            for (_, expr) in campos {
+                ops.push(lower_expr(ctx, expr));
+            }
+            let tmp = ctx.nuevo_temp(tipo.clone());
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local: tmp,
+                    projection: vec![],
+                },
+                valor: MirRvalue::ConstruirStruct {
+                    tipo_id: tipo_nominal.0,
+                    campos: ops,
+                },
+            });
+            MirOperand::Copy(tmp)
+        }
+        HirExpresion::ConstruirEnum {
+            tipo_nominal,
+            variante_idx,
+            payload,
+            tipo,
+        } => {
+            let mut ops = Vec::with_capacity(payload.len());
+            for expr in payload {
+                ops.push(lower_expr(ctx, expr));
+            }
+            let tmp = ctx.nuevo_temp(tipo.clone());
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local: tmp,
+                    projection: vec![],
+                },
+                valor: MirRvalue::ConstruirEnum {
+                    tipo_id: tipo_nominal.0,
+                    variante_idx: *variante_idx,
+                    payload: ops,
+                },
+            });
+            MirOperand::Copy(tmp)
+        }
+        HirExpresion::DiscriminanteEnum { objeto, .. } => {
+            let base = lower_expr(ctx, objeto);
+            let tmp = ctx.nuevo_temp(TipoSem::Entero);
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local: tmp,
+                    projection: vec![],
+                },
+                valor: MirRvalue::DiscriminanteEnum { base },
+            });
+            MirOperand::Copy(tmp)
+        }
+        HirExpresion::Coincidir {
+            scrutinee,
+            brazos,
+            tipo,
+        } => lower_coincidir(ctx, scrutinee, brazos, tipo),
+        HirExpresion::AccesoNominal {
+            objeto,
+            indice,
+            tipo,
+        } => {
+            let base = lower_expr(ctx, objeto);
+            let tmp = ctx.nuevo_temp(tipo.clone());
+            ctx.emitir_stmt(MirStmt::Asignacion {
+                destino: MirPlace {
+                    local: tmp,
+                    projection: vec![],
+                },
+                valor: MirRvalue::CampoNominal {
+                    base,
+                    indice: *indice,
+                },
+            });
+            MirOperand::Copy(tmp)
+        }
         HirExpresion::Rango {
             inicio,
             fin,
@@ -1031,6 +1374,26 @@ fn lower_stmt(ctx: &mut LoweringCtx, s: &HirSentencia) -> Result<(), String> {
             }
             Ok(())
         }
+        HirSentencia::AsignarCampoNominal {
+            objeto,
+            indice,
+            valor,
+        } => {
+            if let HirExpresion::Variable(id, _) = objeto {
+                let local = ctx.local_de_simbodo(*id, TipoSem::Desconocido);
+                let val_op = lower_expr(ctx, valor);
+                ctx.emitir_stmt(MirStmt::Asignacion {
+                    destino: MirPlace {
+                        local,
+                        projection: vec![MirProjection::CampoIndice(*indice)],
+                    },
+                    valor: MirRvalue::Use(val_op),
+                });
+            }
+            Ok(())
+        }
+        HirSentencia::Estructura { .. } => Ok(()),
+        HirSentencia::Enumeracion { .. } => Ok(()),
         HirSentencia::ParaCada {
             variable,
             iterable,
@@ -1214,11 +1577,21 @@ fn lower_item(
             capturas_externas,
             retorno,
             cuerpo,
+            cuerpo_spans,
+            span,
+            ..
         } => {
             let mut ctx = LoweringCtx::nuevo(if es_modulo {
                 std::collections::HashMap::new()
             } else {
                 globals.clone()
+            });
+            ctx.span_actual = span.as_ref().map(|s| {
+                (
+                    s.archivo.clone().unwrap_or_else(|| "<modulo>".to_string()),
+                    s.linea,
+                    s.columna,
+                )
             });
             // Celdas = capturas externas + capturas anidadas (dedup). Se usa
             // `capturadas`/`capturas_externas` en lugar del campo `celdas` para
@@ -1263,7 +1636,14 @@ fn lower_item(
                 }
             }
             // Cuerpo.
-            for st in cuerpo {
+            for (i, st) in cuerpo.iter().enumerate() {
+                if let Some(Some(sp)) = cuerpo_spans.get(i) {
+                    ctx.span_actual = Some((
+                        sp.archivo.clone().unwrap_or_else(|| "<modulo>".to_string()),
+                        sp.linea,
+                        sp.columna,
+                    ));
+                }
                 let _ = lower_stmt(&mut ctx, st);
             }
             // Si no hay terminator en el bloque actual, añadir Return.
@@ -1281,6 +1661,21 @@ fn lower_item(
                 bloques: ctx.bloques,
                 bloque_entrada: BlockId(0),
             };
+            let func_idx = ctx_global.funciones.len();
+            for (bi, b) in func.bloques.iter().enumerate() {
+                for (si, sp) in b.stmt_spans.iter().enumerate() {
+                    if let Some((a, l, c)) = sp {
+                        ctx_global
+                            .source_map
+                            .insert((func_idx, bi, si), (a.clone(), *l, *c));
+                    }
+                }
+                if let Some((a, l, c)) = &b.terminator_span {
+                    ctx_global
+                        .source_map
+                        .insert((func_idx, bi, usize::MAX), (a.clone(), *l, *c));
+                }
+            }
             ctx_global.funciones.push(func);
         }
         HirItem::Declaracion {
@@ -1298,6 +1693,146 @@ fn lower_item(
 }
 
 /// Lowering de programa HIR a MIR.
+fn hir_expr_contiene_coincidir(e: &HirExpresion) -> bool {
+    match e {
+        HirExpresion::Coincidir { .. } => true,
+        HirExpresion::Suma(a, b, _)
+        | HirExpresion::Resta(a, b, _)
+        | HirExpresion::Multiplicacion(a, b, _)
+        | HirExpresion::Division(a, b, _)
+        | HirExpresion::Modulo(a, b, _)
+        | HirExpresion::IgualIgual(a, b, _)
+        | HirExpresion::Distinto(a, b, _)
+        | HirExpresion::Menor(a, b, _)
+        | HirExpresion::MenorIgual(a, b, _)
+        | HirExpresion::Mayor(a, b, _)
+        | HirExpresion::MayorIgual(a, b, _)
+        | HirExpresion::Y(a, b, _)
+        | HirExpresion::O(a, b, _) => {
+            hir_expr_contiene_coincidir(a) || hir_expr_contiene_coincidir(b)
+        }
+        HirExpresion::No(a, _)
+        | HirExpresion::Acceso { objeto: a, .. }
+        | HirExpresion::AccesoNominal { objeto: a, .. }
+        | HirExpresion::DiscriminanteEnum { objeto: a, .. } => hir_expr_contiene_coincidir(a),
+        HirExpresion::Rango { inicio, fin, .. } => {
+            hir_expr_contiene_coincidir(inicio) || hir_expr_contiene_coincidir(fin)
+        }
+        HirExpresion::ArregloLiteral { elementos, .. } => {
+            elementos.iter().any(hir_expr_contiene_coincidir)
+        }
+        HirExpresion::Indice { objeto, indice, .. } => {
+            hir_expr_contiene_coincidir(objeto) || hir_expr_contiene_coincidir(indice)
+        }
+        HirExpresion::Llamada { argumentos, .. } => {
+            argumentos.iter().any(hir_expr_contiene_coincidir)
+        }
+        HirExpresion::LlamadaIndirecta {
+            callee, argumentos, ..
+        } => {
+            hir_expr_contiene_coincidir(callee)
+                || argumentos.iter().any(hir_expr_contiene_coincidir)
+        }
+        HirExpresion::Si {
+            condicion,
+            entonces,
+            sino,
+        } => {
+            hir_expr_contiene_coincidir(condicion)
+                || entonces.iter().any(hir_stmt_contiene_coincidir)
+                || sino
+                    .as_ref()
+                    .map(|v| v.iter().any(hir_stmt_contiene_coincidir))
+                    .unwrap_or(false)
+        }
+        HirExpresion::ConstruirEstructura { campos, .. } => {
+            campos.iter().any(|(_, e)| hir_expr_contiene_coincidir(e))
+        }
+        HirExpresion::ConstruirEnum { payload, .. } => {
+            payload.iter().any(hir_expr_contiene_coincidir)
+        }
+        HirExpresion::Lambda { .. }
+        | HirExpresion::FuncionRef(_)
+        | HirExpresion::ModuloObjeto { .. }
+        | HirExpresion::Literal(_, _)
+        | HirExpresion::Variable(_, _)
+        | HirExpresion::Otro(_) => false,
+    }
+}
+fn hir_stmt_contiene_coincidir(s: &HirSentencia) -> bool {
+    match s {
+        HirSentencia::Declaracion { valor, .. } => hir_expr_contiene_coincidir(valor),
+        HirSentencia::Asignacion { valor, .. } => hir_expr_contiene_coincidir(valor),
+        HirSentencia::AsignacionIndice {
+            objeto,
+            indice,
+            valor,
+        } => {
+            hir_expr_contiene_coincidir(objeto)
+                || hir_expr_contiene_coincidir(indice)
+                || hir_expr_contiene_coincidir(valor)
+        }
+        HirSentencia::AsignarCampoNominal { objeto, valor, .. } => {
+            hir_expr_contiene_coincidir(objeto) || hir_expr_contiene_coincidir(valor)
+        }
+        HirSentencia::Expresion(e) => hir_expr_contiene_coincidir(e),
+        HirSentencia::Retornar(Some(e)) => hir_expr_contiene_coincidir(e),
+        HirSentencia::Retornar(None) => false,
+        HirSentencia::Bloque(ss) => ss.iter().any(hir_stmt_contiene_coincidir),
+        HirSentencia::Si {
+            condicion,
+            entonces,
+            sino,
+        } => {
+            hir_expr_contiene_coincidir(condicion)
+                || entonces.iter().any(hir_stmt_contiene_coincidir)
+                || sino
+                    .as_ref()
+                    .map(|v| v.iter().any(hir_stmt_contiene_coincidir))
+                    .unwrap_or(false)
+        }
+        HirSentencia::Mientras { condicion, cuerpo } => {
+            hir_expr_contiene_coincidir(condicion) || cuerpo.iter().any(hir_stmt_contiene_coincidir)
+        }
+        HirSentencia::ParaCada {
+            iterable, cuerpo, ..
+        } => {
+            hir_expr_contiene_coincidir(iterable) || cuerpo.iter().any(hir_stmt_contiene_coincidir)
+        }
+        HirSentencia::IntentarRescatar {
+            cuerpo_intentar,
+            cuerpo_rescatar,
+            ..
+        } => {
+            cuerpo_intentar.iter().any(hir_stmt_contiene_coincidir)
+                || cuerpo_rescatar.iter().any(hir_stmt_contiene_coincidir)
+        }
+        HirSentencia::Importar { .. }
+        | HirSentencia::Usar { .. }
+        | HirSentencia::Exportar { .. }
+        | HirSentencia::Estructura { .. }
+        | HirSentencia::Enumeracion { .. }
+        | HirSentencia::Romper
+        | HirSentencia::Continuar => false,
+    }
+}
+fn hir_contiene_coincidir(hir: &HirPrograma) -> bool {
+    hir.items.iter().any(|item| match item {
+        HirItem::Funcion { cuerpo, .. } => cuerpo.iter().any(hir_stmt_contiene_coincidir),
+        HirItem::Declaracion { valor, .. } => hir_expr_contiene_coincidir(valor),
+        HirItem::Expresion { expr: e, .. } => hir_expr_contiene_coincidir(e),
+        HirItem::IntentarRescatar {
+            cuerpo_intentar,
+            cuerpo_rescatar,
+            ..
+        } => {
+            cuerpo_intentar.iter().any(hir_stmt_contiene_coincidir)
+                || cuerpo_rescatar.iter().any(hir_stmt_contiene_coincidir)
+        }
+        HirItem::Importar { .. } | HirItem::Exportar { .. } | HirItem::Usar { .. } => false,
+    })
+}
+
 pub fn lower_programa(hir: &HirPrograma) -> MirPrograma {
     // Primera pasada: identificar variables globales (HirItem::Declaracion) y
     // asignarles un GlobalId.
@@ -1316,6 +1851,9 @@ pub fn lower_programa(hir: &HirPrograma) -> MirPrograma {
     let mut prog = MirPrograma {
         funciones: Vec::new(),
         globals: global_types,
+        contiene_coincidir: hir_contiene_coincidir(hir),
+        contiene_nominales: false,
+        source_map: std::collections::HashMap::new(),
     };
     for item in &hir.items {
         lower_item(&mut prog, item, &global_map);
@@ -1354,7 +1892,50 @@ pub fn lower_programa(hir: &HirPrograma) -> MirPrograma {
         prog.funciones.push(init_func);
     }
 
+    prog.contiene_nominales = mir_contiene_nominales(&prog);
     prog
+}
+
+fn mir_tipo_contiene_nominal(t: &TipoSem) -> bool {
+    match t {
+        TipoSem::Nominal(_) => true,
+        TipoSem::Lista(inner) | TipoSem::Arreglo(inner, _) | TipoSem::Coleccion(inner, _) => {
+            mir_tipo_contiene_nominal(inner)
+        }
+        TipoSem::Funcion {
+            params, retorno, ..
+        } => params.iter().any(mir_tipo_contiene_nominal) || mir_tipo_contiene_nominal(retorno),
+        _ => false,
+    }
+}
+
+fn mir_rvalue_contiene_nominal(rv: &MirRvalue) -> bool {
+    matches!(
+        rv,
+        MirRvalue::ConstruirStruct { .. }
+            | MirRvalue::ConstruirEnum { .. }
+            | MirRvalue::CampoNominal { .. }
+            | MirRvalue::DiscriminanteEnum { .. }
+            | MirRvalue::PayloadEnum { .. }
+    )
+}
+
+fn mir_contiene_nominales(prog: &MirPrograma) -> bool {
+    prog.globals.iter().any(mir_tipo_contiene_nominal)
+        || prog.funciones.iter().any(|f| {
+            f.params.iter().any(|(_, t)| mir_tipo_contiene_nominal(t))
+                || mir_tipo_contiene_nominal(&f.retorno)
+                || f.locals.iter().any(mir_tipo_contiene_nominal)
+                || f.bloques.iter().any(|b| {
+                    b.stmts.iter().any(|s| match s {
+                        MirStmt::Asignacion { valor, .. }
+                        | MirStmt::AsignacionGlobal { valor, .. } => {
+                            mir_rvalue_contiene_nominal(valor)
+                        }
+                        _ => false,
+                    })
+                })
+        })
 }
 
 /// Error de verificación de una invariante MIR (contrato comprobable, Fase 03).
@@ -1438,13 +2019,19 @@ fn tipos_compatibles_mir(esperado: &TipoSem, obtenido: &TipoSem) -> bool {
             ne == no && tipos_compatibles_mir(te, to)
         }
         (TipoSem::Lista(te), TipoSem::Lista(to)) => tipos_compatibles_mir(te, to),
-        (TipoSem::Arreglo(te, _), TipoSem::Lista(to)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Arreglo(_, _), TipoSem::Lista(_)) => false,
         (TipoSem::Lista(te), TipoSem::Arreglo(to, _)) => tipos_compatibles_mir(te, to),
-        (TipoSem::Coleccion(te), TipoSem::Arreglo(to, _)) => tipos_compatibles_mir(te, to),
-        (TipoSem::Coleccion(te), TipoSem::Lista(to)) => tipos_compatibles_mir(te, to),
-        (TipoSem::Arreglo(te, _), TipoSem::Coleccion(to)) => tipos_compatibles_mir(te, to),
-        (TipoSem::Lista(te), TipoSem::Coleccion(to)) => tipos_compatibles_mir(te, to),
-        (TipoSem::Coleccion(te), TipoSem::Coleccion(to)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Coleccion(te, nc), TipoSem::Arreglo(to, na)) => {
+            nc == na && tipos_compatibles_mir(te, to)
+        }
+        (TipoSem::Coleccion(te, _), TipoSem::Lista(to)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Arreglo(te, na), TipoSem::Coleccion(to, nc)) => {
+            na == nc && tipos_compatibles_mir(te, to)
+        }
+        (TipoSem::Lista(te), TipoSem::Coleccion(to, _)) => tipos_compatibles_mir(te, to),
+        (TipoSem::Coleccion(te, n1), TipoSem::Coleccion(to, n2)) => {
+            n1 == n2 && tipos_compatibles_mir(te, to)
+        }
         (
             TipoSem::Funcion {
                 params: p1,
@@ -1563,7 +2150,9 @@ fn tipo_rvalue(rv: &MirRvalue, f: &MirFunction, prog: &MirPrograma) -> Option<Ti
         MirRvalue::Indice { base, indice: _ } => {
             let tb = tipo_operando(base, f, prog)?;
             match tb {
-                TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te) => Some(*te),
+                TipoSem::Arreglo(te, _) | TipoSem::Lista(te) | TipoSem::Coleccion(te, _) => {
+                    Some(*te)
+                }
                 _ => None,
             }
         }
@@ -1574,6 +2163,15 @@ fn tipo_rvalue(rv: &MirRvalue, f: &MirFunction, prog: &MirPrograma) -> Option<Ti
         MirRvalue::Rango { .. } => Some(TipoSem::Lista(Box::new(TipoSem::Entero))),
         MirRvalue::Longitud { .. } => Some(TipoSem::Entero),
         MirRvalue::ObjetoModulo { .. } => None,
+        MirRvalue::ConstruirStruct { tipo_id, .. } => {
+            Some(TipoSem::Nominal(crate::semantico::TipoNominalId(*tipo_id)))
+        }
+        MirRvalue::ConstruirEnum { tipo_id, .. } => {
+            Some(TipoSem::Nominal(crate::semantico::TipoNominalId(*tipo_id)))
+        }
+        MirRvalue::DiscriminanteEnum { .. } => Some(TipoSem::Entero),
+        MirRvalue::PayloadEnum { .. } => Some(TipoSem::Desconocido),
+        MirRvalue::CampoNominal { .. } => Some(TipoSem::Desconocido),
     }
 }
 
@@ -1650,8 +2248,10 @@ impl VerificadorMir {
                 };
             }
         }
+        let layouts_nominales = recolectar_layouts_nominales(prog);
+        let layouts_enum = recolectar_layouts_enum(prog);
         for f in &prog.funciones {
-            if let Err(e) = verificar_funcion_mir(f, prog) {
+            if let Err(e) = verificar_funcion_mir(f, prog, &layouts_nominales, &layouts_enum) {
                 return ResultadoVerificacionMir { errores: vec![e] };
             }
         }
@@ -1722,7 +2322,58 @@ fn retorno_requiere_valor(t: &TipoSem) -> bool {
     !matches!(t, TipoSem::Desconocido | TipoSem::Nulo)
 }
 
-fn verificar_funcion_mir(f: &MirFunction, prog: &MirPrograma) -> Result<(), ErrorVerificacionMir> {
+fn recolectar_layouts_nominales(prog: &MirPrograma) -> std::collections::HashMap<u32, usize> {
+    let mut layouts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    for f in &prog.funciones {
+        for b in &f.bloques {
+            for s in &b.stmts {
+                let rv = match s {
+                    MirStmt::Asignacion { valor, .. } => Some(valor),
+                    MirStmt::AsignacionGlobal { valor, .. } => Some(valor),
+                    _ => None,
+                };
+                if let Some(MirRvalue::ConstruirStruct { tipo_id, campos }) = rv {
+                    layouts.entry(*tipo_id).or_insert(campos.len());
+                }
+            }
+        }
+    }
+    layouts
+}
+
+fn recolectar_layouts_enum(prog: &MirPrograma) -> std::collections::HashMap<(u32, u32), usize> {
+    let mut layouts: std::collections::HashMap<(u32, u32), usize> =
+        std::collections::HashMap::new();
+    for f in &prog.funciones {
+        for b in &f.bloques {
+            for s in &b.stmts {
+                let rv = match s {
+                    MirStmt::Asignacion { valor, .. } => Some(valor),
+                    MirStmt::AsignacionGlobal { valor, .. } => Some(valor),
+                    _ => None,
+                };
+                if let Some(MirRvalue::ConstruirEnum {
+                    tipo_id,
+                    variante_idx,
+                    payload,
+                }) = rv
+                {
+                    layouts
+                        .entry((*tipo_id, *variante_idx))
+                        .or_insert(payload.len());
+                }
+            }
+        }
+    }
+    layouts
+}
+
+fn verificar_funcion_mir(
+    f: &MirFunction,
+    prog: &MirPrograma,
+    layouts_nominales: &std::collections::HashMap<u32, usize>,
+    layouts_enum: &std::collections::HashMap<(u32, u32), usize>,
+) -> Result<(), ErrorVerificacionMir> {
     let ctx_f = format!("funcion '{}'", f.nombre);
     if f.bloques.is_empty() {
         return Err(err_mir(
@@ -1903,7 +2554,7 @@ fn verificar_funcion_mir(f: &MirFunction, prog: &MirPrograma) -> Result<(), Erro
                     }
                 }
                 if let Some(d) = destino {
-                    lugar_valido(d, f, prog, &ctx_b, "invoke destino")?;
+                    lugar_valido(d, f, prog, &ctx_b, "invoke destino", layouts_nominales)?;
                     if let Some(dt) = tipo_lugar(d, f) {
                         let rt = prog
                             .funciones
@@ -1931,7 +2582,7 @@ fn verificar_funcion_mir(f: &MirFunction, prog: &MirPrograma) -> Result<(), Erro
         }
         for (i, stmt) in b.stmts.iter().enumerate() {
             let ctx_s = format!("{ctx_b}, stmt {i}");
-            stmt_valido(stmt, f, prog, &ids, &ctx_s)?;
+            stmt_valido(stmt, f, prog, &ids, &ctx_s, layouts_nominales, layouts_enum)?;
         }
     }
 
@@ -1965,6 +2616,7 @@ fn lugar_valido(
     prog: &MirPrograma,
     ctx: &str,
     sitio: &str,
+    layouts_nominales: &std::collections::HashMap<u32, usize>,
 ) -> Result<(), ErrorVerificacionMir> {
     if p.local.0 >= f.locals.len() {
         return Err(err_mir(
@@ -1981,6 +2633,22 @@ fn lugar_valido(
     for proj in &p.projection {
         match proj {
             MirProjection::Campo(_) => {}
+            MirProjection::CampoIndice(idx) => {
+                let t_base = f.locals.get(p.local.0);
+                if let Some(TipoSem::Nominal(id)) = t_base
+                    && let Some(esperado) = layouts_nominales.get(&id.0)
+                    && *idx >= *esperado
+                {
+                    return Err(err_mir(
+                        "MIR043",
+                        "nominal-indice-valido",
+                        ctx,
+                        format!(
+                            "{sitio}: CampoIndice {idx} fuera de rango para layout nominal de {esperado} campos"
+                        ),
+                    ));
+                }
+            }
             MirProjection::Indice(op) => {
                 operando_valido(op, f, prog, ctx, &format!("{sitio}/indice"))?;
                 if let Some(ti) = tipo_operando(op, f, prog)
@@ -2053,11 +2721,28 @@ fn stmt_valido(
     prog: &MirPrograma,
     ids: &std::collections::HashSet<BlockId>,
     ctx: &str,
+    layouts_nominales: &std::collections::HashMap<u32, usize>,
+    layouts_enum: &std::collections::HashMap<(u32, u32), usize>,
 ) -> Result<(), ErrorVerificacionMir> {
     match stmt {
         MirStmt::Asignacion { destino, valor } => {
-            lugar_valido(destino, f, prog, ctx, "asignacion.destino")?;
-            rvalue_valido(valor, f, prog, ctx, "asignacion.valor")?;
+            lugar_valido(
+                destino,
+                f,
+                prog,
+                ctx,
+                "asignacion.destino",
+                layouts_nominales,
+            )?;
+            rvalue_valido(
+                valor,
+                f,
+                prog,
+                ctx,
+                "asignacion.valor",
+                layouts_nominales,
+                layouts_enum,
+            )?;
             // Compatibilidad de tipos cuando ambos son conocidos.
             if let (Some(td), Some(tr)) = (tipo_lugar(destino, f), tipo_rvalue(valor, f, prog))
                 && !tipos_compatibles_mir(&td, &tr)
@@ -2088,7 +2773,15 @@ fn stmt_valido(
                     ),
                 ));
             }
-            rvalue_valido(valor, f, prog, ctx, "asignacion_global.valor")?;
+            rvalue_valido(
+                valor,
+                f,
+                prog,
+                ctx,
+                "asignacion_global.valor",
+                layouts_nominales,
+                layouts_enum,
+            )?;
             if let (Some(tg), Some(tr)) = (
                 prog.globals.get(global.0).cloned(),
                 tipo_rvalue(valor, f, prog),
@@ -2125,7 +2818,7 @@ fn stmt_valido(
                 ));
             }
             if let Some(d) = destino {
-                lugar_valido(d, f, prog, ctx, "llamada.destino")?;
+                lugar_valido(d, f, prog, ctx, "llamada.destino", layouts_nominales)?;
             }
             for (i, a) in argumentos.iter().enumerate() {
                 operando_valido(a, f, prog, ctx, &format!("llamada.arg[{i}]"))?;
@@ -2197,7 +2890,14 @@ fn stmt_valido(
             argumentos,
         } => {
             if let Some(d) = destino {
-                lugar_valido(d, f, prog, ctx, "llamada_indirecta.destino")?;
+                lugar_valido(
+                    d,
+                    f,
+                    prog,
+                    ctx,
+                    "llamada_indirecta.destino",
+                    layouts_nominales,
+                )?;
             }
             operando_valido(callee, f, prog, ctx, "llamada_indirecta.callee")?;
             for (i, a) in argumentos.iter().enumerate() {
@@ -2253,6 +2953,8 @@ fn rvalue_valido(
     prog: &MirPrograma,
     ctx: &str,
     sitio: &str,
+    layouts_nominales: &std::collections::HashMap<u32, usize>,
+    layouts_enum: &std::collections::HashMap<(u32, u32), usize>,
 ) -> Result<(), ErrorVerificacionMir> {
     match r {
         MirRvalue::Use(op) => operando_valido(op, f, prog, ctx, sitio),
@@ -2368,6 +3070,72 @@ fn rvalue_valido(
             operando_valido(base, f, prog, ctx, &format!("{sitio}.base"))
         }
         MirRvalue::ObjetoModulo { .. } => Ok(()),
+        MirRvalue::ConstruirStruct { tipo_id, campos } => {
+            if let Some(esperado) = layouts_nominales.get(tipo_id)
+                && *esperado != campos.len()
+            {
+                return Err(err_mir(
+                    "MIR043",
+                    "nominal-layout-consistente",
+                    ctx,
+                    format!(
+                        "{sitio}: ConstruirStruct tipo_id={tipo_id} tiene {} campos, esperado {esperado}",
+                        campos.len()
+                    ),
+                ));
+            }
+            for (i, c) in campos.iter().enumerate() {
+                operando_valido(c, f, prog, ctx, &format!("{sitio}.campo[{i}]"))?;
+            }
+            Ok(())
+        }
+        MirRvalue::ConstruirEnum {
+            tipo_id,
+            variante_idx,
+            payload,
+        } => {
+            if let Some(esperado) = layouts_enum.get(&(*tipo_id, *variante_idx))
+                && *esperado != payload.len()
+            {
+                return Err(err_mir(
+                    "MIR043",
+                    "nominal-layout-consistente",
+                    ctx,
+                    format!(
+                        "{sitio}: ConstruirEnum tipo_id={tipo_id} variante={variante_idx} tiene {} payload, esperado {esperado}",
+                        payload.len()
+                    ),
+                ));
+            }
+            for (i, c) in payload.iter().enumerate() {
+                operando_valido(c, f, prog, ctx, &format!("{sitio}.payload[{i}]"))?;
+            }
+            Ok(())
+        }
+        MirRvalue::DiscriminanteEnum { base } => {
+            operando_valido(base, f, prog, ctx, &format!("{sitio}.base"))
+        }
+        MirRvalue::PayloadEnum { base, .. } => {
+            operando_valido(base, f, prog, ctx, &format!("{sitio}.base"))
+        }
+        MirRvalue::CampoNominal { base, indice, .. } => {
+            operando_valido(base, f, prog, ctx, &format!("{sitio}.base"))?;
+            if let Some(TipoSem::Nominal(id)) = tipo_operando(base, f, prog)
+                && let Some(esperado) = layouts_nominales.get(&id.0)
+                && *indice >= *esperado
+            {
+                return Err(err_mir(
+                    "MIR043",
+                    "nominal-indice-valido",
+                    ctx,
+                    format!(
+                        "{sitio}: índice nominal {indice} fuera de rango para layout de {} campos",
+                        esperado
+                    ),
+                ));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -2391,6 +3159,9 @@ mod verificacion_3b_tests {
         MirPrograma {
             funciones: vec![f],
             globals: vec![],
+            contiene_coincidir: false,
+            contiene_nominales: false,
+            source_map: std::collections::HashMap::new(),
         }
     }
 
@@ -2399,6 +3170,8 @@ mod verificacion_3b_tests {
             id: BlockId(id),
             stmts,
             terminator,
+            stmt_spans: Vec::new(),
+            terminator_span: None,
         }
     }
 
@@ -2689,6 +3462,8 @@ mod verificacion_3d3_tests {
             id: BlockId(id),
             stmts,
             terminator,
+            stmt_spans: Vec::new(),
+            terminator_span: None,
         }
     }
 
@@ -2710,7 +3485,13 @@ mod verificacion_3d3_tests {
     }
 
     fn programa(funciones: Vec<MirFunction>, globals: Vec<TipoSem>) -> MirPrograma {
-        MirPrograma { funciones, globals }
+        MirPrograma {
+            funciones,
+            globals,
+            contiene_coincidir: false,
+            contiene_nominales: false,
+            source_map: std::collections::HashMap::new(),
+        }
     }
 
     fn main_func(
@@ -3308,6 +4089,8 @@ mod verificacion_3d4_tests {
             id: BlockId(id),
             stmts,
             terminator,
+            stmt_spans: Vec::new(),
+            terminator_span: None,
         }
     }
     fn func(
@@ -3329,6 +4112,9 @@ mod verificacion_3d4_tests {
         MirPrograma {
             funciones: vec![f],
             globals: vec![],
+            contiene_coincidir: false,
+            contiene_nominales: false,
+            source_map: std::collections::HashMap::new(),
         }
     }
 
@@ -3596,6 +4382,10 @@ mod verificacion_3d4_tests {
         let p = MirPrograma {
             funciones: vec![caller, callee],
             globals: vec![],
+            contiene_coincidir: false,
+            contiene_nominales: false,
+
+            source_map: std::collections::HashMap::new(),
         };
         // destino None compatible; aridad 0 ok
         assert!(VerificadorMir::verificar_detallado(&p).es_ok());

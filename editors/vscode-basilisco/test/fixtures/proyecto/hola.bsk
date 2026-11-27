@@ -1,0 +1,7 @@
+funcion suma(a: Entero, b: Entero) -> Entero {
+  retorna a + b
+}
+
+funcion main() {
+  mostrar suma(2, 3)
+}

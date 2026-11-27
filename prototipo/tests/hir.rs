@@ -58,7 +58,7 @@ fn hir_lower_importar() {
     let _ = ctx.analizar_programa(&ss);
     let hir = hir::lower_programa(&ss, &ctx).unwrap();
     match &hir.items[0] {
-        hir::HirItem::Importar { ruta, alias } => {
+        hir::HirItem::Importar { ruta, alias, .. } => {
             assert_eq!(ruta, "m.bas");
             assert_eq!(alias.as_deref(), Some("m"));
         }

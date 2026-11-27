@@ -324,65 +324,146 @@ pub fn crear_bpk(manifiesto_toml: &str, archivos: &[(String, Vec<u8>)]) -> Resul
 
 pub fn extraer_bpk(bytes: &[u8], destino: &Path) -> Result<PathBuf, String> {
     validar_bpk(bytes)?;
-    // (resto igual que antes)
-    let cursor = Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
-    let out_dir = destino.to_path_buf();
-    std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-
-    const MAX_FILES: usize = 1000;
-    const MAX_TOTAL: u64 = 100 * 1024 * 1024;
-    const MAX_FILE: u64 = 10 * 1024 * 1024;
-
-    if archive.len() > MAX_FILES {
-        return Err("demasiados archivos en BPK".to_string());
-    }
-
-    let mut total = 0u64;
-    let mut seen = std::collections::HashSet::new();
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let name_raw = file.name().map_err(|e| e.to_string())?.to_string();
-        let normalized: String = name_raw.nfc().collect();
-        if normalized != name_raw {
-            return Err(format!("nombre no normalizado en NFC: {name_raw}"));
-        }
-        let name = name_raw;
-        if name.is_empty() || name.contains("..") || name.starts_with('/') || name.contains('\\') {
-            return Err("ruta inválida en BPK".to_string());
-        }
-        if !seen.insert(name.clone()) {
-            return Err("entrada duplicada en BPK".to_string());
-        }
-        let size = file.size();
-        if size > MAX_FILE {
-            return Err("archivo demasiado grande en BPK".to_string());
-        }
-        total += size;
-        if total > MAX_TOTAL {
-            return Err("BPK demasiado grande".to_string());
-        }
-        let relative = if name == "BPK-MANIFEST.toml" {
-            name.as_str()
-        } else {
-            match name.strip_prefix("payload/") {
-                Some(path) if !path.is_empty() => path,
-                _ => return Err("archivo fuera de payload/".to_string()),
-            }
-        };
-        if relative.is_empty() {
-            continue;
-        }
-        let out_path = out_dir.join(relative);
-        if file.is_dir() {
-            std::fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
-        } else {
-            if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            let mut outfile = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
-            std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
+    if destino.exists() {
+        let vacio = std::fs::read_dir(destino)
+            .map_err(|e| e.to_string())?
+            .next()
+            .is_none();
+        if !vacio {
+            return Err(format!(
+                "el destino ya existe y no está vacío: {}",
+                destino.display()
+            ));
         }
     }
-    Ok(out_dir)
+
+    let padre = destino.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(padre).map_err(|e| e.to_string())?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let staging = padre.join(format!(".bsk-install-tmp-{}-{}", std::process::id(), nonce));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(|e| e.to_string())?;
+    }
+    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+
+    let resultado = (|| -> Result<(), String> {
+        let cursor = Cursor::new(bytes);
+        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
+        let out_dir = staging.clone();
+
+        const MAX_FILES: usize = 1000;
+        const MAX_TOTAL: u64 = 100 * 1024 * 1024;
+        const MAX_FILE: u64 = 10 * 1024 * 1024;
+
+        if archive.len() > MAX_FILES {
+            return Err("demasiados archivos en BPK".to_string());
+        }
+
+        let mut total = 0u64;
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+            let name_raw = file.name().map_err(|e| e.to_string())?.to_string();
+            let normalized: String = name_raw.nfc().collect();
+            if normalized != name_raw {
+                return Err(format!("nombre no normalizado en NFC: {name_raw}"));
+            }
+            let name = name_raw;
+            if name.is_empty()
+                || name.contains("..")
+                || name.starts_with('/')
+                || name.contains('\\')
+            {
+                return Err("ruta inválida en BPK".to_string());
+            }
+            if !seen.insert(name.clone()) {
+                return Err("entrada duplicada en BPK".to_string());
+            }
+            let size = file.size();
+            if size > MAX_FILE {
+                return Err("archivo demasiado grande en BPK".to_string());
+            }
+            total += size;
+            if total > MAX_TOTAL {
+                return Err("BPK demasiado grande".to_string());
+            }
+            let relative = if name == "BPK-MANIFEST.toml" {
+                name.as_str()
+            } else {
+                match name.strip_prefix("payload/") {
+                    Some(path) if !path.is_empty() => path,
+                    _ => return Err("archivo fuera de payload/".to_string()),
+                }
+            };
+            if relative.is_empty() {
+                continue;
+            }
+            let out_path = out_dir.join(relative);
+            let out_dir_canon = std::fs::canonicalize(&out_dir).unwrap_or_else(|_| out_dir.clone());
+            let out_path_norm = if out_path.exists() {
+                std::fs::canonicalize(&out_path).unwrap_or(out_path.clone())
+            } else {
+                let mut norm = PathBuf::new();
+                for comp in out_path.components() {
+                    match comp {
+                        std::path::Component::ParentDir => {
+                            norm.pop();
+                        }
+                        std::path::Component::CurDir => {}
+                        c => norm.push(c.as_os_str()),
+                    }
+                }
+                norm
+            };
+            if !out_path_norm.starts_with(&out_dir_canon) {
+                return Err(format!("ruta de extracción fuera del destino: {name}"));
+            }
+            let mut anc = out_path.parent().map(Path::to_path_buf);
+            while let Some(a) = anc {
+                if a == out_dir {
+                    break;
+                }
+                if let Ok(meta) = std::fs::symlink_metadata(&a) {
+                    if meta.file_type().is_symlink() {
+                        return Err(format!("symlink en ruta de extracción: {name}"));
+                    }
+                } else {
+                    break;
+                }
+                anc = a.parent().map(Path::to_path_buf);
+            }
+            if file.is_dir() {
+                std::fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
+            } else {
+                if let Some(parent) = out_path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                let mut outfile = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&out_path)
+                    .map_err(|e| e.to_string())?;
+                std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    })();
+
+    if let Err(e) = resultado {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+
+    if destino.exists() {
+        // destino vacío: reemplazar con staging
+        let _ = std::fs::remove_dir_all(destino);
+    }
+    std::fs::rename(&staging, destino).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&staging);
+        e.to_string()
+    })?;
+    Ok(destino.to_path_buf())
 }

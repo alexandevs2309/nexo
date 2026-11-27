@@ -11,6 +11,7 @@
 //! al finalizar (incluso ante fallo o panic) mediante RAII.
 
 use basilisco::paquetes;
+use sqlx::Connection;
 use sqlx::postgres::PgConnectOptions;
 use std::io::{Read, Write};
 use std::process::{Child, Command};
@@ -31,15 +32,10 @@ impl Drop for TestGuard {
             let _ = c.kill();
             let _ = c.wait();
         }
-        let _ = Command::new("psql")
-            .arg(&self.db_url)
-            .args([
-                "-v",
-                "ON_ERROR_STOP=1",
-                "-c",
-                &format!("DROP SCHEMA IF EXISTS \"{}\" CASCADE;", self.schema),
-            ])
-            .status();
+        let _ = sql_exec(
+            &self.db_url,
+            &format!("DROP SCHEMA IF EXISTS \"{}\" CASCADE;", self.schema),
+        );
         let _ = std::fs::remove_dir_all(&self.artifact_dir);
         let _ = std::fs::remove_dir_all(&self.base_dir);
     }
@@ -62,12 +58,19 @@ fn is_isolated(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn psql_available() -> bool {
-    Command::new("psql")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+fn sql_exec(db_url: &str, sql: &str) -> Result<(), String> {
+    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    let sql = sql.to_string();
+    rt.block_on(async move {
+        let mut conn = sqlx::postgres::PgConnection::connect(db_url)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>(())
+    })
 }
 
 fn base64_encode(data: &[u8]) -> String {
@@ -123,22 +126,14 @@ fn ciclo_publicacion_descarga_instalacion() {
         Err(_) => panic!("DATABASE_URL no definida; no se puede ejecutar el E2E"),
     };
     is_isolated(&db_url).expect("DATABASE_URL no cumple condiciones de aislamiento");
-    if !psql_available() {
-        panic!("psql no disponible; instale postgresql-client");
-    }
+    // psql CLI no requerido: se usa sqlx directamente para aislamiento determinista.
 
     let schema = format!("test_r6_{}", std::process::id());
-    let status = Command::new("psql")
-        .arg(&db_url)
-        .args([
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-c",
-            &format!("CREATE SCHEMA IF NOT EXISTS \"{}\";", schema),
-        ])
-        .status()
-        .expect("no se pudo ejecutar psql");
-    assert!(status.success(), "no se pudo crear el esquema de prueba");
+    sql_exec(
+        &db_url,
+        &format!("CREATE SCHEMA IF NOT EXISTS \"{}\";", schema),
+    )
+    .expect("no se pudo crear el esquema de prueba");
 
     let mut server_url = db_url.clone();
     let sep = if server_url.contains('?') { "&" } else { "?" };
@@ -312,22 +307,14 @@ fn concurrencia_misma_version() {
         Err(_) => panic!("DATABASE_URL no definida; no se puede ejecutar el E2E"),
     };
     is_isolated(&db_url).expect("DATABASE_URL no cumple condiciones de aislamiento");
-    if !psql_available() {
-        panic!("psql no disponible; instale postgresql-client");
-    }
+    // psql CLI no requerido: se usa sqlx directamente para aislamiento determinista.
 
     let schema = format!("test_r6_conc_{}", std::process::id());
-    let status = Command::new("psql")
-        .arg(&db_url)
-        .args([
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-c",
-            &format!("CREATE SCHEMA IF NOT EXISTS \"{}\";", schema),
-        ])
-        .status()
-        .expect("no se pudo ejecutar psql");
-    assert!(status.success(), "no se pudo crear el esquema de prueba");
+    sql_exec(
+        &db_url,
+        &format!("CREATE SCHEMA IF NOT EXISTS \"{}\";", schema),
+    )
+    .expect("no se pudo crear el esquema de prueba");
 
     let mut server_url = db_url.clone();
     let sep = if server_url.contains('?') { "&" } else { "?" };

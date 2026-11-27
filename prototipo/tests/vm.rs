@@ -151,3 +151,102 @@ fn vm_funcion_mir_tiene_prioridad_sobre_nativo() {
     let r = maquina.ejecutar("doble", &[Valor::Entero(3)]).unwrap();
     assert_eq!(r, Some(Valor::Entero(6)));
 }
+
+#[test]
+fn vm_rechaza_escape_celda_en_retorno() {
+    use basilisco::mir::{
+        BlockId, LocalId, MirBasicBlock, MirFunction, MirOperand, MirPrograma, MirRvalue, MirStmt,
+        MirTerminator,
+    };
+    let prog2 = MirPrograma {
+        funciones: vec![MirFunction {
+            nombre: "main".into(),
+            params: vec![],
+            retorno: basilisco::semantico::TipoSem::Desconocido,
+            locals: vec![
+                basilisco::semantico::TipoSem::Desconocido,
+                basilisco::semantico::TipoSem::Desconocido,
+            ],
+            bloques: vec![MirBasicBlock {
+                id: BlockId(0),
+                stmts: vec![MirStmt::Asignacion {
+                    destino: basilisco::mir::MirPlace {
+                        local: LocalId(0),
+                        projection: vec![],
+                    },
+                    valor: MirRvalue::CrearCelda {
+                        valor: MirOperand::Const(basilisco::mir::MirConst::Entero(7)),
+                    },
+                }],
+                terminator: MirTerminator::Return(Some(MirOperand::Copy(LocalId(0)))),
+
+                stmt_spans: Vec::new(),
+                terminator_span: None,
+            }],
+            bloque_entrada: BlockId(0),
+        }],
+        globals: vec![],
+        contiene_coincidir: false,
+        contiene_nominales: false,
+
+        source_map: std::collections::HashMap::new(),
+    };
+    let mut maquina = vm::MaquinaVirtual::nuevo(prog2);
+    let err = maquina.ejecutar("main", &[]).unwrap_err();
+    match err {
+        vm::ErrorVm::NoSoportado(m) => assert!(m.contains("celda interna"), "{m}"),
+        otro => panic!("esperaba NoSoportado celda interna, got {otro:?}"),
+    }
+}
+
+#[test]
+fn vm_rechaza_escape_celda_en_global() {
+    use basilisco::mir::{
+        BlockId, GlobalId, LocalId, MirBasicBlock, MirFunction, MirOperand, MirPrograma, MirRvalue,
+        MirStmt, MirTerminator,
+    };
+    let prog = MirPrograma {
+        funciones: vec![MirFunction {
+            nombre: "main".into(),
+            params: vec![],
+            retorno: basilisco::semantico::TipoSem::Desconocido,
+            locals: vec![basilisco::semantico::TipoSem::Desconocido],
+            bloques: vec![MirBasicBlock {
+                id: BlockId(0),
+                stmts: vec![
+                    MirStmt::Asignacion {
+                        destino: basilisco::mir::MirPlace {
+                            local: LocalId(0),
+                            projection: vec![],
+                        },
+                        valor: MirRvalue::CrearCelda {
+                            valor: MirOperand::Const(basilisco::mir::MirConst::Entero(1)),
+                        },
+                    },
+                    MirStmt::AsignacionGlobal {
+                        global: GlobalId(0),
+                        valor: MirRvalue::Use(MirOperand::Copy(LocalId(0))),
+                    },
+                ],
+                terminator: MirTerminator::Return(Some(MirOperand::Const(
+                    basilisco::mir::MirConst::Entero(0),
+                ))),
+
+                stmt_spans: Vec::new(),
+                terminator_span: None,
+            }],
+            bloque_entrada: BlockId(0),
+        }],
+        globals: vec![basilisco::semantico::TipoSem::Desconocido],
+        contiene_coincidir: false,
+        contiene_nominales: false,
+
+        source_map: std::collections::HashMap::new(),
+    };
+    let mut maquina = vm::MaquinaVirtual::nuevo(prog);
+    let err = maquina.ejecutar("main", &[]).unwrap_err();
+    match err {
+        vm::ErrorVm::NoSoportado(m) => assert!(m.contains("celda interna"), "{m}"),
+        otro => panic!("esperaba NoSoportado celda interna, got {otro:?}"),
+    }
+}

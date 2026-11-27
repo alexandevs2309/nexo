@@ -10,6 +10,8 @@ pub mod backend_wasm;
 pub mod cargador;
 pub mod cli;
 pub mod cliente_remoto;
+pub mod dap;
+pub mod diagnostico;
 pub mod evaluador;
 pub mod fechas;
 pub mod ffi;

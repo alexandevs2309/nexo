@@ -49,6 +49,10 @@ fn gate_mir_rechaza_ir_invalido() {
     let prog = MirPrograma {
         funciones: vec![f],
         globals: vec![],
+        contiene_coincidir: false,
+        contiene_nominales: false,
+
+        source_map: std::collections::HashMap::new(),
     };
     assert!(cli::gate_mir(&prog).is_err());
 }

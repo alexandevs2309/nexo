@@ -161,3 +161,268 @@ fn mod_sin_cargador_no_engañoso() {
     assert!(!e.is_empty(), "sin cargador debe diagnosticar");
     let _ = e;
 }
+
+// ===== FE-02: resolución semántica de miembros vía alias de módulo =====
+
+#[test]
+fn fe02_acceso_miembro_publico_existente() {
+    let dir = temp_dir();
+    escribir(&dir, "lib.bsk", "publico sea valor = 5\n");
+    escribir(&dir, "main.bsk", "usar \"lib.bsk\" como lib\nlib.valor\n");
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(e.is_empty(), "errores: {:?}", e);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_acceso_miembro_inexistente_diagnostico_semantico() {
+    let dir = temp_dir();
+    escribir(&dir, "lib.bsk", "publico sea valor = 5\n");
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nlib.noexiste\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(!e.is_empty(), "debe diagnosticar miembro inexistente");
+    assert!(
+        e.iter()
+            .any(|x| format!("{:?}", x.causa).contains("SimbodoNoExportado")),
+        "causa esperada SimbodoNoExportado, errores: {:?}",
+        e
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_acceso_miembro_privado_desde_otro_modulo() {
+    let dir = temp_dir();
+    escribir(&dir, "lib.bsk", "sea secreto = 9\n");
+    escribir(&dir, "main.bsk", "usar \"lib.bsk\" como lib\nlib.secreto\n");
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(!e.is_empty(), "debe diagnosticar miembro privado");
+    assert!(
+        e.iter()
+            .any(|x| format!("{:?}", x.causa).contains("SimbodoPrivado")),
+        "causa esperada SimbodoPrivado, errores: {:?}",
+        e
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_llamada_funcion_publica_por_alias() {
+    let dir = temp_dir();
+    escribir(
+        &dir,
+        "lib.bsk",
+        "publico funcion suma(a, b) { retornar a + b }\n",
+    );
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nlib.suma(1, 2)\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(e.is_empty(), "errores: {:?}", e);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_llamada_miembro_inexistente_por_alias() {
+    let dir = temp_dir();
+    escribir(&dir, "lib.bsk", "publico sea valor = 1\n");
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nlib.noexiste(1)\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(
+        e.iter()
+            .any(|x| format!("{:?}", x.causa).contains("SimbodoNoExportado")),
+        "causa esperada SimbodoNoExportado, errores: {:?}",
+        e
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_llamada_miembro_privado_por_alias() {
+    let dir = temp_dir();
+    escribir(&dir, "lib.bsk", "funcion oculta(x) { retornar x }\n");
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nlib.oculta(1)\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(
+        e.iter()
+            .any(|x| format!("{:?}", x.causa).contains("SimbodoPrivado")),
+        "causa esperada SimbodoPrivado, errores: {:?}",
+        e
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_dos_aliases_mismo_modulo_sin_contaminacion() {
+    let dir = temp_dir();
+    escribir(&dir, "lib.bsk", "publico sea valor = 5\n");
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como a\nusar \"lib.bsk\" como b\na.valor\nb.valor\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(e.is_empty(), "errores: {:?}", e);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_dos_modulos_mismo_nombre_miembro_aislados() {
+    let dir = temp_dir();
+    escribir(&dir, "a.bsk", "publico sea valor = 1\n");
+    escribir(&dir, "b.bsk", "publico sea valor = 2\nsea secreto = 3\n");
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"a.bsk\" como ma\nusar \"b.bsk\" como mb\nma.valor\nmb.valor\nmb.secreto\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(
+        e.iter()
+            .any(|x| format!("{:?}", x.causa).contains("SimbodoPrivado")
+                && x.mensaje.contains("secreto")),
+        "debe reportar secreto privado solo en mb, errores: {:?}",
+        e
+    );
+    assert!(
+        !e.iter().any(|x| x.mensaje.contains("valor")
+            && format!("{:?}", x.causa).contains("SimbodoNoExportado")),
+        "no debe contaminar valor entre módulos, errores: {:?}",
+        e
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_alias_sombreado_por_variable_local_no_resuelve_como_modulo() {
+    let dir = temp_dir();
+    escribir(&dir, "lib.bsk", "publico sea valor = 5\n");
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nsi verdadero {\n  sea lib = 1\n  lib\n}\nlib.valor\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(e.is_empty(), "errores: {:?}", e);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_alias_mismo_nombre_en_ambitos_diferentes() {
+    let dir = temp_dir();
+    escribir(&dir, "a.bsk", "publico sea x = 1\n");
+    escribir(&dir, "b.bsk", "publico sea z = 2\n");
+    escribir(
+        &dir,
+        "main.bsk",
+        "si verdadero {\n  usar \"a.bsk\" como m\n  m.x\n}\nsi verdadero {\n  usar \"b.bsk\" como m\n  m.z\n}\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(e.is_empty(), "errores: {:?}", e);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_diagnostico_conserva_ubicacion() {
+    let dir = temp_dir();
+    escribir(&dir, "lib.bsk", "publico sea valor = 5\n");
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nlib.noexiste\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    let err = e
+        .iter()
+        .find(|x| x.mensaje.contains("noexiste"))
+        .expect("debe haber error");
+    assert_eq!(err.linea, 2);
+    assert_eq!(err.columna, 4);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_miembro_privado_mismo_modulo_via_alias_rechazado_por_contrato_exportacion() {
+    // El acceso vía alias de módulo pasa por frontera de exportación: un miembro
+    // no exportado es privado incluso si el archivo es el mismo módulo.
+    let dir = temp_dir();
+    escribir(
+        &dir,
+        "lib.bsk",
+        "sea interno = 1\npublico sea visto = interno\n",
+    );
+    escribir(&dir, "main.bsk", "usar \"lib.bsk\" como lib\nlib.interno\n");
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(
+        e.iter()
+            .any(|x| format!("{:?}", x.causa).contains("SimbodoPrivado")),
+        "contrato de exportación: privado no accesible vía alias, errores: {:?}",
+        e
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_modulos_anidados_aislamiento_alias() {
+    let dir = temp_dir();
+    escribir(&dir, "c.bsk", "publico sea base = 10\nsea oculto = 99\n");
+    escribir(
+        &dir,
+        "b.bsk",
+        "usar \"c.bsk\" como c\npublico funcion f() { retornar c.base }\n",
+    );
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"b.bsk\" como b\nusar \"c.bsk\" como c\nb.f()\nc.base\nc.oculto\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(
+        e.iter()
+            .any(|x| format!("{:?}", x.causa).contains("SimbodoPrivado")
+                && x.mensaje.contains("oculto")),
+        "oculto debe ser privado, errores: {:?}",
+        e
+    );
+    assert!(
+        !e.iter().any(|x| x.mensaje.contains("base")
+            && !x.mensaje.is_empty()
+            && format!("{:?}", x.causa).contains("SimbodoNoExportado")),
+        "base público no debe contaminarse, errores: {:?}",
+        e
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fe02_acceso_publico_valido_runtime_semantico_coherente() {
+    // Confirma que el semántico acepta lo que el runtime ejecuta correctamente.
+    let dir = temp_dir();
+    escribir(
+        &dir,
+        "lib.bsk",
+        "publico funcion doble(n) { retornar n * 2 }\npublico sea v = 7\n",
+    );
+    escribir(
+        &dir,
+        "main.bsk",
+        "usar \"lib.bsk\" como lib\nlib.doble(lib.v)\n",
+    );
+    let e = analizar_archivo(&dir, "main.bsk");
+    assert!(e.is_empty(), "errores: {:?}", e);
+    let _ = fs::remove_dir_all(&dir);
+}
